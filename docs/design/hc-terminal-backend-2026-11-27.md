@@ -3,15 +3,15 @@
 状态：设计稿，未批准。批准之前不写任何产品代码（裁决 R26）。本文不改变现行契约。
 
 - 基线：GitHub `dev` 提交 `22eb400376`（2026-11-27）。文中所有 `文件:行号` 取自该提交。
-  模型连接那串 PR 合入后启动路径会变（裁决 R21），凡涉及启动路径的行号届时需重新核对，文中以「启动路径」标出。
-- 决策来源：负责人 2026-11-26、2026-11-27 两天共 26 问的访谈。裁决已定，本文不重新讨论，只把它们落成结构、流程和表格。
-- 事实来源：2026-11-26、11-27 在一台 macOS arm64 机器和一台 Linux x86_64 机器上做的三组实验
-  （私有 core、固定副本、版本切换；hc 0.1.21 与 0.1.22），hc 0.1.19 的接口描述（只读，未实验），以及对本仓库的只读调查。Windows 没有实测。
-  文中说「实验事实」的只指这三组实验测到的；来自接口描述或文档的另行注明。
+  模型连接前置 PR（`#61`、`#81`、`#82`、`#83`、`#96`；`#59` 已在基线之后合入 `dev`）合入后启动路径会变（裁决 R21、R30），凡涉及启动路径的行号届时需重新核对，文中以「启动路径」标出。
+- 决策来源：负责人 2026-11-26、2026-11-27 两天共 30 问的访谈（初稿落 26 条裁决，补充访谈 Q27–Q30 改定 R23 并补定 R27、R29、R30）。裁决已定，本文不重新讨论，只把它们落成结构、流程和表格。
+- 事实来源：2026-11-26、11-27 在一台 macOS arm64 机器和一台 Linux x86_64 机器上做的四组实验
+  （私有 core、固定副本、版本切换、TUI 退出状态与 hc 记录；hc 0.1.21 与 0.1.22），hc 0.1.19 的接口描述（只读，未实验），以及对本仓库的只读调查。Windows 没有实测。
+  文中说「实验事实」的只指这四组实验测到的；来自接口描述或文档的另行注明。
 - 阅读约定：
   - 「裁决 Rn」是负责人的决定，编号沿用访谈记录。
   - 【提议 Pn】是裁决没有规定、由本文补出的细节，批准时可逐条改。
-  - 【冲突 Cn】是裁决与现有代码或已知事实对不上的地方，本文不替负责人取舍，汇总在第 12 节。
+  - 【冲突 Cn】是初稿梳理出的裁决与现有代码或已知事实对不上的地方，汇总在第 12.3 节（其中 C1、C3、C6 已由裁决 R27、R29、R30 解决）。
   - 【未核实】是没有实验或代码证据支撑的假设，汇总在第 12 节。
 
 ## 1. 目标、非目标与名词
@@ -20,7 +20,7 @@
 
 1. 交互式 harness 成员的终端由 hc（herdr-core，Herdr, Inc. 发布的终端运行时）承载，取代已删除的 tmux 模式和现在的 CLI 前台子进程。
 2. 终端由 daemon 创建和持有，CLI 只发请求并 attach。daemon 重启、升级不打断终端里的程序。
-3. 交互与无头共用一套启动编排、启动规格和恢复规则，差别只留在「终端本身迫使不同」的地方（裁决 R24）。
+3. 交互与无头共用一套启动编排、启动规格和恢复规则，差别只留在「终端本身迫使不同」的地方（裁决 R23、R24）。
 4. 旧的交互会话子系统按三个去向拆掉：留给 cell、并入 harness 运行时、删除。
 
 ### 1.2 非目标
@@ -78,11 +78,12 @@
 
 | 裁决 | 内容 | 日期 | 理由 |
 | --- | --- | --- | --- |
-| R7 | 两种模式一条恢复规则。终端还活着就接管；行的最后结果是 `running` 而终端没了，就带会话引用在 hc 里重新拉起。接受的代价：重拉的 TUI 可能停在某个提示上，没人 attach。 | 2026-11-26 | 与无头「只重跑上次结果为 running 的行」是同一条规则。 |
-| R23 | 终端里的程序自己结束时：退出码 0 等于用户主动退出，按 stop 处理（删行，不重拉）；非 0 或被信号杀死算失败，在现有退避和失败预算下带会话引用重拉；终端丢失则重拉。 | 2026-11-27 | 用户退出不该被当成崩溃拉回来。各 TUI 实际返回什么仍在实验中，见 12.1。 |
+| R7 | daemon 重启与终端基础设施丢失时：终端还活着就接管；启动行状态仍为 `running` 而终端基础设施丢失（holder / core 丢失或重连快照缺失），就带会话引用在 hc 里重新拉起（已因 TUI 终止而标为 `stopped` 的行不在此列，见 R23）。接受的代价：重拉的 TUI 可能停在某个提示上，没人 attach。 | 2026-11-26 | 与无头「只重跑上次结果为 running 的行」是同一条规则。 |
+| R23（Q28 改定） | 交互成员的 TUI 终止后（非 daemon 自己的 `stop` 或配置漂移重启）：在现有证据无法区分用户主动退出与异常断开时不做区分；保留期望状态启动行与 `session_ref`，把成员标为 `stopped` / `restart_pending`，不自动重拉，必须由用户显式手动恢复。 | 2026-11-27 | 实验（4.5、U1）证伪了「退出码 0 等于用户退出」：`pi` 收到 `SIGTERM` / `SIGHUP` 也返回 0，`codex` 执行 `/quit` 返回 1，`claude` 在启动提示选退出返回 1；按退出码自动重拉或删行都会误判。 |
 | R24 | 需要重启的配置变化（成员摘要漂移、策略变化）与无头同规则：等这一 turn 结束，再带会话引用重启。总则：交互与无头成员遵守同样的规则，除非终端本身迫使不同。 | 2026-11-27 | 少一套规则就少一类只在一种模式下出现的缺陷。 |
 | R14 | 成员的模式放在本机期望状态的启动行里。规则：凡是关于终端的都是本机事实，不进 OrgFS。模式必须进入成员配置摘要，否则切换模式不会被看成漂移。 | 2026-11-26 | 终端只与本机有关，不属于跨机共享的 cell 结构数据；同一个 cell 在不同机器上可用不同模式运行。 |
 | R21 | 顺序：模型连接那串 PR 先进 `dev`，本线在它之后从 `dev` 起步，启动路径只改一次。若本设计批准时它还没合入，先做不碰启动路径的部分（hc JSON-RPC connector、下载器与锁、私有 core 的启动 / 停止 / 接管）。 | 2026-11-27 | 两条线都改启动路径，叠着改会互相返工。 |
+| R30（Q30） | 解决冲突 C6：不碰启动路径的 S1–S3 在本设计批准后即可开工；S4 启动收敛及后续碰启动路径的切片在 `#59` 已合入的前提下，只等模型连接前置 PR `#61`、`#81`、`#82`、`#83`、`#96` 合入 `dev`，不等 `#84`–`#86`，也不等 provider / Magpie 线的替代 PR；两条线在启动输入边界会合。 | 2026-11-27 | `#84`–`#86` 将由 provider / Magpie 线另开新 PR 取代；两条线以启动输入为稳定交界，不必串行互等。 |
 
 ### 2.4 用户入口
 
@@ -105,6 +106,8 @@
 | --- | --- | --- | --- |
 | R17 | 旧交互会话子系统三向拆分。agent 层的部分（准入、origin 托管、路由）留给 cell，键从 actor 改为成员。harness 层的部分（启动行、会话引用、终端地址、turn 上报、carrier 版本检查）改名改键并入现有 harness 运行时；`session.turn.*` 成为成员级接口。只为证明「daemon 没启动的进程归谁」而存在的部分（pid 与出生栅栏、租约心跳、`owner_fence`、`channel_confirmed`、外部 `session.register*` / `unregister`）连同 `interactive_sessions` 表、`SessionActor` 和 `tmuxSession` 一起删除。冻结的 `session.*` 方法逐项交负责人。不写迁移代码。 | 2026-11-27 | 终端由 daemon 启动之后，「证明归属」这一整类机制没有读者了。 |
 | R18 | 交互成员继续经 carrier 从 daemon 收件箱拉取工作。cell 准入闸门行为不变，只把键改成成员。 | 2026-11-27 | 投递模型不在本线范围内改。 |
+| R27（Q27） | 解决冲突 C1：在 S9 拆除旧子系统之前单列一个迁移与清理切片（S8b）。对调用 `session.register*` / `session.heartbeat` 的非 tmux 测试与 `contract/e2e/` 脚本，只把仍有产品覆盖价值的按所测对象迁移到 daemon 启动的桩 harness、进程内假 hc socket 或 `agent.attach`；冗余或无必要的测试直接删除；不保留任何仅供测试使用的 `session.register` / `session.heartbeat` 后门。 | 2026-11-27 | 外部登记随旧子系统彻底退场，不为测试兼容保留死代码或测试后门。 |
+| R29（Q29） | 解决冲突 C3：删除本机 IPC 上全部 agent / 操作者调用者归类（`ipc/router.py` 的 `_interactive_identity_binding_peer` 与 `_identity_binding_operator`）及依赖它的全部本地拒绝检查，关闭 `KP-130`；保留传输层的 `worker.channel.request` 信封及方法白名单，以及 `local-bootstrap` / `local-gui` 表面边界。 | 2026-11-27 | 本机 socket 按对端 pid 区分 agent 与操作者本来就拦不住 agent 自己的 shell（`KP-130`），AI 行为边界由 harness 工具权限负责。 |
 
 ### 2.7 平台与完成标准
 
@@ -140,7 +143,7 @@ hc      私有 core ── holder ── 成员终端（TUI）、Codex app-serve
 | hc 客户端 | 在 hc socket 上讲按行分隔的 JSON-RPC 2.0：`hello`、`server.status`、`server.stop`、`terminal.run / list / get / kill / rm / label`、`events.subscribe`。不实现帧模式，不做 `terminal.attach`。 | daemon；传输经 kernel 的 `connect_local_ipc`（`src/hyprial/kernel/impl/manysys/ipc/__init__.py:121`） | 否 |
 | 私有 core 主管 | 拥有私有 core 的全部生命周期：构造不含密钥的环境、启动、探活、接管、版本比对与迁移、最后一个终端移除后停止；维护事件订阅，重启后从快照重建。 | daemon | 否 |
 | 固定副本获取 | 读锁文件、下载、校验 sha256 与 size、解包到按版本分的目录、删除旧版本目录（macOS 同时注销 Launch Services 记录）。 | daemon | 否 |
-| 交互 connector（claude / pi / codex 各一个） | 把启动规格变成 `terminal.run` 的参数和 carrier 的接线；实现接管、停止、退出分类所需的句柄。 | daemon，`harnesses/<harness>/` | 是 |
+| 交互 connector（claude / pi / codex 各一个） | 把启动规格变成 `terminal.run` 的参数和 carrier 的接线；实现接管、停止、终止与丢失处理所需的句柄。 | daemon，`harnesses/<harness>/` | 是 |
 | attach 命令 | 向 daemon 要 attach 描述，执行固定副本的 `attach`，返回后再问 daemon 是否要跟到新终端。 | CLI | 否 |
 
 kernel 不新增业务代码。kernel 现有的本机 IPC 入口在 POSIX 上是普通的 AF_UNIX 连接，能直接连 hc 的 socket；在 Windows 上的情况见【冲突 C2】。
@@ -195,16 +198,16 @@ kernel 不新增业务代码。kernel 现有的本机 IPC 入口在 POSIX 上是
 | --- | --- | --- |
 | 启动请求 | `agent.start`（`request_catalog/agent/start.py:369`）与旧的 `lifecycle.start`（`ipc/router.py:113`） | 生命周期操作 → harness 运行时 → `io_port.py:148` → 分发表 |
 | daemon 恢复 | `_restore_harnesses`（`application/restore.py:630`），只重跑结果为 `running` 的行（`application/restore.py:686`） | 同上。交互行先问主管「终端还在吗」，在就接管，不在才走到 connector 的启动 |
-| 崩溃重启 | harness 运行时的 reconcile 行为（`harnesses/actor/behaviors/reconcile.py:255` 的退避，`process_events.py:140` 的失败预算） | 同上 |
-| cell 成员 reconcile | 计划器（`cells/reconcile/planner.py:316-366`）产出 START / DRAIN_AND_RESTART 等动作，由 `composition/cells/` 下的 effect 执行 | 同上 |
+| 崩溃重启 | harness 运行时的 reconcile 行为（`harnesses/actor/behaviors/reconcile.py:255` 的退避，`process_events.py:140` 的失败预算） | 无头走退避与失败预算重拉；交互成员只在 4.4 的终端基础设施丢失时重拉，TUI 终止按 4.5 标为 `stopped` / `restart_pending`、不自动重拉（裁决 R23） |
+| cell 成员 reconcile | 计划器（`cells/reconcile/planner.py:316-366`）产出 START / DRAIN_AND_RESTART 等动作，由 `composition/cells/` 下的 effect 执行 | 同上；启动行状态不为 `running`（`stopped` / `failed`）的成员保持搁置（`held`），不自动拉起 |
 
 四条路径汇合在同一点，所以交互 connector 只需要接在分发表上，不需要在四处各接一次。
 
 交互 connector 的共同约定：
 
-- 用 `terminal.run` 启动，`keep: false`、无父终端、不发便签。`keep: false` 是实验结论：`keep: true` 的终端在 core 停止后会变成一个登录 shell，原命令不会重跑；重拉是 daemon 的事。
+- 用 `terminal.run` 直接传程序参数数组（不经 `/bin/sh -c` 包装：实验证实经 shell 包装时 hc 记录的是外层 shell 的退出状态而非 TUI 自身），`keep: false`、无父终端、不发便签。`keep: false` 是实验结论：`keep: true` 的终端在 core 停止后会变成一个登录 shell，原命令不会重跑；重拉或手动恢复是 daemon 的事。
 - 传给终端的环境变量只有非密钥项（home、成员身份、会话引用文件的路径、终端类型）。
-- 返回给 harness 运行时的句柄代表「一个 hc 终端」而不是一个子进程：停止等于 `terminal.kill` 加 `terminal.rm`；「是否在运行」来自主管的事件流。
+- 返回给 harness 运行时的句柄代表「一个 hc 终端」而不是一个子进程：停止等于 `terminal.kill` 加 `terminal.rm`；「是否在运行」与终端结束事件来自主管的事件流。
 - 每个 connector 提供重连：接管一个活着的终端时，carrier 已经在跑，connector 只恢复 daemon 一侧的状态。
 
 三个 harness 的差别：
@@ -213,7 +216,7 @@ kernel 不新增业务代码。kernel 现有的本机 IPC 入口在 POSIX 上是
 | --- | --- | --- | --- |
 | claude | `claude` TUI，带 MCP 配置、hooks 和策略参数 | TUI 拉起的 stdio MCP 通道子进程（已有重连） | 启动参数的组装从 CLI（`shell/impl/cli/commands/agent/runtime/claude.py:102`）搬进 connector；去掉 `--owner-pid` / `--owner-identity`（`claude.py:271-273`） |
 | pi | `pi` TUI，加载 attach 扩展 | TUI 进程内的扩展（已有重连） | 启动参数的组装从 CLI（`runtime/sessions.py:67`）搬进 connector |
-| codex | 两个终端：一个无人 attach 的 `codex app-server`，一个 `codex --remote` TUI | 今天是 CLI 进程里的线程（`runtime/sessions.py:752`） | carrier 线程搬进 daemon；app-server 的 socket 今天在临时目录里，【提议 P7】改放 `<home>/state/` 下按成员固定的路径，daemon 重启后才找得到；两个终端用同一成员身份、不同角色标签区分，TUI 结束时 app-server 一并停止 |
+| codex | 两个终端：一个无人 attach 的 `codex app-server`，一个 `codex --remote` TUI | 今天是 CLI 进程里的线程（`runtime/sessions.py:752`） | carrier 线程搬进 daemon；app-server 的 socket 今天在临时目录里，【提议 P7】改放 `<home>/state/` 下按成员固定的路径，daemon 重启后才找得到；两个终端用同一成员身份、不同角色标签区分，任一侧终止导致 TUI 结束时另一侧一并停止并移除，按 4.5 保留启动行与会话引用、标为 `stopped` / `restart_pending` |
 
 Codex 今天声明「daemon 重启后不恢复交互 app-server / TUI」（`harnesses/capabilities.py:196-200`），本线完成后这条降级声明改为原生支持。hc 的文档说 Codex 在 hc 里要带 `--no-daemon` 运行，否则命令会跑到 hc 之外，connector 需照此传参【未核实】。
 
@@ -242,7 +245,7 @@ Codex 今天声明「daemon 重启后不恢复交互 app-server / TUI」（`harn
 6. 就绪。【提议 P9】交互成员的「启动成功」定义为终端处于 live 且程序仍在运行；carrier 报到（`agent.member.carrier.hello`）是之后单独的一个事实，显示在状态里。
    原因：TUI 第一次启动可能停在目录信任之类的提示上，要人 attach 之后回答，carrier 才会起来。若等 carrier 报到才算成功，「启动后立即 attach」（裁决 R13）就会互相等待。
    今天 CLI 是前台子进程，一边让用户看到提示一边轮询 `ps`（`runtime/interactive.py:469`、`runtime/sessions.py:316-353`），这段轮询随之删除。
-7. 启动成功后写启动行（沿用现有规则：从未成功过的启动不留行）。
+7. 启动成功后写启动行（状态为 `running`；沿用现有规则：从未成功过的启动不留行）。若该成员此前因 TUI 终止停在 `stopped` / `restart_pending`（4.5），本次显式启动在未传 `--resume` 覆盖时直接复用该行保留的启动参数与 `session_ref`，拉起新终端后把行状态改回 `running`、清除 `restart_pending`。
 8. CLI 若在真实终端里，立即走 4.2 的 attach；否则打印 tui 命令后返回。
 
 无头模式走同一个请求、同一段编排，connector 仍是管道子进程，行为不变。
@@ -257,7 +260,7 @@ Codex 今天声明「daemon 重启后不恢复交互 app-server / TUI」（`harn
 2. daemon 回答三种之一：
    - `attach`：给出固定副本的可执行路径、私有变量、终端地址。
    - `pending`：成员正在被重启，新终端还没起来；CLI 在有界时间内再问。
-   - `ended`：成员已停止（用户退出、被 stop、失败预算用尽），附原因；CLI 退出。
+   - `ended`：成员当前未运行（已因 TUI 终止停在 `stopped` / `restart_pending`、已被 `agent stop` 停止、或失败预算用尽），附原因与显式手动恢复提示；`agent.tui.attach` 不改状态、不自动拉起，CLI 退出。
 3. CLI 在 exec 之前做两件事，都是为了不让这次调用意外启动一个带着用户 shell 环境的 core：
    - 经 kernel 入口连一次 socket，连不上就不执行，回到第 1 步。
    - 用与主管相同的白名单环境执行，只额外带上终端类型变量。即使竞态下 core 恰好在这一刻消失，被顺手启动的 core 也不含密钥。
@@ -278,40 +281,42 @@ Codex 今天声明「daemon 重启后不恢复交互 app-server / TUI」（`harn
 
 1. 若期望状态里没有结果为 `running` 的交互行，且私有 socket 连不上：什么都不做，不执行二进制。
 2. 否则连上 core，先做版本比对（4.7），再取快照。
-3. 对每个结果为 `running` 的交互行（裁决 R7）：
+3. 对每个状态仍为 `running` 的交互行（裁决 R7；已因 TUI 终止标为 `stopped` 的行与 `failed` 行一样跳过，保持搁置等用户手动恢复）：
    - 找到身份匹配且 live 的终端：接管。程序没有被打断，carrier 会在发现 daemon 换代后重新报到并补报 turn 状态。
-   - 找到身份匹配但已 finished 的终端：按 4.5 分类，等同于 daemon 当时在场。
+   - 找到身份匹配但已 finished 的终端：按 `reason` 归入 4.4（基础设施丢失重拉）或 4.5（TUI 终止保留行并标为 `stopped` / `restart_pending`），等同于 daemon 当时在场。
    - 找不到：按 4.4 重拉。
 4. 【提议 P11】带 hyprial 标签但没有对应启动行的终端：结束并移除。它只会出现在「终端已创建、启动行还没写下」的崩溃窗口里，与「从未成功的启动不留行」是同一条规则。
 5. 接管完成后才放开 cell 成员 reconcile（沿用现有的启动闸 `CellReconcileStartBarrier`，`composition/cells/member_rows/rows.py:165`）。
 
-### 4.4 终端丢失
+### 4.4 终端基础设施丢失
 
-来源：事件流里的 `lost`；终端以 `holder_lost`、`server_stop`、`host_shutdown`、`stopped_by_restart` 结束；或 core 整个没了，重连后的快照里找不到这个终端。
+来源（仅针对启动行状态为 `running` 的成员）：事件流里的 `lost`；终端以 `holder_lost`、`server_stop`、`host_shutdown`、`stopped_by_restart` 结束；或 core 整个没了，重连后的快照里找不到这个终端。这些情形由 hc 自身记录明确区分于「终端内程序退出」。
 
-处理：移除旧记录，带启动行里的会话引用在 hc 里重拉（裁决 R7、R23）。接受的代价：重拉出来的 TUI 可能停在提示上，没人 attach；此时它会以 blocked 出现在成员状态里（4.8）。
+处理：移除旧记录，带启动行里的会话引用在 hc 里重拉（裁决 R7）。接受的代价：重拉出来的 TUI 可能停在提示上，没人 attach；此时它会以 blocked 出现在成员状态里（4.8）。
 
-### 4.5 程序自己结束
+### 4.5 TUI 终止（裁决 R23 / Q28）
 
-今天 harness 运行时对一个进程只观察「在不在运行」（`ProcessFactsObserved` 只有 `running`，`processes/process_owner.py:140`），没有退出码。本线为交互成员增加退出事实：hc 终端记录里的 `exit_code`、`signal`、`reason`。
+2026-11-27 实验事实（在一台 Linux x86_64 机器与一台 macOS arm64 机器上对直接启动的 `claude 2.1.332`、`codex 0.171.0 / 0.172.0`、`pi 1.5.0 / 1.6.0` 做 PTY 测量，并在 Linux 私有 core `hc 0.1.22` 上核对终端记录）：
 
-【提议 P12】分类表（前三行是裁决 R23 原文，后两行是补出的细节）：
+- **`pi`**：`/quit` 与 `Ctrl+D` 以退出码 `0` 结束；**收到 `SIGTERM`、`SIGHUP` 在两个系统上同样被捕获并以普通退出码 `0` 结束**（hc 记录 `exit_code: 0, signal: null, reason: "exited"`；对运行中的 `pi` 执行 `hc kill` 也记录 `exit_code: 0, signal: null`，仅 `reason` 为 `"killed"`）。
+- **`codex`**：自身的 `/quit` 在两个系统上都因退出时 `account/read` 超时返回 **`1`**；`Ctrl+D` 返回 `0`；空闲连按两次 `Ctrl+C` 在 0.171.0（Linux）死于 `SIGINT`，在 0.172.0（macOS）返回 `0`；`app-server` 加 `--remote` 模式下，`app-server` 收到 `SIGTERM` 以 `0` 退出时，`--remote` TUI 以 **`1`** 退出；恢复不存在的会话不会在启动时报错，而是停在 `Resuming session…`，之后 `/quit` 仍返回 `1`。
+- **`claude`**：`/exit`、连按两次 `Ctrl+C`、连按两次 `Ctrl+D`（单次只提示再按一次）返回 `0`，但在启动期目录信任提示上选退出返回 **`1`**；`SIGTERM`、`SIGHUP` 被捕获为普通退出码 `143`、`129`（`signal: null, reason: "exited"`），只有未捕获的 `SIGKILL` 记录 `exit_code: null, signal: 9, reason: "exited"`。
+- **hc 的 `Terminal.reason` 取值**（`rpc.discover` 实测）：`exited`、`killed`、`server_stop`、`host_shutdown`、`signaled`、`holder_lost`、`stopped_by_restart`、`spawn_pending`。凡 `keep: false` 终端内的程序自己结束或死于信号，`reason` 均为 `exited`。
 
-| hc 记录 | 判定 | 动作 | 是否消耗失败预算 |
+结论：退出码与信号**无法区分**「用户主动退出」和「异常断开 / 被外部信号终止」——按退出码 `0` 删行会把被 `SIGTERM` / `SIGHUP` 终止的 `pi` 当主动退出丢掉，按非 `0` 自动重拉会把刚执行 `/quit` 的 `codex` 或拒绝信任目录的 `claude` 重新拉回来。
+
+因此按裁决 R23（Q28 改定）与【提议 P12】（非 daemon 发起的 `killed` 及基础设施丢失的失败预算边界）统一处理如下：
+
+| hc 记录 / 事件 | 判定 | 动作 | 自动重拉 |
 | --- | --- | --- | --- |
-| `exited`，退出码 0 | 用户主动退出 | 等同 stop：删启动行、移除终端、不重拉 | — |
-| `exited` 非 0，或被信号杀死 | 失败 | 在现有退避和失败预算下带会话引用重拉 | 是 |
-| 终端丢失（4.4 列出的原因） | 丢失 | 重拉 | 否：不是程序自己的失败 |
-| `killed`，且是 daemon 自己发起的 | stop 或重启的一步 | 按发起它的操作继续 | — |
-| `killed`，但不是 daemon 发起的（有人直接在私有 socket 上操作） | 按丢失处理 | 重拉 | 否 |
+| `exited`（无论 `exit_code` 为 `0`、非 `0` 还是 `signal` 非空；含 Codex 远端断开） | TUI 终止（证据无法区分用户主动退出与异常断开） | 移除已结束终端记录（Codex 同步停掉并移除配对终端）；**保留**期望状态启动行与 `session_ref`；启动行状态写为 `stopped`，成员标为 `stopped` / `restart_pending`，必须由用户显式手动恢复（裁决 R23） | 否（不消耗失败预算） |
+| `killed`，但不是 daemon 发起的（有人直接在私有 socket 上操作） | 【提议 P12】外部终止，同样无法区分是否出自用户本人 | 同上：保留启动行与 `session_ref`，标为 `stopped` / `restart_pending`，等用户显式手动恢复 | 否 |
+| `killed`，且是 daemon 自己发起的 | `agent.stop` 或 4.6 配置 / 策略漂移重启的一步 | `agent.stop` 删启动行；漂移重启带 `session_ref` 起新终端 | 按原操作 |
+| 终端基础设施丢失（4.4 列出的原因，且启动行原为 `running`） | hc 基础设施丢失 | 移除旧记录，带 `session_ref` 在 hc 里重拉（裁决 R7） | 是（【提议 P12】不消耗失败预算） |
 
-失败预算与退避用现有的：预算默认 3（`processes/supervisor.py:102-106`，环境变量可改，0 表示永不终止），退避在 `harnesses/actor/behaviors/process_events.py:202-210`。预算用尽后行标为 `failed`，留给人处理，与无头一致。
+无头成员保持现有的崩溃退避与失败预算（预算默认 3，`processes/supervisor.py:102-106`；退避在 `harnesses/actor/behaviors/process_events.py:202-210`；耗尽后标 `failed`）。交互成员只有在 4.4 重拉或 4.6 漂移重启的新终端连启动本身都失败时，才走既有启动失败路径。
 
-分类完成后立即移除已结束的终端记录：hc 把传给终端的环境变量明文保存到记录被移除为止。
-
-判定只看两个字段：`signal` 非空或 `exit_code` 非 0 即失败，不依赖 `reason` 的具体取值。原因：`keep: false` 的终端被信号杀死时这三个字段怎样取值没有实测，接口描述里的 `signaled` 只说明了保留型终端（U16）。
-
-「退出码 0 等于用户退出」对 claude、codex、pi 是否成立，正在实验中，见 12.1 的 U1。
+处理完成后立即移除已结束的 hc 终端记录：hc 把传给终端的环境变量明文保存到记录被移除为止。
 
 ### 4.6 配置或策略漂移
 
@@ -357,7 +362,8 @@ hc 把程序经 OSC 7501 自报的状态记在终端上：`idle`、`working`、`
 
 - **模式。** 启动行就是 `HarnessLaunchSpec`（`kernel/impl/facts/launch_spec/spec.py:146`）。它已有 `headless` 字段和成员字段，SQLite 的 `harnesses` 表也已有 `headless` 列，主键是 `(harness, name, member)`（`daemon/impl/desired_state/sqlite.py:61-68`），不含模式，所以一个成员只有一行。
   要改的只是解析时的拒绝：今天 `headless` 为假会报「interactive sessions use interactiveSessions」（`kernel/impl/facts/launch_spec/spec.py:256-260`）。不新增列。
-- **会话引用。** 用已有的 `session_ref` 字段。Claude 和 Pi 的引用由 daemon 在启动时生成；Codex 的线程 ID 要等 app-server 起来后才知道，由 connector 回写（已有同步会话引用的持久化命令）。
+- **会话引用。** 用已有的 `session_ref` 字段。Claude 和 Pi 的引用由 daemon 在启动时生成；Codex 的线程 ID 要等 app-server 起来后才知道，由 connector 回写（已有同步会话引用的持久化命令）。TUI 终止后该字段随启动行原样保留，供用户显式手动恢复（裁决 R23）。
+- **行状态（`status`）。** 今天 `HarnessLaunchSpec.status` 只接受 `running` 或 `failed`（`kernel/impl/facts/launch_spec/spec.py:207`、`:296`）。本线新增 `stopped`：交互成员 TUI 终止后不删行，把 `status` 写为 `stopped`（成员状态对应标为 `stopped` / `restart_pending`）。现有开机恢复只挑 `status == "running"`（`application/restore.py:686`），cell 成员 reconcile 把 `status != "running"` 一律视为搁置（`composition/cells/reconcile.py:321`、`cells/reconcile/planner.py:34-44`），任何文档修订都不会自动拉起它，只有用户显式手动恢复才把该行写回 `running`。显式 `agent.stop` 仍直接删启动行。
 - **成员配置摘要。** 今天的摘要内容是 agent、成员、harness、模型、模型厂商、工作目录、命令、参数、审批、环境引用、策略摘要（`cells/reconcile/effects.py:177-207`），没有模式。
   【提议 P17】只在交互模式下往摘要内容里加一个模式键，无头时不加。这样所有现存无头成员的摘要逐字节不变，升级不会引发一轮成批的排空重启。
 - **策略摘要。** 策略摘要的输入里本来就有 `headless`，但解析策略时写死为真（`cells/reconcile/policy.py:106-108`）。改为传成员的实际模式。无头的值不变。
@@ -375,7 +381,7 @@ agent ID 加成员名放不进 32 个字符，所以【提议 P19】：
 - **标签**：agent ID、成员名、角色（TUI 或 app-server）、本次启动的随机 ID、本次启动的配置摘要、启动时的 hc 版本。
 - **接管条件**：连的是本 home 的私有 socket；终端 live；名字等于按上式算出的名字；agent、成员、角色三个标签与启动行一致。
 - **信任边界**：能连上私有 socket 的只有同一个操作系统用户，标签可被他修改。这与状态目录的信任边界相同；标签里不放任何密钥。
-- **不落盘**：终端地址、hc 状态、退出事实都是运行事实，放在 harness 运行时的内存里，daemon 启动时从 hc 快照重建，不写进期望状态，更不进 OrgFS（裁决 R14）。hc 自己就是这些事实的持久存储。
+- **不落盘**：终端地址、hc 状态、原始退出记录都是运行事实，放在 harness 运行时的内存里，daemon 启动时从 hc 快照重建，不写进期望状态，更不进 OrgFS（裁决 R14）。期望状态启动行只按 5.1 保留 `session_ref` 与行状态 `stopped`；hc 自己就是活跃终端事实的持久存储。
 
 ### 5.3 成员状态里取代 `tmuxSession` 的内容
 
@@ -386,18 +392,18 @@ agent ID 加成员名放不进 32 个字符，所以【提议 P19】：
 ```
 terminal: {
   state:        "live" | "finished" | "lost" | "absent",
-  address:      "<hc 终端地址>",
+  address:      "<hc 终端地址>" | null,
   status:       "idle" | "working" | "done" | "blocked" | "error" | null,   // null 表示程序从未上报
   statusKind:   "permission" | "question" | "auth" | null,
   statusSinceMs: <毫秒>,
   carrierReady: true | false,
   carrierStale: true | false,          // carrier 的构建版本落后于 daemon
-  restartPending: null | "config" | "policy",
+  restartPending: null | "config" | "policy" | "terminated",
   coreVersion:  "X.Y.Z",  pinnedVersion: "X.Y.Z"
 }
 ```
 
-`ps` 是已发布的输出，删数组、加对象都是契约变化，列在第 7 节。`hyprial doctor` 里读 `interactiveSessions` 的通道检查（`shell/impl/cli/commands/doctor/commands.py:572`）改读这个对象。
+TUI 终止后（4.5，裁决 R23），已结束的 hc 终端记录已被移除，成员自身状态为 `stopped`，`terminal.state` 为 `"absent"`、`terminal.restartPending` 为 `"terminated"`，表达「启动行与 `session_ref` 已保留、等待用户显式手动恢复」。`ps` 是已发布的输出，删数组、加对象都是契约变化，列在第 7 节。`hyprial doctor` 里读 `interactiveSessions` 的通道检查（`shell/impl/cli/commands/doctor/commands.py:572`）改读这个对象。
 
 ## 6. 旧交互会话子系统的三向拆分
 
@@ -430,13 +436,14 @@ terminal: {
 | 外部登记 | `registry.py:197`、`:291`、`:427`、`:632` | 删 | daemon 在启动时自己完成登记。 |
 | `interactive_sessions` 表与 `InteractiveSession` | `desired_state/sqlite.py:82`，`desired_state/documents.py:45`，`desired_state/sessions.py` | 删 | 不迁移数据：旧行对应的前台进程不归 daemon 管，升级后由用户重新启动（迁移说明）。 |
 | `SessionActor` 及跨域绑定效果 | `session_actor/` 整个包 | 删 | agent 的绑定与释放改由统一的生命周期路径完成，与无头相同。 |
-| IPC 调用者归类里对会话表的扫描 | `ipc/router.py:229-256` | 删并替换 | 见【冲突 C3】。 |
+| 本机 IPC 的 agent / 操作者归类及依赖它的拒绝检查 | `ipc/router.py:229-291` 及 9 个模块的调用点（`user_key/ipc.py:43`、`provider_keys/ipc.py:244`、`provider_keys/legacy.py:152`、`application/actors/agents_admin/adapters.py:76` 等、`application/actors/agents_admin/provider_credential.py:65` 等、`application/actors/cell_admin/service.py:399`、`request_catalog/agent/cell/__init__.py:33`、`request_catalog/agent/harness_args/__init__.py:403`、`request_catalog/preview.py:38`） | 删 | 裁决 R29：全部删除，关闭 `KP-130`；保留 `worker.channel.request` 信封及 15 方法白名单（`ipc/router.py:197-224`、`:407`、`:511`）与 `local-bootstrap` / `local-gui` 表面边界。 |
 | `tmux_session` / `tmuxSession` | `src/hyprial` 下 7 个文件共 21 行（存储、线上字段、投影的直通） | 删 | 今天没有写者，也没有行为上的读者。 |
 | CLI 前台启动 | `runtime/claude.py:502`，`runtime/sessions.py:309`、`:671`，`runtime/interactive.py:124` | 删 | 裁决 R3。 |
 | 交互启动的明文密钥环境 | CLI：`runtime/interactive.py:413-454`；daemon：`agents_admin/registry_ops.py:726-742` | 删 | 裁决 R10：删除而非搬迁。 |
 | `--replace-interactive` | `runtime/start.py:86`；`application/actors/lifecycle_ops.py:726-768` | 删 | 见第 7 节与 12.2：它靠出生栅栏去杀一个外部进程，该栅栏不再存在。 |
 | 时间线里的 `session.registered` / `session.unregistered` | `shell/impl/cli/commands/message/observe/trajectory.py:33-34` | 删 | 今天就没有发出者。 |
 | 4 个 tmux e2e 驱动 | `contract/e2e/run-cc-tui-worker.py`、`run-codex-interactive-attach-gate.py`、`run-pi-interactive-attach-manual.py`、`run-tui-attach-manual.py` | 迁移 | 改为经 daemon 启动、经 hc 读屏和送键（裁决 R3）。 |
+| 调用 `session.register*` / `session.heartbeat` 的非 tmux 脚本与测试 | `contract/e2e/` 下另 12 个脚本与 2 份场景文档，`tests/` 下 93 个测试文件 | 迁移或删 | 裁决 R27（切片 S8b）：冗余或只测已退场机制的直接删除；仍有产品覆盖价值的按所测对象迁往 daemon 启动的桩 harness、进程内假 hc socket 或 `agent.attach`；不留任何测试专用后门。 |
 
 ### 6.1 子系统之外读会话表的地方
 
@@ -463,7 +470,7 @@ terminal: {
 
 ### 7.1 `session.*` 方法
 
-七个旧方法都冻结在 `scripts/ci/legacy-method-baseline.json:48-54`，并列在 `request_catalog/migration.py:255-261` 的「仅路由器」名单里；`session.turn.refresh` 已迁移并发布。GUI 不调用其中任何一个。删除外部登记对测试面的影响见【冲突 C1】。
+七个旧方法都冻结在 `scripts/ci/legacy-method-baseline.json:48-54`，并列在 `request_catalog/migration.py:255-261` 的「仅路由器」名单里；`session.turn.refresh` 已迁移并发布。GUI 不调用其中任何一个。外部登记删除前的测试与场景夹具迁移清理见裁决 R27 与切片 S8b，不保留任何测试专用后门。
 
 | 方法 | 今天 | 提议 | 理由 |
 | --- | --- | --- | --- |
@@ -480,15 +487,16 @@ terminal: {
 
 | 方法 | 今天 | 提议 | 理由 |
 | --- | --- | --- | --- |
-| `agent.start` | 已声明并经 HTTP 暴露（`request_catalog/agent/start.py:362-369`），只覆盖「全新的无头启动」 | 扩成唯一的启动请求：加模式、成员、恢复用会话引用、工作目录、昵称、参数、推理强度等。【提议 P21】交互模式也接受 HTTP 调用（GUI 可以启动交互成员），attach 仍只能在本机做 | 裁决 R5。已发布契约的扩展：OpenAPI、生成的 GUI 客户端、契约 mock 同步。 |
+| `agent.start` | 已声明并经 HTTP 暴露（`request_catalog/agent/start.py:362-369`），只覆盖「全新的无头启动」 | 扩成唯一的启动请求：加模式、成员、恢复用会话引用、工作目录、昵称、参数、推理强度等；对因 TUI 终止停在 `stopped` / `restart_pending` 的成员承担显式手动恢复（未传覆盖项时复用保留的启动行与 `session_ref`）。【提议 P21】交互模式也接受 HTTP 调用（GUI 可以启动交互成员），attach 仍只能在本机做 | 裁决 R5、R23。已发布契约的扩展：OpenAPI、生成的 GUI 客户端、契约 mock 同步。 |
 | `lifecycle.start` | 冻结旧方法（`legacy-method-baseline.json:29`，`ipc/router.py:113`）；CLI 的带参无头启动走它 | 删除，并入 `agent.start` | 一个启动请求。 |
 | `lifecycle.resume.preflight` | 冻结旧方法（`legacy-method-baseline.json:28`） | 删除，成为 daemon 内部的一步 | 预检搬进 daemon。 |
 | `agent.start.preflight` | 冻结旧方法（`legacy-method-baseline.json:23`） | 删除，成为 daemon 内部的一步 | 同上。 |
 | `agent.resume.restore` | 冻结旧方法（`legacy-method-baseline.json:16`）；CLI 在恢复失败时用它回滚 agent 记录 | 删除，回滚由 daemon 自己做 | 补偿写不该由 CLI 发起。 |
 | `agent.runtime-launch.acquire` / `custody` / `release` | 三个冻结旧方法（`legacy-method-baseline.json:19-21`，`ipc/router.py:94-96`）；`acquire` 的结果里带明文 `secretEnvironment`；调用者只有 CLI 的交互启动（`runtime/interactive.py:426`、`:461`） | 三个都删除。daemon 内部给无头用的启动托管不动 | 裁决 R10。 |
-| `agent.stop` | 已声明 | 契约不变；对交互成员的含义是结束并移除终端、删启动行 | — |
+| `agent.stop` | 已声明 | 契约不变；对交互成员的含义是结束并移除终端、删启动行（含清掉停在 `stopped` / `restart_pending` 的保留行） | — |
 | `agent.tui.attach` | 无 | 新增：只面向本机操作者，不经 HTTP 暴露，不改状态 | 裁决 R13。 |
 | `agent.member.carrier.hello` | 无 | 新增：carrier 调用，不经 HTTP 暴露 | 裁决 R17 保留的 carrier 版本检查。 |
+| 本机 IPC 调用者归类检查 | `ipc/router.py:229-291` 的 `_interactive_identity_binding_peer` 与 `_identity_binding_operator`，及 `user.key.*`、`provider.key.*`、`adapter.*`、`agent.provider.*`、`agent.cell.*`、`agent.harness-args.*`、`preview.*` 等 9 个模块对非操作者调用的拒绝 | 全部删除；保留传输层的 `worker.channel.request` 信封白名单与 `local-bootstrap` / `local-gui` 表面边界 | 裁决 R29（已批准）。 |
 | `--replace-interactive` 与参数 `replaceInteractive` | CLI 选项（`runtime/start.py:86`）；daemon 靠出生栅栏结束外部交互进程（`agents_admin/destroys.py:244`） | 【提议 P22】删除。切换模式的做法是先 `agent stop` 再带 `--resume` 以另一种模式启动；`agent stop` 的输出里给出会话引用 | 栅栏被删；裁决 R13 规定对运行中的成员 start 是错误。是否要一条不停顿的切换命令见 12.2。 |
 | 新的错误码 | — | 【提议 P23】四个新拒绝各一个码：交互启动遇到 Key 类连接、成员的旧终端仍在收尾、终端宿主不可用（副本下载或校验失败、core 起不来）、路径超限。「成员已在运行」优先复用现有码 | 码表是冻结面，每个新码单独确认。 |
 
@@ -518,9 +526,10 @@ terminal: {
 | `scripts/ci/structural-baseline.json` | — | 不新增：新包遵守 7 文件、1000 行的上限 | — |
 | wheel 门禁 | `hyprial/_bin/`、`hyprial/_core/` 下不许多出文件 | 不变：hc 不进 wheel，锁文件是普通包数据 | 裁决 R19。 |
 | `scripts/ci/windows/` 下的测试清单 | Windows 一级测试清单、待入清单与拒收清单 | 新增的测试是否进一级清单逐个决定；进不了的按该清单现有规则登记，不为它们改规则 | 裁决 R20：现有 Windows 检查保持通过。 |
-| `contract/e2e/scenarios.json` 及场景文档 | E2E-008（`contract/e2e/scenarios.json:238`）等场景以 tmux 和「交互会话登记」描述步骤；`contract/e2e/08-cc-tui-worker.md`、`codex-interactive-attach-manual-review.md` 同 | 随驱动迁移改写：步骤改为经 daemon 启动、经 hc 观察 | 裁决 R3。 |
+| `contract/e2e/scenarios.json` 及场景文档 | E2E-008（`contract/e2e/scenarios.json:238`）等场景以 tmux 和「交互会话登记」描述步骤；`contract/e2e/08-cc-tui-worker.md`、`codex-interactive-attach-manual-review.md` 及 `21-orgfs-forwarding-redial.md`、`31-group-conversation.md` 同 | 随 4 个 tmux 驱动与 12 个非 tmux 脚本迁移同步改写：步骤改为经 daemon 启动、经 hc 观察或用受管桩成员 | 裁决 R3、R27。 |
 | 提到 `session.*` 的契约文档 | `contract/daemon-lifecycle/interactive-turn-refresh.md`、`contract/daemon-lifecycle/run-state.md`、`contract/wire/mcp-channel-stale.md`、`contract/identity/agent-addressing.md` | 按新的成员级方法改写；其中只描述已删除机制（租约、外部登记）的段落删除 | 契约文档与方法同步。 |
-| daemon 恢复摘要里的 `missing_interactive` | 列出重启后不在线的交互会话（`daemon/impl/runtime/bridge.py:459-464`） | 改为列出未能接管、已重拉或重拉失败的交互成员；字段改名 | 会话表不存在后原含义消失。 |
+| daemon 恢复摘要里的 `missing_interactive` | 列出重启后不在线的交互会话（`daemon/impl/runtime/bridge.py:459-464`） | 改为针对状态原为 `running` 的交互成员列出接管、因基础设施丢失重拉或因重拉失败停住的结果（已处于 `stopped` 的成员保持搁置）；字段改名 | 会话表不存在后原含义消失。 |
+| `docs/reference/known-problems.md` | `KP-130` 记录本机运维者按对端 pid 归类拦不住 agent 自己的 shell（`known-problems.md:120`、`:1428`） | 在原条目上把状态更新为已关闭（不删除原条目） | 裁决 R29：该归类整套删除。 |
 | `GLOSSARY.md` | 无相关词条 | 【提议 P24】实现时加：成员终端、私有 core、固定副本、carrier；改写 connector 一条 | 词汇表是公开用词的依据。 |
 | 迁移说明与 `CHANGELOG.md` | — | 【提议 P25】新增 `docs/guides/migration-interactive-sessions-retired.md`（沿用 `docs/guides/migration-*.md` 的命名），CHANGELOG 的 Removed / Changed 各记一笔 | 裁决 R17：不写迁移代码，只写说明。 |
 
@@ -541,7 +550,7 @@ terminal: {
 - **下载的信任锚。** 发布站没有签名，也没有版本索引；哈希只出现在它自己的清单里，可信程度等同于送达它的 HTTPS 通道。所以唯一的信任锚是仓库里锁文件的 sha256 与 size：改版本就是一次经过评审的提交。下载器不读发布站的清单，不跟随「最新版本」，校验不过就不解包、不执行。
   旧版本今天都还能下载，但发布方没有书面的保留承诺：某个被固定的版本一旦下架，新机器就无法首次启用交互，直到锁文件前移。
 - **私有 socket。** 在 hyprial home 下的私有目录里，只有同一操作系统用户能连。能连上的人可以直接操作终端和改标签；这与能写状态目录的人能做的事相当，不构成新的边界。用户自己的 hc 只要带上那两个私有变量也能驱动这个 core，文档里要说明不要这么做。
-- **调用者归类。** 见【冲突 C3】：删掉出生栅栏之后，「这个本机 IPC 对端是 agent 还是操作者」的一条判据没了，需要替代。
+- **本机 IPC 调用者边界（裁决 R29）。** 删除 `ipc/router.py` 里的 `_interactive_identity_binding_peer`、`_identity_binding_operator` 及 9 个模块里依赖它们的 agent / 操作者本机拒绝检查，关闭 `KP-130`：同一操作系统用户下的本机 CLI 连接本来就无法靠对端 pid 与 agent 自己拉起的 shell 划出硬边界，AI 行为约束由 harness 工具权限承担。保留两道真实边界：受管 worker 通道仍走 `worker.channel.request` 信封（绑定 `actor`、`sessionRef`、`daemonEpoch` 并限制在 15 个方法白名单内，`ipc/router.py:197-224`、`:407`、`:511`）；onboarding 与 GUI 仍按 `local-bootstrap` / `local-gui` 表面隔离。
 - **macOS 隐私授权。** 隐私提示的归属是 hc 的签名身份而不是 hyprial：提示框上写的是上游应用的名字，授权在用户自己安装的那份与 hyprial 这份之间共享。hyprial 无法拥有自己的隐私身份。
 
 ## 9. 平台
@@ -558,7 +567,7 @@ terminal: {
 
 | 层 | 内容 | 在哪跑 |
 | --- | --- | --- |
-| 单元测试 | 针对一个进程内的 hc socket 协议假实现：握手、终端的启动 / 结束 / 移除、事件流（含流中断与序号重置）、标签、状态变化、版本号。覆盖主管、connector、退出分类、接管、版本迁移的决策。下载器对本地假服务器测重试、size 与 sha256 不符、路径穿越。 | 合并门内 |
+| 单元测试 | 针对一个进程内的 hc socket 协议假实现：握手、终端的启动 / 结束 / 移除、事件流（含流中断与序号重置）、标签、状态变化、版本号。覆盖主管、connector、TUI 终止保留启动行与会话引用并标为 `stopped` / `restart_pending`、终端基础设施丢失重拉、接管、版本迁移的决策。下载器对本地假服务器测重试、size 与 sha256 不符、路径穿越。 | 合并门内 |
 | 场景测试 | 用真实的固定副本、真实的 claude / pi / codex，在一台 Linux 和一台 macOS 机器上跑第 10.3 节的清单。 | 门外，作为验收证据 |
 | 既有门禁 | 结构、导入棘轮、请求架构、可移植性、契约、自升级尾段。 | 合并门内，含 GitHub Windows runner |
 
@@ -582,33 +591,34 @@ issue #2 描述的是已删除的 tmux 闸门，但它的验收要求原样保�
 1. claude、pi、codex 以原生 Auth 交互启动并 attach。
 2. 脱离后重新 attach，屏幕和对话都在。
 3. daemon 停止再启动，接管终端，程序未被打断。
-4. 终端丢失后，带会话引用重拉。
-5. 退出码 0 不重拉；非 0 重拉。
+4. 运行中的成员遭遇终端基础设施丢失后，带会话引用重拉（裁决 R7）。
+5. TUI 终止后（正常退出、异常断开或信号结束）不自动重拉，保留启动行与 `session_ref`，成员标为 `stopped` / `restart_pending`；经用户显式手动恢复后接续原会话（裁决 R23）。
 6. 改固定版本后，core 换到新版本，程序仍活着。
 7. 卡在权限提示上的 TUI，在 daemon 里显示为成员的 blocked 事实。
 
 另外：
 
-- 旧路径已消失：第 6 节标「删」的各项、CLI 前台启动、tmux e2e 驱动。
+- 旧路径与测试后门已消失：第 6 节标「删」的各项（含本机 IPC 的 agent / 操作者归类，`KP-130` 已关闭）、CLI 前台启动、tmux e2e 驱动，且不保留任何仅供测试的 `session.register` / `session.heartbeat` 后门（裁决 R27、R29）。
 - 无头行为不变。
 - GitHub 检查全绿，含 Windows runner。Windows runner 通过只说明代码能在 GitHub 托管的 Windows 上构建和跑既有测试，不等于交互终端在 Windows 真机上可用。
 
 ## 11. 切片（提议）
 
-【提议 P27】整节都是提议。顺序按依赖排；每片在自己的 worktree 实现，自合并进 `intg/hc-terminal-backend`。
-「碰启动路径」的切片要等模型连接那串 PR 进 `dev` 之后再开工（裁决 R21，何谓「进了」见【冲突 C6】）；S1 到 S3 不碰，可以先做。
+【提议 P27】整节按依赖排顺序（其中 S8b 的设置与范围来自裁决 R27，启动收敛的等待条件来自裁决 R30）；每片在自己的 worktree 实现，自合并进 `intg/hc-terminal-backend`。
+不碰启动路径的 S1 到 S3 在本设计批准后即可开工；S4 启动收敛及后续碰启动路径的切片在 `#59` 已合入的前提下，只等模型连接前置 PR `#61`、`#81`、`#82`、`#83`、`#96` 进 `dev`，不等 `#84`–`#86`，也不等 provider / Magpie 线的替代 PR——两条线在启动输入边界会合（裁决 R21、R30）。
 
 | 片 | 成果（功能、架构或体验上的变化） | 依赖 | 碰启动路径 |
 | --- | --- | --- | --- |
 | S1 固定副本 | daemon 能按仓库锁文件把指定版本的 hc 取到本机并验明正身；换版本只需改一个文件。此时还没有任何用户可见变化。 | 无 | 否 |
 | S2 hc 客户端 | daemon 能不执行任何二进制、只经 kernel 入口与一个 hc core 对话并跟随它的事件；同时有了供门内测试用的协议假实现。 | 无 | 否 |
 | S3 私有 core 主管 | hyprial 拥有一个与用户 core 隔离、环境里没有密钥的私有 core：能启动、跨 daemon 重启接管、换到固定版本、在空了之后停掉；状态里看得到它的版本。 | S1、S2 | 否 |
-| S4 统一启动 | 启动成为一个 daemon 请求：CLI 里的预检、创建、回滚搬进 daemon；启动行和摘要认识模式；分发表建立。用户看到的无头启动行为不变，但 CLI 不再含业务逻辑。 | 模型连接合入 | 是 |
-| S5 Claude 交互 | 第一个可用的交互成员：`agent start` 在 hc 里拉起 Claude TUI 并立即 attach，`agent tui attach` 可重连；daemon 重启接管；终端丢失、程序退出、配置和策略漂移按规则处理。成员级 turn 接口与 carrier.hello 随本片引入。 | S3、S4 | 是 |
+| S4 统一启动 | 启动成为一个 daemon 请求：CLI 里的预检、创建、回滚搬进 daemon；启动行认识模式与 `stopped` 状态，摘要认识模式；分发表建立，固定与 provider / Magpie 线会合的启动输入边界。用户看到的无头启动行为不变，但 CLI 不再含业务逻辑。 | `#61`、`#81`、`#82`、`#83`、`#96` 合入（`#59` 已合入） | 是 |
+| S5 Claude 交互 | 第一个可用的交互成员：`agent start` 在 hc 里拉起 Claude TUI 并立即 attach，`agent tui attach` 可重连；daemon 重启接管；终端基础设施丢失重拉；TUI 终止保留启动行与 `session_ref`、标为 `stopped` / `restart_pending`、等显式手动恢复；配置和策略漂移按规则处理。成员级 turn 接口与 carrier.hello 随本片引入。 | S3、S4 | 是 |
 | S6 阻塞事实 | 没人 attach 的 TUI 卡在提示上时，成员状态和 cell 都能看到「阻塞、何种、自何时」。 | S5 | 否 |
 | S7 Pi 交互 | Pi 成员获得与 S5 相同的全部行为。 | S5 | 是 |
 | S8 Codex 交互 | Codex 成员获得同样的行为，并且第一次能跨 daemon 重启存活：app-server 住进 hc，carrier 住进 daemon。 | S5 | 是 |
-| S9 拆除旧子系统 | 旧的交互会话子系统消失：准入、origin 托管、路由改以成员为键；会话表、`SessionActor`、外部登记、心跳、栅栏、`tmuxSession`、CLI 前台路径、明文密钥环境全部删除；迁移说明与 CHANGELOG 写好。 | S5、S7、S8 | 是 |
+| S8b 测试与场景夹具迁移清理 | 清点调用 `session.register*` / `session.heartbeat` 的 12 个非 tmux `contract/e2e/` 脚本（含 2 份场景文档）与 `tests/` 下 93 个测试文件：删除冗余或无必要的测试；只把仍有产品覆盖价值的按所测对象迁往 daemon 启动的桩 harness、进程内假 hc socket 或 `agent.attach`；不保留任何测试专用登记后门（裁决 R27）。 | S5、S7、S8 | 否 |
+| S9 拆除旧子系统 | 旧的交互会话子系统消失：准入、origin 托管、路由改以成员为键；会话表、`SessionActor`、外部登记、心跳、栅栏、本机 IPC 的 agent / 操作者归类及依赖检查（关闭 `KP-130`）、`tmuxSession`、CLI 前台路径、明文密钥环境全部删除；迁移说明与 CHANGELOG 写好。 | S8b | 是 |
 | S10 驱动迁移与验收 | 4 个 tmux e2e 驱动改用 hc；两台真机上的场景测试跑完第 10.3 节清单并留下证据；最终 PR 可以提交。 | S9 | 否 |
 
 集成分支在 S5 到 S8 之间新旧两条路径并存，这是集成分支内部的中间态；进 `dev` 的只有最后一个 PR，届时只有一条路径（裁决 R1）。
@@ -619,7 +629,7 @@ issue #2 描述的是已删除的 tmux 闸门，但它的验收要求原样保�
 
 | 编号 | 假设 | 依赖它的地方 | 现状 |
 | --- | --- | --- | --- |
-| U1 | claude、codex、pi 在每一种正常退出方式下都返回 0，在崩溃或被杀时返回非 0 或死于信号。 | 裁决 R23，4.5 | 实验进行中，尚无结论。若某个 TUI 的正常退出返回非 0，它会在用户退出后被拉回来；反之崩溃会被当成用户退出。 |
+| U1 | （已证伪）claude、codex、pi 在每一种正常退出方式下都返回 0，在崩溃或被杀时返回非 0 或死于信号。 | 原 R23（已由 Q28 改定，现设计不再依赖） | 2026-11-27 实验证伪：`pi` 收到 `SIGTERM` / `SIGHUP` 在 Linux 与 macOS 上都以 `0` 退出；`codex` 执行 `/quit` 在两系统上都因退出时 `account/read` 超时以 `1` 退出，`app-server` 被停时远端 TUI 也以 `1` 退出；`claude` 在启动期目录信任提示选退出以 `1` 退出，收到 `SIGTERM` / `SIGHUP` 以 `143` / `129` 退出。裁决 R23 据此改为不做区分、保留启动行与 `session_ref`、标为 `stopped` / `restart_pending` 并要求用户显式手动恢复（4.5）。 |
 | U2 | Claude TUI 接受允许 / 禁止工具的启动参数，且「允许」意为不再询问、「禁止」确实禁用。 | 裁决 R15，4.6 | 凭记忆，没有对照当前文档或实测。 |
 | U3 | macOS 上用户已给上游应用的隐私授权，会沿用到 hyprial 路径下的那份副本。 | 第 8、9 节 | 静态证据支持（两份的签名要求与代码哈希逐字节相同，要求里不含路径），没有做会弹框的动态测试。 |
 | U4 | 以上所有行为在 Windows 上成立。 | 第 9 节 | 完全未测；hc 在 Windows 上用什么本机传输也没有确认。 |
@@ -634,30 +644,30 @@ issue #2 描述的是已删除的 tmux 闸门，但它的验收要求原样保�
 | U13 | hc 拒绝启动第二个同名的 live 终端，且拒绝是一个可识别的错误。 | 5.2，10.2 | 只有接口描述里的一句话，未实测。 |
 | U14 | 真实的 claude、pi、codex 停在权限、提问、登录提示上时会上报 `blocked` 及其种类。 | 裁决 R16，4.8，验收第 7 项 | 实验用的是人工发出的状态序列。claude 与 pi 在一个在用的 core 上见过 `working` / `done`；codex 的支持只来自其二进制里的字符串。 |
 | U15 | 终端里的程序结束时，已 attach 的客户端以什么方式、什么退出码返回。 | 4.2 | 未测。设计不依赖它：CLI 不看退出码。 |
-| U16 | `keep: false` 的终端被信号杀死时，hc 记录里 `exit_code`、`signal`、`reason` 的取值。 | 4.5 | 未测；实验里只见过自然退出的退出码和 `server_stop`。 |
+| U16 | `keep: false` 的终端被信号杀死时，hc 记录里 `exit_code`、`signal`、`reason` 的取值。 | 4.5（改定后不再按退出码或信号分支） | Linux（`hc 0.1.22`）已实测：未捕获信号记为 `exit_code: null`、`signal: N`、`reason: "exited"`；被程序捕获的信号记为普通退出码与 `reason: "exited"`；`hc kill` 记为 `reason: "killed"`；若外包 `/bin/sh -c` 则记的是 shell 的状态。macOS 的 hc 记录未单独重跑。 |
 | U17 | 固定版本低于运行中的 core（hyprial 回滚到旧版本）时，换版本同样可行。 | 4.7 | 降级重启在 Linux 上测过一次，终端保留；macOS 未测。旧版 core 读取新版保存的、含 live 终端的状态未测。 |
 
 ### 12.2 待负责人决定
 
-1. **切换一个运行中成员的模式用什么命令。** 裁决 R13 规定对运行中的成员 start 是错误，裁决 R14 要求模式切换被看成漂移，`--replace-interactive` 所依赖的栅栏被裁决 R17 删除。P22 提议先 stop 再带会话引用 start。是否需要一条不停顿的切换命令？
+1. **切换一个运行中成员的模式（以及手动恢复入口命名）。** 裁决 R13 规定对运行中的成员 start 是错误，裁决 R14 要求模式切换被看成漂移，`--replace-interactive` 所依赖的栅栏被裁决 R17 删除；P22 提议先 stop 再带会话引用 start，TUI 终止后的显式手动恢复（裁决 R23）也复用 `agent start` 读取保留的启动行与 `session_ref`。是否需要一条单独的切换或手动恢复子命令？
 2. **排空等待遇到 blocked。** P13 提议一直等。是否加时限、到时强行重启？
 3. **TUI 活着但通道子进程卡死。** 心跳删除后，这种情况不再有信号。是否需要一个比进程存活更窄的 carrier 存活信号，还是接受到用户发现为止？
 4. **Linux 上 hc 停止后的残留。** P26 提议主管清理自己的运行时目录。残留的已退出 systemd 单元是否也要清？
 5. **用户可见的「停掉所有终端」。** 今天停掉所有 agent 就会让最后一个终端消失、core 随之停止。是否还要一个单独的入口？
-6. 下面 12.3 的各项冲突。
+6. 下面 12.3 中尚未单独裁决的 C2、C4、C5、C7 处理方式。
 
 ### 12.3 裁决与现状的冲突
 
-本文没有替负责人取舍，下列各项按裁决原样写进了前面各节，并在此说明对不上的地方。
+初稿梳理出 7 处裁决与现有代码或已知事实对不上的地方。其中阻塞切片锁定的 **C1、C3、C6 已在补充访谈（Q27、Q29、Q30）中裁决**并写入正文；其余 4 处（C2、C4、C5、C7）按表中方式处理，批准时请一并确认。
 
 | 编号 | 裁决 | 对不上的地方 | 本文的处理 |
 | --- | --- | --- | --- |
-| C1 | R3、R17 | 裁决 R3 点名迁移 4 个 tmux 驱动。但 `contract/e2e/` 下另有 12 个脚本直接调用 `session.register` 或 `session.heartbeat`，把自己伪装成一个在线的交互 carrier（跨节点、群聊、升级连续性等场景）；`tests/` 下有 91 个测试文件出现这两个方法名，一部分是旧子系统自己的测试，随它删除，其余把它当夹具用。裁决 R17 删除外部登记后它们全部失效，而它们不在 R3 的范围里。 | 未纳入切片。【提议 P28】这些脚本改为经 daemon 启动一个无头的桩成员，不为测试保留登记方法；工作量单列一片，排在 S9 之前。需负责人确认范围。 |
+| C1 | R3、R17、R27 | 裁决 R3 点名迁移 4 个 tmux 驱动。但 `contract/e2e/` 下另有 12 个脚本与 2 份场景文档直接调用或描述 `session.register` / `session.heartbeat`，把自己伪装成一个在线的交互 carrier（跨节点、群聊、升级连续性等场景）；`tests/` 下有 93 个测试文件出现这两个方法名，一部分是旧子系统自己的测试，随它删除，其余把它当夹具用。裁决 R17 删除外部登记后它们全部失效，而它们不在 R3 的范围里。 | **已裁决（R27 / Q27）**：在 S9 之前单列切片 S8b，只把仍有产品覆盖价值的测试与脚本按所测对象迁往 daemon 启动的桩 harness、进程内假 hc socket 或 `agent.attach`，冗余或无必要的直接删除，不保留任何测试专用 `session.register` / `session.heartbeat` 后门。 |
 | C2 | R12、R20 | kernel 的本机 IPC 入口在 Windows 上走 hyprial 自己的命名管道后端，按 hyprial 的端点文件格式连接（`kernel/impl/manysys/ipc/windows.py:46-51`）。hc 在 Windows 上用什么传输没有确认。所以按 R12 写出的 hc 客户端在 Windows 上没有能用的传输；而 W020 不允许基线条目，不能绕过入口。 | POSIX 上按 R12 实现。Windows 上交互启动会在连接 core 时失败并给出原因，符合 R20「不保证可用、不预先拒绝」，但「新代码按跨平台写」在这一处做不到。要做到需先确认 hc 的 Windows 传输，再扩 kernel 入口。 |
-| C3 | R17 | 本机 IPC 调用者被归为 agent 还是操作者，其中一条判据是「对端 pid 与出生标记匹配某个登记过进程的交互会话」（`ipc/router.py:229-289`，今天实际只有 codex 的 app-server 能匹配）。R17 删除 pid 与出生栅栏和会话表，这条判据随之消失，带来的是权限判定的变化而不只是清理。 | 【提议 P29】改为与主管内存里成员终端的进程号比对（hc 的终端记录里有）。这比今天少一项：今天还比对出生标记以排除 pid 复用，hc 的记录里没有出生标记；可由 daemon 在拿到进程号时自己读一次出生标记补上。需负责人确认，因为这是身份绑定路径。 |
+| C3 | R17、R29 | 本机 IPC 调用者被归为 agent 还是操作者，其中一条判据是「对端 pid 与出生标记匹配某个登记过进程的交互会话」（`ipc/router.py:229-291`，今天实际只有 codex 的 app-server 能匹配）。R17 删除 pid 与出生栅栏和会话表，这条判据随之消失，带来的是权限判定的变化而不只是清理。 | **已裁决（R29 / Q29）**：全部删除本机 IPC 上的 agent / 操作者归类（`_interactive_identity_binding_peer`、`_identity_binding_operator`）及 9 个模块里依赖它的本地拒绝检查，关闭 `KP-130`；保留传输层的 `worker.channel.request` 信封白名单与 `local-bootstrap` / `local-gui` 表面边界（第 6、7.2、8 节）。 |
 | C4 | R15 | 策略到启动参数的映射今天只有 claude（`cells/reconcile/policy.py:41`）；别的 harness 成员声明了策略会被拒绝启动。能力声明里交互的 claude、pi、codex 都把权限设置标为不支持（`harnesses/capabilities.py:117`、`:168`、`:210`）。所以「策略同样作用于交互成员」今天只可能对 claude 成立，且依赖 U2。 | claude 交互成员按 R15 实现。pi、codex 的交互成员若声明了策略，与它们的无头成员一样被拒绝启动（与 R24 的「同规则」一致）。若负责人的意思是三个 harness 都要生效，那是新增映射，不在现有代码里。 |
 | C5 | R22 | 「旧版本目录在没有该版本的 holder 之后删除」需要知道每个 holder 的版本。hc 的状态接口对 holder 只给 pid、实例、是否与 core 同版本、终端数，没有版本号。 | P15：以「所有 holder 都与 core 同版本且 core 已是固定版本」为删除条件。比裁决的字面更保守：有多个旧版本并存时会晚删，不会错删。 |
-| C6 | R21 | 模型连接那串 PR 在基线提交时一个都没有合入。按 provider / Magpie 线当天的设计稿（PR #97），其中 #84、#85、#86 不会按原样合入，而是由该线另开的 PR 取代。「这串 PR 先进 `dev`」因此有两种读法：前六个合入即可，或者要等取代它们的新 PR。后者很可能同样改启动路径（该线要让启动不再下发密钥）。 | 按 R21 的后备方案安排：S1 到 S3 先做。S4 何时可以开工，取决于负责人对「这串 PR」范围的确认。 |
+| C6 | R21、R30 | 模型连接那串 PR 在基线提交时一个都没有合入。按 provider / Magpie 线当天的设计稿（PR #97），其中 #84、#85、#86 不会按原样合入，而是由该线另开的 PR 取代。「这串 PR 先进 `dev`」因此有两种读法：前六个合入即可，或者要等取代它们的新 PR。 | **已裁决（R30 / Q30）**：S1–S3 在设计批准后即可开工；S4 启动收敛及后续切片在 `#59` 已合入的前提下只等 `#61`、`#81`、`#82`、`#83`、`#96` 合入 `dev`，不等 `#84`–`#86` 或 provider / Magpie 替代 PR，两条线在启动输入边界会合（第 11 节）。 |
 | C7 | R9 | 今天 daemon 停止时对所有 harness 调停止（`application/shutdown.py:801-811`）；每个启动的进程都登记进孤儿进程托管，供之后的 daemon 回收（`harnesses/actor/io_port.py:149-154`）。交互成员若不从这两处豁免，有序停止会结束 TUI，或下一个 daemon 把它当孤儿收走。 | 不是做不到，而是 R9 能否成立取决于这两处改对；已写进 4.3，并作为 S5 的必测项。连同 U8 一起，是 R9 风险最集中的地方。 |
 
 ### 12.4 相关的未关闭 issue
@@ -666,4 +676,4 @@ issue #2 描述的是已删除的 tmux 闸门，但它的验收要求原样保�
 | --- | --- | --- |
 | #2 | tmux 会话名闸门认的是 tmux 的账本而不是进程，同名重启有窗口。 | 它指向的代码已删除。它的成对验收要求由本线承接（5.2、10.2）；本线完成后可关闭。 |
 | #23 | 交互 Codex 冷启动失败：交互路径组装启动输入的方式与无头不一致，校验器只认无头的那一种。修复方向是两种模式共用一个启动输入构造器。 | 部分属于。「共用启动输入构造」正是裁决 R6 的共用启动规格，由 S8 承接。其中自定义厂商的两种失败在第一版不可达（裁决 R11 只允许原生 Auth）。原生目录清单漏掉的锁文件、配置漂移、厂商字段不更新这几项属于 provider 与原生 home，不属于本线。提到 tmux 的那一条随旧代码消失。 |
-| #44 | 向交互会话推送消息的路径没有日志：看不到「通知已发给会话」「会话已确认」；另有一个错误事件缺少对象字段。 | 不属于。推送路径的事件归 cell / conversation 的投递线。本线只保证新增的成员运行事实（终端状态、阻塞、退出分类、重拉）在日志里带 `(agent_id, member)`，不再只有 actor。 |
+| #44 | 向交互会话推送消息的路径没有日志：看不到「通知已发给会话」「会话已确认」；另有一个错误事件缺少对象字段。 | 不属于。推送路径的事件归 cell / conversation 的投递线。本线只保证新增的成员运行事实（终端状态、阻塞、TUI 终止、重拉）在日志里带 `(agent_id, member)`，不再只有 actor。 |
