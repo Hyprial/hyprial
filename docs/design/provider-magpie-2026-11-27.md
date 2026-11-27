@@ -15,6 +15,7 @@
 2026-11-27：
 
 5. hyprial 后端不再承担 provider 的管理职能，直接依赖 Magpie。daemon 仍提供 provider login 的方法，CLI 和 GUI 仍提供入口，后端调用的是 Magpie 的能力。
+6. 各 harness 的原生订阅登录（OAuth 类）也经 Magpie。`hyprial provider login <harness>` 由 daemon 调用 Magpie 的登录流程，harness 一律指向网关。hyprial 不再按 agent 保存原生登录文件，`agent.provider.login`、`agent.provider.logout`、`agent.provider.default` 这组方法移除。
 
 本线据第 5 条理解为：hyprial 不保存模型 Key，无头启动与交互启动拿到的都只是网关地址和模型 ID。这一理解尚待负责人确认。
 
@@ -22,16 +23,18 @@
 
 ## 2. 尚未决定
 
-- 各 harness 的原生订阅登录是否也经 Magpie。
 - `hyprial provider login` 的命令形态；一条绑定怎样选定 Magpie 的分组和模型。
+- 是否以及怎样按 agent 限制可用的账号和模型。
 - 服务授权交付的 Key 落在哪里。
-- daemon 级 provider 登录设计（PR #68）的处置。
+- daemon 级 provider 登录设计（PR #68）以及 PR #85、#86 的处置。
 - Windows 的范围。
 
 ## 3. 与其他线的关系
 
-- 模型连接线（PR #61、#81、#82、#83、#96、#84、#85、#86，设计 #71）：本线等它全部合入后开工，并基于合入后的代码设计。不要求该线停下或改方向。
-- 服务授权线：同样等它合入。
+- 模型连接线的 PR #61、#81、#82、#83、#96：本线等它们合入后开工，并基于合入后的代码设计。不要求它们停下或改方向。
+- PR #84（原生登录的精确绑定）：它扩展的部分会被第 6 条移除，已请该 PR 等本线的实现，不先合入。
+- PR #85、#86：叠在 #84 之上，处置未定。
+- 服务授权线：本线等它合入。
 - 交互终端宿主线：不等待。两边只在启动参数处交汇。
 
 ## 4. 约束
