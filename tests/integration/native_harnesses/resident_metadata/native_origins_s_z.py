@@ -156,4 +156,9 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/user_agent/naming.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_agent/runtime.py": ("resident", ("new-module: UA1b per-machine user agent identity",)),
     "daemon/impl/user_key/login_key.py": ("resident", ("new-module: Z-5 daemon-driven first login; no credentials",)),
+    "daemon/impl/terminals/__init__.py": ("resident", ("new-module: hc terminal backend package",)),
+    "daemon/impl/terminals/acquisition/__init__.py": ("resident", ("new-module: pinned hc acquisition",)),
+    "daemon/impl/terminals/acquisition/download.py": ("resident", ("new-module: pinned hc acquisition",)),
+    "daemon/impl/terminals/acquisition/extract.py": ("resident", ("new-module: pinned hc acquisition",)),
+    "daemon/impl/terminals/acquisition/lock.py": ("resident", ("new-module: pinned hc acquisition",)),
 }
