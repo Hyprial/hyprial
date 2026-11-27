@@ -624,11 +624,16 @@ class _IpcDispatchMixin:
             changed("network.expose")
 
     def _remove_exposure(self, supervisor: Any, port: int) -> None:
-        """Take a port off the sidecar and out of the store; no derivation in flight.
+        """Take a port off the sidecar and out of the store, and keep it closed.
 
-        The owner that enforces admission runs this step under the enforcer's
-        lock and revokes the port's grants once it has succeeded. A host that
-        owns no admission enforcement runs the step as it is.
+        The owner that enforces admission wraps ``remove`` in the enforcer's
+        own step, which registers the port so that no derivation exposes it
+        again, waits for a push of the port already in flight, and revokes the
+        port's grants once the removal has succeeded. That wait is bounded;
+        at its bound the step raises ``ForwardingSidecarError`` before the
+        removal is asked for, nothing has changed, and the caller's error is
+        the one the exposure path already reports. A host that owns no
+        admission enforcement runs the step as it is.
         """
 
         def remove() -> None:

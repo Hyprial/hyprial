@@ -11,6 +11,15 @@ input, because in production it comes from the sidecar. It changes only
 through the fixture's reload probe, which stands in for the sidecar's own
 roster refresh. Every dependency of the enforcer is injected at construction,
 so a failing dependency is a different enforcer, never a mutated one.
+
+The derivation-lock and unexpose-wait cases (S4-py fix, 2026-11-27, critic
+finding 2) share one enforcer object between the slow derivation and the
+unexpose in every case, because what orders the two is that object's own
+state; a second enforcer has a second lock and would prove nothing. A
+derivation is held on one step through an injected reader or a wrapped
+supervisor call, so a wait is measured against that step and not against a
+scheduler. The unexpose goes through the wiring's own function over an
+application that carries only the enforcer.
 """
 
 from __future__ import annotations
@@ -612,16 +621,6 @@ def test_a_revoke_that_fails_during_unexpose_is_logged_and_does_not_raise(make_r
     assert (level, fields) == ("warn", {"port": PORT, "org": "*", "code": "OSError"})
     assert enforcer.last_set(PORT) == "keys"
 
-
-# -- the derivation lock and the unexpose wait (critic finding 2) --------------
-#
-# Decision (S4-py fix, 2026-11-27, critic finding 2): one enforcer object is
-# shared by the slow derivation and the unexpose in every case, because what
-# orders the two is that object's own state; a second enforcer has a second
-# lock and would prove nothing. A derivation is held on one step through an
-# injected reader or a wrapped supervisor call, so a wait is measured against
-# that step and not against a scheduler. The unexpose goes through the
-# wiring's own function over an application that carries only the enforcer.
 
 THIRD_PORT = PORT + 2
 WAIT_BOUND = 1.0

@@ -41,6 +41,20 @@
 #   wait is bounded by one sidecar push, and at the bound the unexpose fails
 #   and changes nothing, so the desired state, the sidecar and the grants
 #   still agree: the port is exposed under the set it already had.
+# - DEFAULT_UNEXPOSE_WAIT_SECONDS is one push with a margin. A push is the
+#   supervisor's endpoint lookup (at most 2 s) and then the sidecar's answer,
+#   which the controller gives up on after its response timeout (10 s), ahead
+#   of the authority's own wait (12 s): 12 s, and 3 s of margin for the
+#   claim that precedes them. It is stated once, here.
+# - That bound covers the enforcer's wait alone. The removal itself is a
+#   second wait that belongs to the forwarding layer: its authority runs one
+#   sidecar command at a time, so an unexpose is queued behind whatever is
+#   ahead of it there, a roster read (bounded by its budget, 5 s) or another
+#   port's push (by the response timeout, 10 s) among them. The enforcer
+#   cannot bound that one and does not try; it ends in the forwarding
+#   layer's timeouts and it does not fail. A push that never answers costs
+#   an unexpose its failure only when it is a push of the port being
+#   unexposed; the unexpose of any other port is only delayed by it.
 # - What was last pushed belongs to one sidecar incarnation. A relaunched
 #   sidecar replays every exposure with nobody admitted, so when the live
 #   backend is another object than the one the sets were pushed to, that
@@ -91,8 +105,6 @@ ROSTER_UNREADABLE = "service.grant.roster_unreadable"
 PUSH_REJECTED = "network.exposure.admission_rejected"
 DEFAULT_INTERVAL_SECONDS = 30.0
 DEFAULT_MEMBERSHIP_TIMEOUT = 5.0
-#: One push is bounded by the sidecar authority's wait (12 s) plus the
-#: supervisor's endpoint lookup (2 s); the unexpose waits that long and no longer.
 DEFAULT_UNEXPOSE_WAIT_SECONDS = 15.0
 
 
@@ -352,23 +364,39 @@ class ServiceAdmissionEnforcer:
     def begin_removal(self, port: int) -> bool:
         """Register ``port`` as being unexposed and wait for its push to end.
 
+        Returns ``True`` when the port is registered and no derivation holds
+        it, ``False`` at the bound, and raises ``ValueError`` when another
+        unexpose of the same port is already under way.
+
         The registration is what makes a later derivation leave the port out,
         and the generation it records is what makes an earlier one drop its
         push, also after the registration is gone. That record lives until a
         derivation later than it claims the port again: at most one integer
-        for every port this device has ever unexposed. The wait is bounded by
-        one sidecar push (``DEFAULT_UNEXPOSE_WAIT_SECONDS``): only a
-        derivation already pushing this very port holds the port, and that
-        push has that bound.
-        Returns ``False`` at the bound, with the registration withdrawn and
-        nothing changed, so the caller fails the unexpose and the port stays
-        as it is. Must be paired with :meth:`forget_port` or
-        :meth:`cancel_removal`.
+        for every port this device has ever unexposed, and it stays behind
+        when this method answers ``False``, where it keeps the port derivable
+        as the exposure it still is.
+
+        The wait is for one thing only: a push of this very port that a
+        derivation has already claimed. It is bounded by
+        ``DEFAULT_UNEXPOSE_WAIT_SECONDS``, which is one push with a margin.
+        At the bound the registration is withdrawn, nothing else has changed,
+        and the caller fails the unexpose: the exposure is still desired,
+        still on the sidecar under its current set, and its grants are still
+        in force, which is the only end state that never leaves a port open
+        with no record to close it. The caller may retry.
+
+        This is the first of the unexpose's two waits, and only this one is
+        the enforcer's. The second is the removal itself: the forwarding
+        authority runs one sidecar command at a time, so the unexpose command
+        is queued behind whatever is ahead of it there. That wait is bounded
+        by the forwarding layer's own timeouts, command by command, not here,
+        and it does not fail. Must be paired with :meth:`forget_port` or
+        :meth:`cancel_removal` once this answers ``True``.
         """
 
         with self._settled:
             if port in self._removing:
-                return False
+                raise ValueError(f"port {port} is already being unexposed")
             self._generation += 1
             self._retired[port] = self._generation
             self._removing.add(port)

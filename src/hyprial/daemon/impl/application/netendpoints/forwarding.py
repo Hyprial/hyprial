@@ -151,11 +151,19 @@ class _ForwardingOpsMixin:
             trigger_failed(self, method, reason)
 
     def _service_port_unexposing(self, port: int, remove: Any) -> Any:
-        """Take a port off the sidecar with no admission derivation in flight.
+        """Take a port off the sidecar without a derivation exposing it again.
 
         ``remove`` is the caller's step (sidecar unexpose, exposure store) and
         its result or exception is passed through. Once it has succeeded this
         device's grants for the port are revoked; that part never raises.
+
+        A derivation may run meanwhile; the enforcer's registration of the
+        port is what keeps its push from reopening it, not a lock over the
+        whole derivation. Only a push of this very port already in flight is
+        waited for, with a bound, and at that bound this raises the error the
+        exposure path reports before ``remove`` is asked for. The bounds and
+        what each of them leaves unchanged are written with
+        ``unexpose_port``.
         """
 
         from hyprial.daemon.impl.service_grants.enforcement.wiring import unexpose_port

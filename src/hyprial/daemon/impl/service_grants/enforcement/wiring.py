@@ -25,10 +25,14 @@
 #   what keeps a derivation that listed the exposure a moment earlier from
 #   exposing the port again: the derivation sees the registration and drops
 #   its push. Only a push of that same port already in flight is waited for,
-#   with a bound, so the removal is the port's last command on the wire. The
-#   revocation is best effort: the enforcer reports a failure as one log event
-#   and never raises into the caller, which is already past the point where
-#   the port should stay open.
+#   with a bound (S4-py fix, 2026-11-27, critic finding 2), so the removal is
+#   the port's last command on the wire; at the bound the unexpose fails
+#   before the removal is asked for, and nothing has changed. The removal is
+#   a second wait, behind whatever command the forwarding authority is
+#   running; that one is the forwarding layer's. The revocation is best
+#   effort: the enforcer reports a failure as one log event and never raises
+#   into the caller, which is already past the point where the port should
+#   stay open.
 # - A trigger reports whether the tick it offered reached the cadence. It never
 #   raises, because the change that triggered it is already durable, but it
 #   returns what happened and the caller logs it: a grant whose re-derivation
@@ -86,7 +90,6 @@ def _inputs(app: Any) -> EnforcementInputs:
     )
 
 
-#: A trigger that could not offer its tick; the event's ``reason`` is one of these.
 TRIGGER_RAISED = "failed"
 TRIGGER_UNSCHEDULED = "unscheduled"
 
@@ -188,25 +191,45 @@ def unexpose_port(app: Any, port: int, remove: Callable[[], Any]) -> Any:
     unchanged. Only after it succeeded is the port forgotten, which revokes
     this device's grants for it and never raises.
 
+    There are two waits, and this function owns the first.
+
     A derivation may be pushing this very port. The port is registered as
     being removed first, which makes any derivation that listed it earlier
-    drop its push, and the one push in flight is waited for, so that the
-    removal is the port's last command on the wire. That wait is bounded by
-    one sidecar push (``DEFAULT_UNEXPOSE_WAIT_SECONDS``). At the bound the
-    unexpose fails with the error the exposure path already reports and
-    nothing has changed: the exposure is still desired, still on the sidecar,
-    and its grants are still effective. The caller may retry.
+    drop its push, and a push of it already in flight is waited for, so that
+    the removal is the port's last command on the wire. That wait is bounded
+    by one sidecar push (``DEFAULT_UNEXPOSE_WAIT_SECONDS``, 15 s). At the
+    bound the unexpose fails with the error the exposure path already
+    reports and nothing has changed: the exposure is still desired, still
+    on the sidecar, and its grants are still effective, because the removal
+    has not been asked for yet. The caller may retry.
+
+    The second wait is inside ``remove``: the forwarding authority runs one
+    sidecar command at a time, so the removal is queued behind whatever is
+    ahead of it on that queue, a roster read or another port's push among
+    them. Only the forwarding layer's own timeouts bound it (a roster read
+    by its budget, 5 s, a push by the response timeout, 10 s), and they
+    bound each command ahead, not the queue. The enforcer cannot shorten
+    that wait, and it does not fail the unexpose. So the bound written here
+    is the bound of the first wait alone, and the first wait is the only
+    one that can end in "nothing changed".
 
     When ``remove`` itself fails the registration is withdrawn and the sets
     are marked stale, so the port is derived again as the exposure it still
-    is. A daemon without a forwarding supervisor has no enforcer and no
-    derivation, so ``remove`` runs as it is.
+    is; its grants are not touched. A second unexpose of a port whose first
+    is still under way fails at once with the same error code and changes
+    nothing: the first one's outcome is the one to read. A daemon without a
+    forwarding supervisor has no enforcer and no derivation, so ``remove``
+    runs as it is.
     """
 
     enforcer = getattr(app, "_service_admission_enforcer", None)
     if enforcer is None:
         return remove()
-    if not enforcer.begin_removal(port):
+    try:
+        free = enforcer.begin_removal(port)
+    except ValueError as error:
+        raise ForwardingSidecarError(str(error)) from error
+    if not free:
         raise ForwardingSidecarError(
             f"port {port} is being pushed to the sidecar; unexpose it again"
         )
