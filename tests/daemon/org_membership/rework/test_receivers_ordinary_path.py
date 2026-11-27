@@ -26,5 +26,3 @@ def test_the_path_has_no_protected_section() -> None:
 def test_the_identity_vocabulary_has_no_receivers_record() -> None:
     assert getattr(OrgMembership, "Receivers", None) is None
     assert getattr(OrgMembership, "receivers_path", None) is None
-
-

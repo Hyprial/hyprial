@@ -53,5 +53,3 @@ def test_directory_budget_has_one_configuration_owner(monkeypatch, tmp_path):
         assert runtime._directory_mailbox_capacity() == 4
     finally:
         runtime.close()
-
-

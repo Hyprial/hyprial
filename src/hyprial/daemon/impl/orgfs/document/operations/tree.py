@@ -120,5 +120,3 @@ class FacadeTreeHistory:
         return tuple(
             self._node_info(space, node.node_id) for node in removed[: max(0, limit)]
         )
-
-

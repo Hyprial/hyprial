@@ -109,5 +109,3 @@ def test_path_negatives_reject_empty_segments_unknown_ids_and_cross_space_move()
         fs.move(left.space_id, f"id:{source.node_id}", f"id:{foreign.node_id}")
     assert cross_space.value.code == "unknown-doc"
     assert fs.stat(left.space_id, f"id:{source.node_id}").path == "source.txt"
-
-

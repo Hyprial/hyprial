@@ -230,5 +230,3 @@ def test_space_authority_lock_hold_stays_below_250ms_during_list_write_mix() -> 
         assert max(probe.holds) < 0.250, max(probe.holds)
     finally:
         assert facade.close_effects()
-
-

@@ -383,4 +383,3 @@ class FacadeProjection:
         if doc_id and self._content_doc(space, doc_id, None) is None:
             self._new_content_doc(space, node_id, doc_id)
         return node
-

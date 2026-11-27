@@ -95,5 +95,3 @@ def test_creator_and_editor_read_after_third_writer(state_peers: StatePeers) -> 
     only = next(iter(texts.values()))
     assert only.startswith("from B 1")
     assert "line-C" in only and "line-D" in only
-
-
