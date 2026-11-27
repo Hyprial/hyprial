@@ -382,10 +382,10 @@ def test_the_fingerprint_watches_the_tree_the_store_writes_grants_into(world: di
     tick re-reads the org instead of keeping its answer.
     """
 
-    import hyprial.daemon.impl.org.network.directory as directory_module
+    import hyprial.daemon.impl.org.network.grant_docs as grant_docs_module
     import hyprial.daemon.impl.service_grants.consumer.maintenance as consumer_module
 
-    assert consumer_module.GRANTS_DIR == directory_module._SERVICE_GRANTS_DIR
+    assert consumer_module.GRANTS_DIR == grant_docs_module.SERVICE_GRANTS_DIR
     alice(world).grant(org=ORG, port=PORT, device="@members", name="magpie")
     source = consumer(world)
     source.refresh()
