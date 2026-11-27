@@ -288,7 +288,9 @@ def _listed_documents(fs: OrgFs, org: str, owner: str | None) -> list[tuple[str,
 
     name = org_space_name(org)
     matches = [space for space in fs.spaces() if space.name == name]
-    if len(matches) != 1:
+    if len(matches) > 1:
+        raise OrgFsError("ambiguous-space", {"org": org, "space": name, "count": len(matches)})
+    if not matches:
         raise OrgFsError("unknown-space", {"org": org, "space": name})
     try:
         nodes = fs.listdir(matches[0].space_id, SERVICE_GRANTS_DIR, recursive=True)

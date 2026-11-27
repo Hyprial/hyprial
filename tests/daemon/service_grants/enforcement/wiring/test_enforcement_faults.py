@@ -420,7 +420,8 @@ def test_the_grants_listing_alone_does_not_tell_an_unreadable_directory_from_no_
             f"{LISTING_REFUSED} {listing_message}",
         )
     else:
-        assert daemon.app.handle("service.grants", {}) == {"granted": [], "received": []}
+        listed = daemon.app.handle("service.grants", {})
+        assert (listed["granted"], listed["received"], listed["documentCount"]) == ([], [], {})
     with pytest.raises(DaemonRequestError) as refused:
         daemon.app.handle("service.grants", {"org": ORG})
     assert (refused.value.code, str(refused.value)) == (
