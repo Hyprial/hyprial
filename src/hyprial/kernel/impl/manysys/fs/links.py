@@ -19,12 +19,13 @@ from __future__ import annotations
 import errno
 import importlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import sys
 from types import ModuleType
 
 from .private_access import path_is_reparse
+from ..process.ports import file_modes_are_significant
 
 
 def _is_windows() -> bool:
@@ -64,3 +65,26 @@ def unlink_directory_link(path: Path | str) -> None:
         os.rmdir(path)
         return
     os.unlink(path)
+
+
+def create_relative_file_symlink(target_relpath: str, link_path: Path | str) -> None:
+    """Create a relative symlink whose lexical target stays under its parent."""
+    if (
+        not target_relpath
+        or target_relpath.startswith(("/", "\\"))
+        or PureWindowsPath(target_relpath).drive
+    ):
+        raise ValueError("symlink target must be relative")
+    if PurePosixPath(target_relpath).anchor or PurePosixPath(target_relpath).parts[0:1] == ("..",):
+        raise ValueError("symlink target must stay within the extraction root")
+    normalized = os.path.normpath(target_relpath.replace("\\", "/"))
+    if normalized == ".." or normalized.startswith("../"):
+        raise ValueError("symlink target must stay within the extraction root")
+    destination = Path(link_path)
+    os.symlink(target_relpath, os.fspath(destination), target_is_directory=False)
+
+
+def mark_executable(path: Path) -> None:
+    """Set the portable executable mode where checkout modes are meaningful."""
+    if file_modes_are_significant():
+        path.chmod(0o755)

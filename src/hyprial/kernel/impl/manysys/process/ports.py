@@ -10,6 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 import os
 from pathlib import Path, PureWindowsPath
+import platform
+import shutil
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -128,3 +131,100 @@ def windows_process_identity(pid: int) -> str:
     from hyprial.kernel.impl.manysys.process.windows_process import process_identity
 
     return process_identity(pid)
+
+
+def host_hc_release_target(
+    system: str | None = None,
+    machine: str | None = None,
+) -> str | None:
+    """Map an operating system and machine name to a pinned hc target."""
+    system_name = (sys.platform if system is None else system).lower()
+    machine_name = (platform.machine() if machine is None else machine).lower()
+    if system_name in {"darwin", "macos", "mac"}:
+        prefix = "macos"
+    elif system_name.startswith("linux"):
+        prefix = "linux"
+    elif system_name in {"win32", "windows", "nt"}:
+        prefix = "windows"
+    else:
+        return None
+    if machine_name in {"arm64", "aarch64"}:
+        architecture = "aarch64"
+    elif machine_name in {"x86_64", "amd64", "x64"}:
+        architecture = "x86_64"
+    else:
+        return None
+    if prefix == "windows" and architecture != "x86_64":
+        return None
+    return f"{prefix}-{architecture}"
+
+
+def unregister_macos_app_bundle(app_path: Path) -> bool:
+    """Unregister an application bundle before removing its files."""
+    if sys.platform != "darwin":
+        return True
+    executable = (
+        "/System/Library/Frameworks/CoreServices.framework/Versions/A/"
+        "Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+    )
+    try:
+        completed = subprocess.run(
+            [executable, "-u", os.fspath(app_path)],
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def posix_runtime_dir_environment(source: Mapping[str, str]) -> dict[str, str]:
+    """Return the Linux runtime directory setting required by a private hc core."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    runtime_dir = source.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return {"XDG_RUNTIME_DIR": runtime_dir}
+    bus_dir = posix_runtime_bus_dir()
+    if bus_dir is not None and bus_dir.is_dir():
+        return {"XDG_RUNTIME_DIR": str(bus_dir)}
+    return {}
+
+
+def cleanup_private_hc_runtime_dirs(
+    hc_session: str,
+    runtime_dir: Path | None = None,
+) -> tuple[Path, ...]:
+    """Remove this session's direct hc runtime directories and report failures."""
+    if not sys.platform.startswith("linux"):
+        return ()
+    root = runtime_dir
+    if root is None:
+        source = os.environ.get("XDG_RUNTIME_DIR")
+        root = Path(source) if source else posix_runtime_bus_dir()
+    if root is None or not root.is_dir():
+        return ()
+    failures: list[Path] = []
+    try:
+        candidates = tuple(root.iterdir())
+    except OSError:
+        return ()
+    for candidate in candidates:
+        if not candidate.is_dir() or not (
+            candidate.name.startswith("hc-serve-") or candidate.name.startswith("hc-hold-")
+        ):
+            continue
+        try:
+            environment = (candidate / "env").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not any(
+            line == f"HC_SESSION={hc_session}"
+            for line in (part.strip() for part in environment.splitlines())
+        ):
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except OSError:
+            failures.append(candidate)
+    return tuple(failures)

@@ -13,8 +13,9 @@ every read, so a stale or edited marker never becomes a launch pin.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from hyprial.kernel.impl.manysys.interface import managed_launcher_names
@@ -155,6 +156,52 @@ def activated_managed_harness_command(
     return None
 
 
+def _resolve_home(home: Path | None) -> Path:
+    candidate = Path.home() / ".hyprial" if home is None else Path(home)
+    return candidate.resolve()
+
+
+def _validate_hc_version(version: str) -> str:
+    if (
+        not isinstance(version, str)
+        or not version
+        or version in {".", ".."}
+        or "/" in version
+        or "\\" in version
+        or "\x00" in version
+        or ":" in version
+        or PureWindowsPath(version).drive
+        or Path(version).name != version
+    ):
+        raise ValueError("hc version must be one safe path segment")
+    return version
+
+
+def hc_state_root(home: Path | None = None) -> Path:
+    return _resolve_home(home) / "state" / "hc"
+
+
+def hc_bin_root(home: Path | None = None) -> Path:
+    return hc_state_root(home) / "bin"
+
+
+def hc_version_root(version: str, home: Path | None = None) -> Path:
+    return hc_bin_root(home) / _validate_hc_version(version)
+
+
+def hc_core_root(home: Path | None = None) -> Path:
+    return hc_state_root(home) / "core"
+
+
+def hc_core_socket_path(home: Path | None = None) -> Path:
+    return hc_core_root(home) / "hc.sock"
+
+
+def hc_session_name(home: Path | None = None) -> str:
+    digest = hashlib.sha256(str(_resolve_home(home)).encode("utf-8")).hexdigest()[:12]
+    return f"hyprial-{digest}"
+
+
 def _read_object(path: Path) -> dict[str, Any] | None:
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
@@ -177,6 +224,12 @@ __all__ = [
     "MANAGED_HARNESS_VERSION",
     "activated_managed_harness_command",
     "find_managed_harness_binary",
+    "hc_bin_root",
+    "hc_core_root",
+    "hc_core_socket_path",
+    "hc_session_name",
+    "hc_state_root",
+    "hc_version_root",
     "managed_harness_activation_path",
     "managed_harness_binary",
     "managed_harness_root",
