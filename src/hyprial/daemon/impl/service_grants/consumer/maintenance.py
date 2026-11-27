@@ -45,6 +45,13 @@
 #   entry is withdrawn like any grant that yields nothing. A changed set
 #   re-derives at once, so the seam's own read already sees the result. The
 #   device list keeps every candidate: the seam alone decides what conflicts.
+# - S5 fix (2026-11-27, critic 3): an org's grants are loaded with bounds
+#   (MAX_ORG_GRANT_DOCUMENTS documents, SCAN_READ_BYTES_LIMIT listed bytes,
+#   PERIODIC_BUDGET_SECONDS per org). A limited load is "unknown": the previous
+#   answer stays (minus grants that have expired since, which needs no read),
+#   or nothing is derived and nothing withdrawn when there is none. One
+#   service.grant.scan-limited event (org, phase "periodic", reason) says so,
+#   and the same fingerprint is not scanned again until it changes.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
 
 from __future__ import annotations
@@ -63,6 +70,11 @@ from hyprial.daemon.impl.service_connect.derived import DerivedEntry, alternativ
 from hyprial.daemon.impl.service_connect.models import ProtectedDevice
 from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
 from hyprial.daemon.impl.service_grants.queries import (
+    MAX_ORG_GRANT_DOCUMENTS,
+    SCAN_READ_BYTES_LIMIT,
+    SERVICE_GRANTS_DIR,
+    GrantScanLimited,
+    ScanLimits,
     can_open_grant_credential,
     load_org_service_grants,
 )
@@ -87,9 +99,12 @@ from .keys import (
     withdraw_entry,
 )
 
+from .startup import SCAN_LIMITED_EVENT
+
 RECEIVED_EVENT = "service.grant.received"
 REJECTED_EVENT = "service.grant.rejected"
-GRANTS_DIR = "directory/service-grants"
+GRANTS_DIR = SERVICE_GRANTS_DIR
+PERIODIC_BUDGET_SECONDS = 2.0
 _COMPONENT = "service"
 _UNKNOWN = object()
 
@@ -126,6 +141,18 @@ class _OrgAnswer:
     def expired(self, now_ms: int) -> bool:
         return self.expires_at_ms is not None and self.expires_at_ms <= now_ms
 
+    def unexpired(self, now_ms: int) -> _OrgAnswer:
+        """The same answer without the grants that have expired since it was read."""
+
+        if not self.expired(now_ms):
+            return self
+        wanted = tuple(
+            pair for pair in self.wanted
+            if pair[0].stored.grant.expires_at_ms is None or pair[0].stored.grant.expires_at_ms > now_ms
+        )
+        expiries = [pair[0].stored.grant.expires_at_ms for pair in wanted if pair[0].stored.grant.expires_at_ms is not None]
+        return _OrgAnswer(self.fingerprint, wanted, self.rejected, min(expiries) if expiries else None)
+
 
 @dataclass(slots=True)
 class _KeyPass:
@@ -148,6 +175,7 @@ class GrantConsumer:
         now_ms: Callable[[], int] | None = None,
         logger: Callable[..., None] | None = None,
         open_credential: Callable[..., bytes] | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._fs = orgfs
         self._store = None if orgfs is None else OrgFsDirectoryStore(orgfs)
@@ -156,6 +184,7 @@ class GrantConsumer:
         self._owner = _bare_owner(owner)
         self._device_id = device_id
         self._now = now_ms or (lambda: time.time_ns() // 1_000_000)
+        self._monotonic = monotonic or time.monotonic
         self._logger = logger
         self._open_credential = open_credential
         self._ledger = Ledger(self._home / LEDGER_RELPATH)
@@ -165,6 +194,7 @@ class GrantConsumer:
         self._reported: set[tuple[str, str, str, str]] = set()
         self._unresolved: tuple[str, ...] = ()
         self._contested: frozenset[str] = frozenset()
+        self._limited: dict[str, object] = {}
 
     @property
     def active(self) -> bool:
@@ -227,17 +257,33 @@ class GrantConsumer:
             return previous if previous is not None else _OrgAnswer()
         if previous is not None and previous.fingerprint == fingerprint and not previous.expired(self._now()):
             return previous
+        kept = previous.unexpired(self._now()) if previous is not None else _OrgAnswer()
+        if self._limited.get(org) == fingerprint:
+            return kept
         try:
-            return self._load(org, fingerprint)
+            answer = self._load(org, fingerprint)
+        except GrantScanLimited as limited:
+            self._limited[org] = fingerprint
+            self._emit("warn", SCAN_LIMITED_EVENT, org=org, phase="periodic", reason=limited.reason)
+            return kept
         except Exception:
             return previous if previous is not None else _OrgAnswer()
+        self._limited.pop(org, None)
+        return answer
 
     def _load(self, org: str, fingerprint: object) -> _OrgAnswer:
         now = self._now()
         if self._store.org_state(org) == "deleted":
             return _OrgAnswer(fingerprint)
+        limits = ScanLimits(
+            self._fs,
+            deadline=self._monotonic() + PERIODIC_BUDGET_SECONDS,
+            max_documents=MAX_ORG_GRANT_DOCUMENTS,
+            max_bytes=SCAN_READ_BYTES_LIMIT,
+            clock=self._monotonic,
+        )
         wanted, rejected = derive_org(
-            load_org_service_grants(self._store, org),
+            load_org_service_grants(self._store, org, limits=limits),
             self._store.list_devices(org),
             owner=self._owner,
             device_id=self._device_id,

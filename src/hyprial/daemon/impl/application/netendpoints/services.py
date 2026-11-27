@@ -170,6 +170,7 @@ class _ServiceConnectOpsMixin:
             home=self.hyprial_home,
             owner=self.owner,
             device_id=device_id_of(self.hyprial_home),
+            logger=self._log,
         )
 
     def _grant_source(self) -> GrantConsumer:

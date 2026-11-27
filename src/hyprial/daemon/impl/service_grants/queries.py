@@ -9,13 +9,27 @@
 #   validate for any reason, RecursionError included, is skipped alone. A revoked
 #   tombstone may have null service or recipient; it is never effective, so the
 #   effective-only helpers never see those nulls.
+# - S5 fix (2026-11-27, critic 3): the loader takes optional ScanLimits. Without
+#   them nothing changes (S4-py's call and every existing caller). With them one
+#   recursive listing of the org's grants tree gives the document count and the
+#   sizes before anything is read; more than max_documents documents, or more
+#   than max_bytes of listed size in total, raises GrantScanLimited before the
+#   first read. Documents are then read one at a time through the store's own
+#   verified reader, and the deadline is checked before the listing, after it
+#   and before every read. One OrgFS call is not interrupted: the deadline
+#   bounds the scan, not a single call. "Limited" is never "no grant": callers
+#   decide what an unknown answer means.
 """Pure service-grant query and OrgFS loading helpers shared with S4-py and S5."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
+from hyprial.identity import org_space_name
 
 from .models import (
     ALL_MEMBERS,
@@ -24,6 +38,37 @@ from .models import (
     StoredServiceGrant,
     normalize_bare_owner,
 )
+
+
+MAX_ORG_GRANT_DOCUMENTS = 1024
+SCAN_READ_BYTES_LIMIT = 2 * 1024 * 1024
+SERVICE_GRANTS_DIR = "directory/service-grants"
+SCAN_DOCUMENTS = "documents"
+SCAN_BYTES = "bytes"
+SCAN_DEADLINE = "deadline"
+
+
+class GrantScanLimited(Exception):
+    """A bounded load stopped; ``reason`` is ``documents``, ``bytes`` or ``deadline``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class ScanLimits:
+    """The bounds of one org's grant load; ``deadline`` is a reading of ``clock``."""
+
+    orgfs: OrgFs
+    deadline: float | None = None
+    max_documents: int = MAX_ORG_GRANT_DOCUMENTS
+    max_bytes: int = SCAN_READ_BYTES_LIMIT
+    clock: Callable[[], float] = field(default=time.monotonic)
+
+    def check_time(self) -> None:
+        if self.deadline is not None and self.clock() > self.deadline:
+            raise GrantScanLimited(SCAN_DEADLINE)
 
 
 def is_grant_effective(grant: ServiceGrant, *, now_ms: int) -> bool:
@@ -150,18 +195,23 @@ def load_org_service_grants(
     org: str,
     *,
     owner: str | None = None,
+    limits: ScanLimits | None = None,
 ) -> tuple[StoredServiceGrant, ...]:
     """Load and validate all verified service grants from OrgFS for ``org``.
 
     Invalid documents or documents whose ``grantId`` disagrees with the filename
     are skipped rather than aborting observation of valid grants; any parse or
     validation failure, ``RecursionError`` included, skips only that document.
+    With ``limits`` the load is bounded and raises :class:`GrantScanLimited`
+    instead of exceeding them; without, it behaves exactly as before.
     """
 
+    if limits is None:
+        records = store.list_service_grants(org, owner=owner)
+    else:
+        records = _bounded_records(store, org, owner, limits)
     loaded: list[StoredServiceGrant] = []
-    for bare_owner, filename_grant_id, record in store.list_service_grants(
-        org, owner=owner
-    ):
+    for bare_owner, filename_grant_id, record in records:
         try:
             grant = ServiceGrant.from_record(record)
             if grant.grant_id != filename_grant_id:
@@ -174,7 +224,66 @@ def load_org_service_grants(
     return tuple(loaded)
 
 
+def _bounded_records(
+    store: OrgFsDirectoryStore, org: str, owner: str | None, limits: ScanLimits
+) -> list[tuple[str, str, dict]]:
+    limits.check_time()
+    targets = _listed_documents(limits.orgfs, org, None if owner is None else normalize_bare_owner(owner))
+    limits.check_time()
+    if len(targets) > limits.max_documents:
+        raise GrantScanLimited(SCAN_DOCUMENTS)
+    if sum(size for _owner, _grant_id, size in targets) > limits.max_bytes:
+        raise GrantScanLimited(SCAN_BYTES)
+    records: list[tuple[str, str, dict]] = []
+    for bare, grant_id, _size in targets:
+        limits.check_time()
+        try:
+            record = store.read_service_grant(org, bare, grant_id)
+        except ValueError:
+            continue
+        if record is not None:
+            records.append((bare, grant_id, record))
+    return records
+
+
+def _listed_documents(fs: OrgFs, org: str, owner: str | None) -> list[tuple[str, str, int]]:
+    """``(owner, grant id, listed size)`` of every grant document, from one listing."""
+
+    name = org_space_name(org)
+    matches = [space for space in fs.spaces() if space.name == name]
+    if len(matches) != 1:
+        raise OrgFsError("unknown-space", {"org": org, "space": name})
+    try:
+        nodes = fs.listdir(matches[0].space_id, SERVICE_GRANTS_DIR, recursive=True)
+    except OrgFsError as error:
+        if error.code == "unknown-doc":
+            return []
+        raise
+    prefix = SERVICE_GRANTS_DIR + "/"
+    targets: list[tuple[str, str, int]] = []
+    for node in nodes:
+        parts = node.path.lstrip("/").removeprefix(prefix).split("/")
+        if node.kind != "doc" or node.deleted or len(parts) != 2 or not parts[1].endswith(".json"):
+            continue
+        try:
+            if normalize_bare_owner(parts[0]) != parts[0]:
+                continue
+        except ValueError:
+            continue
+        if owner is None or parts[0] == owner:
+            targets.append((parts[0], parts[1].removesuffix(".json"), node.size or 0))
+    return sorted(targets)
+
+
 __all__ = [
+    "MAX_ORG_GRANT_DOCUMENTS",
+    "SCAN_BYTES",
+    "SCAN_DEADLINE",
+    "SCAN_DOCUMENTS",
+    "SCAN_READ_BYTES_LIMIT",
+    "SERVICE_GRANTS_DIR",
+    "GrantScanLimited",
+    "ScanLimits",
     "can_open_grant_credential",
     "effective_grants_for_recipient",
     "effective_grants_for_service",
