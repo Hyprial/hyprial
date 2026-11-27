@@ -8,10 +8,19 @@
 #   derived entry. A derived entry that collides with an occupied service name
 #   takes its alternative name; one that still collides is not merged at all,
 #   and the source is told so it can report the grant.
-# - A hand-placed protected device beats a derived device with the same device
-#   id. Two derived devices that disagree about one device id would be a
+# - Two derived devices that disagree about one device id would be a
 #   conflict with no fair winner: the source never contributes both (it
 #   rejects every grant that depends on such a device instead).
+# - S5 fix (2026-11-27, critic 2): a hand-placed protected device and a
+#   derived device with the same device id are one device only when they
+#   agree about server public key, address and generation; then the
+#   hand-placed one is used, as before. When they disagree, neither silently
+#   wins: the derived device is dropped, the hand-placed record keeps serving
+#   its own entries, and the source is told the contested ids so it rejects
+#   every grant that depends on them. The seam tells the source on every read
+#   of the access snapshot (an empty answer included, also with no record),
+#   so a conflict that is resolved lets the grants back in. The source's own
+#   device list stays the full candidate list: the seam is the only judge.
 # - A derived entry only stands in for a home whose protected record is
 #   missing. A record that exists but cannot be read or validated keeps
 #   failing closed, exactly as before. With no record and a source, the
@@ -81,6 +90,9 @@ class DerivedSource(Protocol):
     def unresolved(self, names: tuple[str, ...]) -> None:
         """Derived entries that could not be merged because both names are taken."""
 
+    def contested(self, device_ids: tuple[str, ...]) -> None:
+        """Device ids on which a hand-placed record disagrees with this source, now."""
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class DerivedEntry:
@@ -142,16 +154,31 @@ def merge_entries(
     ), frozenset(merged)
 
 
-def with_derived_devices(access: AccessSnapshot, source: DerivedSource) -> AccessSnapshot:
-    """Hand-placed devices plus derived ones; the hand-placed one wins per device id."""
+def _shape(device: ProtectedDevice) -> tuple[object, ...]:
+    return (device.server_public, device.address, device.generation)
 
-    derived = source.devices()
-    if not derived:
-        return access
+
+def with_derived_devices(access: AccessSnapshot, source: DerivedSource) -> AccessSnapshot:
+    """Hand-placed devices plus the derived ones that agree with them.
+
+    A derived device whose id a hand-placed record already names is used
+    only through that record, and only when both agree; a disagreeing one is
+    dropped and the source is told its id.
+    """
+
     devices = {device.device_id: device for device in access.devices}
-    for device in derived:
-        devices.setdefault(device.device_id, device)
-    return AccessSnapshot(access.catalog_trust, tuple(devices.values()))
+    contested: set[str] = set()
+    added: dict[str, ProtectedDevice] = {}
+    for device in source.devices():
+        placed = devices.get(device.device_id)
+        if placed is None:
+            added.setdefault(device.device_id, device)
+        elif _shape(placed) != _shape(device):
+            contested.add(device.device_id)
+    source.contested(tuple(sorted(contested)))
+    if not added:
+        return access
+    return AccessSnapshot(access.catalog_trust, (*access.devices, *added.values()))
 
 
 def record_absent(path: Path) -> bool:
@@ -179,6 +206,7 @@ def derived_access(source: DerivedSource | None, path: Path) -> AccessSnapshot |
 
     if source is None or not record_absent(path):
         return None
+    source.contested(())
     return AccessSnapshot(None, source.devices())
 
 

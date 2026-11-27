@@ -38,6 +38,13 @@
 # - Only the directory store's and the OrgFS facade's public surface is used.
 #   GRANTS_DIR is the one path this package has to spell itself; a guard test
 #   pins it to the store's own constant.
+# - S5 fix (2026-11-27, critic 2): service-connect's seam tells the consumer
+#   which device ids a hand-placed record disagrees about (contested). Every
+#   grant on such a device is left out of the snapshot and rejected with
+#   device-conflict, exactly like two disagreeing derived devices; its Key
+#   entry is withdrawn like any grant that yields nothing. A changed set
+#   re-derives at once, so the seam's own read already sees the result. The
+#   device list keeps every candidate: the seam alone decides what conflicts.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
 
 from __future__ import annotations
@@ -62,6 +69,7 @@ from hyprial.daemon.impl.service_grants.queries import (
 from hyprial.identity import DIRECTORY_DIR, ORG_META_DOC, org_space_name
 
 from .derive import (
+    DEVICE_CONFLICT,
     KEY_GRANTED,
     KEY_NONE,
     KEY_UNAVAILABLE_STATE,
@@ -156,6 +164,7 @@ class GrantConsumer:
         self._answers: dict[str, _OrgAnswer] = {}
         self._reported: set[tuple[str, str, str, str]] = set()
         self._unresolved: tuple[str, ...] = ()
+        self._contested: frozenset[str] = frozenset()
 
     @property
     def active(self) -> bool:
@@ -185,8 +194,11 @@ class GrantConsumer:
             }
             self._answers = answers
             items, devices, contested = assemble(answer.wanted for answer in answers.values())
+            held = [grant for grant in items if grant.device_id in self._contested]
+            items = tuple(grant for grant in items if grant.device_id not in self._contested)
             rejected = [
                 *contested,
+                *(Rejection(grant.org, grant.grant_id, grant.grantor, DEVICE_CONFLICT) for grant in held),
                 *(item for answer in answers.values() for item in answer.rejected),
                 *(
                     Rejection(grant.org, grant.grant_id, grant.grantor, NAME_CONFLICT)
@@ -333,6 +345,13 @@ class GrantConsumer:
     def unresolved(self, names: tuple[str, ...]) -> None:
         with self._lock:
             self._unresolved = self._unresolved + tuple(names)
+
+    def contested(self, device_ids: tuple[str, ...]) -> None:
+        with self._lock:
+            if frozenset(device_ids) == self._contested:
+                return
+            self._contested = frozenset(device_ids)
+            self.refresh()
 
 
 def _order(rejection: Rejection) -> tuple[str, str, str, str]:

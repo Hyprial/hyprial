@@ -121,10 +121,10 @@ def test_only_the_grants_of_the_contested_device_are_rejected(world: dict[str, A
     contested = grantor(world, world["clock"]).grant(org=ORG, port=PORT, device="@members", name="magpie")
     with as_author(world["runtime"], "carol"):
         world["store"].put_service_grant(
-            ORG, "carol", "sg.ccccccccccccccccccccccccccc",
+            ORG, "carol", "sg.cccccccccccccccccccccccccc",
             {
                 "schemaVersion": 1,
-                "grantId": "sg.ccccccccccccccccccccccccccc",
+                "grantId": "sg.cccccccccccccccccccccccccc",
                 "service": {"deviceId": "device-c", "port": PORT, "name": "relay", "protocol": "tcp", "note": None},
                 "recipient": "@members",
                 "grantedAtMs": 1,
@@ -192,13 +192,19 @@ def test_a_conflict_that_appears_later_disconnects_the_derived_mapping(world: di
 
 
 def test_a_conflict_that_is_resolved_lets_the_grant_back_in(world: dict[str, Any]) -> None:
+    """The operator removes the disagreeing record; the grant is back on the next read.
+
+    Rewriting the record at the same generation is not a way out: service-connect
+    already refuses a record whose device changes without a new generation.
+    """
+
     grantor(world, world["clock"]).grant(org=ORG, port=PORT, device="@members", name="magpie")
     source, service = start(world, [_device(address="tcHandPlacedAddressForTests")])
     source.refresh()
     service.reconcile()
     assert source.entries() == ()
 
-    write_access(world["access"], devices=[_device()])
+    world["access"].unlink()
     source.refresh()
     service.reconcile()
 
