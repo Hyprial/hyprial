@@ -36,6 +36,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
 from hyprial.daemon.impl.service_connect import ServiceManager
 from hyprial.daemon.impl.service_grants.consumer import (
     GrantConsumer,
@@ -260,6 +261,7 @@ class _ServiceConnectOpsMixin:
             owner=self.owner,
             device_id=device_id_of(self.hyprial_home),
             logger=self._log,
+            invalid_devices=invalid_device_diagnostics(self),
         )
 
     def _grant_source(self) -> GrantConsumer:
@@ -272,6 +274,7 @@ class _ServiceConnectOpsMixin:
             owner=self.owner,
             device_id=device_id_of(self.hyprial_home),
             logger=self._log,
+            invalid_devices=invalid_device_diagnostics(self),
         )
 
     def _handle_service_connect(

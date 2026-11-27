@@ -70,7 +70,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine, OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.daemon.impl.service_connect.derived import DerivedEntry, alternative_name
@@ -184,9 +184,10 @@ class GrantConsumer:
         logger: Callable[..., None] | None = None,
         open_credential: Callable[..., bytes] | None = None,
         monotonic: Callable[[], float] | None = None,
+        invalid_devices: InvalidDeviceQuarantine | None = None,
     ) -> None:
         self._fs = orgfs
-        self._store = None if orgfs is None else OrgFsDirectoryStore(orgfs)
+        self._store = None if orgfs is None else OrgFsDirectoryStore(orgfs, invalid_devices=invalid_devices)
         self._home = Path(home).absolute()
         self._state_dir = Path(state_dir).absolute()
         self._owner = _bare_owner(owner)

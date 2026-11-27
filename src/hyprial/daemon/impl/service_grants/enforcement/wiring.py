@@ -55,7 +55,9 @@ from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.identity import read_device_record
 from hyprial.kernel import AdmissionResult
 
-from ..ipc import build_service, quarantine_for
+from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
+
+from ..ipc import build_service
 from .enforcer import ServiceAdmissionEnforcer
 from .models import EnforcementInputs
 
@@ -84,7 +86,7 @@ def _inputs(app: Any) -> EnforcementInputs:
     home = app.hyprial_home
     record = read_device_record(home)
     return EnforcementInputs(
-        store=OrgFsDirectoryStore(fs, invalid_devices=quarantine_for(app)),
+        store=OrgFsDirectoryStore(fs, invalid_devices=invalid_device_diagnostics(app)),
         fs=fs,
         home=home,
         owner=app.owner,

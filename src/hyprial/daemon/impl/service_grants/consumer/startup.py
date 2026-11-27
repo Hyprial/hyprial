@@ -32,7 +32,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine, OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.orgfs.api import OrgFs
 from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
@@ -60,6 +60,7 @@ def has_effective_grant(
     now_ms: Callable[[], int] | None = None,
     monotonic: Callable[[], float] | None = None,
     logger: Callable[..., None] | None = None,
+    invalid_devices: InvalidDeviceQuarantine | None = None,
 ) -> bool:
     """Whether any org this device belongs to holds an effective grant addressed to it.
 
@@ -79,7 +80,7 @@ def has_effective_grant(
     clock = monotonic or time.monotonic
     deadline = clock() + STARTUP_BUDGET_SECONDS
     try:
-        store = OrgFsDirectoryStore(orgfs)
+        store = OrgFsDirectoryStore(orgfs, invalid_devices=invalid_devices)
         left = set(read_left_orgs(Path(home)))
         now = (now_ms or (lambda: time.time_ns() // 1_000_000))()
         limits = ScanLimits(

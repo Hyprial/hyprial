@@ -19,9 +19,11 @@
 #   failed, so that it never looks the same as a delivered one. Both reports
 #   are the same event, written by one function: the reason, and the class of
 #   what was raised when something raised, never its message. The service
-#   builder and the quarantine accessor are public because the admission
-#   wiring builds the same service and reads the same directory diagnostics;
+#   builder is public because the admission wiring builds the same service;
 #   there is one implementation.
+# - Integration fix (2026-11-27): every service-grant directory store reads
+#   device rows through the application's one invalid-device quarantine,
+#   org.network.ipc.invalid_device_diagnostics; there is no second accessor.
 """Daemon IPC wiring for ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
 from __future__ import annotations
@@ -30,24 +32,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from hyprial.daemon.impl.org.network.directory import (
-    InvalidDeviceQuarantine,
-    OrgFsDirectoryStore,
-)
+from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
 from hyprial.identity import read_device_record
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
 from .service import ServiceGrantService
-
-
-def quarantine_for(app: Any) -> InvalidDeviceQuarantine:
-    """The application's device quarantine, created on first use."""
-
-    quarantine = getattr(app, "_org_directory_quarantine", None)
-    if quarantine is None:
-        quarantine = InvalidDeviceQuarantine()
-        app._org_directory_quarantine = quarantine
-    return quarantine
 
 
 def _local_device_id(home: Path) -> str:
@@ -101,7 +91,7 @@ def build_service(app: Any) -> ServiceGrantService:
     )
     store = OrgFsDirectoryStore(
         fs,
-        invalid_devices=quarantine_for(app),
+        invalid_devices=invalid_device_diagnostics(app),
         logger=logger,
     )
     return ServiceGrantService(
@@ -192,4 +182,4 @@ def _dispatch(app: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any
     )
 
 
-__all__ = ["build_service", "handle_service_grants", "quarantine_for"]
+__all__ = ["build_service", "handle_service_grants"]

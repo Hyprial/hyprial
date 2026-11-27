@@ -156,7 +156,7 @@ def test_the_recipient_side_shares_the_applications_device_quarantine(
     app, _controller = _application(tmp_path)
     runtime = app._require_orgfs_runtime()
     quarantine = invalid_device_diagnostics(app)
-    assert grant_ipc.quarantine_for(app) is quarantine
+    assert not hasattr(grant_ipc, "quarantine_for")
     assert app._grant_source()._store._invalid_device_quiet is quarantine.entries
 
     built: list[object] = []
