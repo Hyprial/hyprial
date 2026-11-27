@@ -23,6 +23,10 @@
 #   "auth" says whether a Key was granted and, if so, under which user-provider
 #   entry it is stored and with which command it is bound to an agent. It
 #   carries no label of its own because service-connect prints its own.
+# - Integration fix (2026-11-27): a device row's owner is compared with the
+#   grantor only after normalize_bare_owner, the one owner normalization of
+#   service grants, so "user:alice" and "alice" are one owner. A row whose
+#   owner cannot be normalized matches no grant.
 """Turn verified grants and device rows into service-connect entries and devices."""
 
 from __future__ import annotations
@@ -37,7 +41,11 @@ from hyprial.daemon.impl.service_connect.models import (
     ProtectedDevice,
     ServiceConnectError,
 )
-from hyprial.daemon.impl.service_grants.models import ServiceEndpoint, StoredServiceGrant
+from hyprial.daemon.impl.service_grants.models import (
+    ServiceEndpoint,
+    StoredServiceGrant,
+    bare_owner_or_none,
+)
 from hyprial.daemon.impl.service_grants.queries import effective_grants_for_recipient
 
 DEVICE_UNKNOWN = "service-device-unknown"
@@ -187,7 +195,11 @@ def derive_org(
 ) -> tuple[tuple[tuple[DerivedGrant, ProtectedDevice], ...], tuple[Rejection, ...]]:
     """Derive the entries and devices one org offers this device, and what it rejects."""
 
-    rows_by_owner = {(row.owner, row.device_id): row for row in rows}
+    rows_by_owner = {
+        (owner_of, row.device_id): row
+        for row in rows
+        if (owner_of := bare_owner_or_none(row.owner)) is not None
+    }
     wanted: list[tuple[DerivedGrant, ProtectedDevice]] = []
     rejected: list[Rejection] = []
     for stored in effective_grants_for_recipient(
@@ -237,6 +249,7 @@ def _merged(base: ProtectedDevice, ports: set[int]) -> ProtectedDevice:
     return ProtectedDevice(
         base.device_id, base.server_public, base.address, base.generation, tuple(sorted(ports)), True
     )
+
 
 
 __all__ = [

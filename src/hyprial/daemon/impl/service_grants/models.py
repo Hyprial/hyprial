@@ -157,6 +157,15 @@ def normalize_bare_owner(owner: str) -> str:
     return _safe_segment(bare, "owner")
 
 
+def bare_owner_or_none(owner: object) -> str | None:
+    """``normalize_bare_owner`` for a value read from elsewhere: ``None`` when it is unusable."""
+
+    try:
+        return normalize_bare_owner(owner)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return None
+
+
 def require_bare_owner(owner: object, label: str = "owner") -> str:
     """Validate an already-bare owner string (rejecting ``user:`` prefixes)."""
 
@@ -433,6 +442,7 @@ def grant_view(stored: StoredServiceGrant, *, now_ms: int, effective: bool) -> d
 
 
 __all__ = [
+    "bare_owner_or_none",
     "ALL_MEMBERS",
     "GRANT_ID_PATTERN",
     "GRANT_PROTOCOLS",

@@ -35,7 +35,7 @@ from pathlib import Path
 from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine, OrgFsDirectoryStore
 from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.orgfs.api import OrgFs
-from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
+from hyprial.daemon.impl.service_grants.models import bare_owner_or_none
 from hyprial.daemon.impl.service_grants.queries import (
     GRANTOR_READ_BYTES_LIMIT,
     MAX_GRANTOR_GRANT_DOCUMENTS,
@@ -71,11 +71,8 @@ def has_effective_grant(
     over a limit does not hide another grantor's grant.
     """
 
-    try:
-        owner = normalize_bare_owner(owner)  # type: ignore[arg-type]
-    except (ValueError, TypeError):
-        return False
-    if orgfs is None or not device_id:
+    owner = bare_owner_or_none(owner)
+    if owner is None or orgfs is None or not device_id:
         return False
     clock = monotonic or time.monotonic
     deadline = clock() + STARTUP_BUDGET_SECONDS

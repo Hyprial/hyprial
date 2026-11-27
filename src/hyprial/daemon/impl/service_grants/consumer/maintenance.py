@@ -75,7 +75,7 @@ from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.daemon.impl.service_connect.derived import DerivedEntry, alternative_name
 from hyprial.daemon.impl.service_connect.models import ProtectedDevice
-from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
+from hyprial.daemon.impl.service_grants.models import bare_owner_or_none
 from hyprial.daemon.impl.service_grants.queries import (
     GRANTOR_READ_BYTES_LIMIT,
     MAX_GRANTOR_GRANT_DOCUMENTS,
@@ -190,7 +190,7 @@ class GrantConsumer:
         self._store = None if orgfs is None else OrgFsDirectoryStore(orgfs, invalid_devices=invalid_devices)
         self._home = Path(home).absolute()
         self._state_dir = Path(state_dir).absolute()
-        self._owner = _bare_owner(owner)
+        self._owner = bare_owner_or_none(owner)
         self._device_id = device_id
         self._now = now_ms or (lambda: time.time_ns() // 1_000_000)
         self._monotonic = monotonic or time.monotonic
@@ -441,15 +441,6 @@ def _earliest(wanted: Collection[tuple[DerivedGrant, ProtectedDevice]]) -> int |
         grant.stored.grant.expires_at_ms for grant, _device in wanted if grant.stored.grant.expires_at_ms is not None
     ]
     return min(expiries) if expiries else None
-
-
-def _bare_owner(owner: object) -> str | None:
-    """The owner as the directory spells it (``user:x`` and ``x`` are one owner)."""
-
-    try:
-        return normalize_bare_owner(owner)  # type: ignore[arg-type]
-    except (ValueError, TypeError):
-        return None
 
 
 def _fingerprint(fs: OrgFs, org: str) -> tuple[object, ...]:

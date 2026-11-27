@@ -22,12 +22,18 @@
 #   @members grant names nobody in particular. NOT_ORG_MEMBER and
 #   DEVICES_UNAVAILABLE belong to a sub-org, whose inherited roster is cut
 #   down to the devices of its own directory.
+# - A roster row's owner is compared with a recipient only after
+#   normalize_bare_owner (through bare_owner_or_none), so "user:bob" and
+#   "bob" are one owner; a row whose owner cannot be normalized matches no
+#   recipient.
 """Reading admission keys out of one membership observation."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Mapping
+
+from hyprial.daemon.impl.service_grants.models import bare_owner_or_none
 
 ROSTER_UNAVAILABLE = "roster-unavailable"
 MEMBER_NOT_IN_ROSTER = "member-not-in-roster"
@@ -120,7 +126,7 @@ def admission_keys(
                 candidate
                 for candidate in rows
                 if candidate.get("state") == "active"
-                and candidate.get("owner") == owner
+                and bare_owner_or_none(candidate.get("owner")) == owner
                 and candidate.get("deviceId") == device_id
             ),
             None,
