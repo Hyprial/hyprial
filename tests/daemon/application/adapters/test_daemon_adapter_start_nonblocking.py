@@ -13,6 +13,14 @@ These tests pin the fix at two levels:
     running-but-unconfirmed worker as ``online`` (the liveness-is-not-readiness
     trap); and
   * a live daemon keeps serving other IPC while an adapter start is in flight.
+
+The editable ``hyprial`` executable is located by install scheme. ``sysconfig``'s
+``venv`` scheme names the scripts directory of a virtual environment for the
+running platform (``Scripts`` on Windows, ``bin`` elsewhere), so the test holds
+no platform branch of its own. The base is the repository's ``.venv``, passed in
+explicitly rather than derived from the running interpreter's ``sys.prefix``.
+The file name comes from ``hyprial.kernel.executable_filename``, which is where
+the ``.exe`` suffix of Windows is decided.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from tests.support.runtime._tmp import hyprial_test_tmp_root
 import json
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -35,10 +44,14 @@ from hyprial.kernel import (
     ChannelConfiguration,
     LarkGatewayConfig,
     PersistentConfigStore,
+    executable_filename,
 )
 
 ROOT = Path(__file__).resolve().parents[4]
-HYPRIAL = ROOT / ".venv" / "bin" / "hyprial"
+VENV = ROOT / ".venv"
+HYPRIAL = Path(
+    sysconfig.get_path("scripts", "venv", vars={"base": str(VENV), "platbase": str(VENV)})
+) / executable_filename("hyprial")
 NEVER_READY_WORKER = ROOT / "tests" / "fixtures" / "lark" / "never_ready_lark_worker.py"
 
 
