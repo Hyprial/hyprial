@@ -78,7 +78,7 @@ Granted by alice in group-acme (grant sg.nubos7mltmaedzhx4eohns3aan).
 - 不带 `--full` 只显示最后一行。`--json` 返回的对象里，`entry` 是条目的九个字段。
 - `source` 显示的是 `discovery`，与手工放置的条目一样：**列表和指南不标识“这份条目来自授权”**，要知道来源看最后一行，或看 2.1。
 
-**重名**：如果本机已经有一个同名服务（手工放置的，或内置的），推导出来的条目改名为 `<服务名>-<授权人>`，例如手工放置的 `magpie` 和 Alice 授权的 `magpie` 并存时，后者叫 `magpie-alice`（**实测**：`tests/daemon/service_grants/consumer/test_connect.py`）。两个名字都被占用时，这份授权不生成条目，并发 `service.grant.rejected`，原因 `name-conflict`。
+**重名**：如果本机已经有一个同名服务（手工放置的，或内置的），推导出来的条目改名为 `<服务名>-<授权人>`，例如手工放置的 `magpie` 和 Alice 授权的 `magpie` 并存时，后者叫 `magpie-alice`（**实测**：`tests/daemon/service_grants/consumer/test_connect.py`）。服务名已经很长、放不下 `-<授权人>` 时，先截短服务名再接上（后缀最多 16 个字符）；授权人名字里没有可用字符（例如全是中文或符号）时，后缀改用授权人名字的 8 位十六进制摘要。改出来的名字总与原名不同，且同一授权人每次得到同一个名字（**实测**：`tests/daemon/service_grants/consumer_fixes/test_connect_fixes.py`）。两个名字都被占用时，这份授权不生成条目，并发 `service.grant.rejected`，原因 `name-conflict`。
 
 ### 2.3 `service list` 在连接之后才有内容
 
@@ -180,7 +180,9 @@ hyprial agent provider grant-key --actor <agent-a> --actor <agent-b> \
 
 - 你把条目里的 `KEY` 改成了自己的值：本切片停止管理它，撤销时不删（发出 `service.grant.rejected`，原因 `entry-modified`）。
 - 删除会删掉**整个条目**，包括你为它配置的模型连接元数据。
-- 你自己放的同名条目（`grant.<id>`）：从一开始就不会被覆盖，也不会被删除。
+- 你自己放的同名条目（`grant.<id>`）：从一开始就不会被覆盖，也不会被删除。即使它恰好出现在 daemon 检查之后、写入之前，写入也只在条目不存在时创建，已存在就放弃并发 `entry-exists`（**实测**：`tests/daemon/service_grants/consumer_fixes/test_keys_fixes.py`）。
+
+授权人在同一份授权里**换了密文**（例如换了 Key）：台账记着上次开封的密文摘要（只是摘要，不是明文），摘要一变，下一个维护周期重新开封，并把条目里的 `KEY` 换成新值，再发一条 `service.grant.received`；配置过的模型连接元数据保留。条目里的 `KEY` 已被你改过时照旧不动（`entry-modified`）。新密文开不了时保留原条目和原 Key，发 `credential-unopenable` 或 `key-unavailable`，之后每个周期再试（**实测**，同一个测试文件）。
 
 daemon 重启不会重复写入，也不会多出第二条。
 
@@ -200,11 +202,11 @@ hyprial log --component service --json
 | `service-device-invalid` | 设备行读到了，但设备或端口没通过 service-connect 的校验 | 授权人的设备行有问题，由授权人处理 |
 | `entry-invalid` | 授权里的备注没通过 catalog 的校验，例如带了密钥样式的文本（**实测**：备注里出现 `nodekey:`）。服务名、协议和端口在授权时就已被校验，不会走到这里 | 让授权人改授权文档的备注 |
 | `unnamed` | 授权没有服务名，无法成为可连接的条目 | 让授权人补上 `--name` |
-| `device-conflict` | 不同的设备行对同一个 `deviceId` 给出了不同的公钥、地址或代数（可以是两个授权人的，也可以是两个 org 的） | 两台机器不能共用一个 `deviceId`，由其中一方改名 |
+| `device-conflict` | 对同一个 `deviceId` 给出了不同的公钥、地址或代数：可以是两个授权人的设备行、两个 org 的设备行，也可以是你手工放置的 `service-access.json` 里的一行与授权人的设备行。后一种情况下手工记录照常为它自己的条目服务，依赖这台设备的授权全部不生成条目、不保留 Key；两边改成一致后下一次读取即恢复（**实测**：`test_connect_fixes.py`） | 两台机器不能共用一个 `deviceId`，由其中一方改名，或改正手工记录 |
 | `name-conflict` | 服务名和 `<服务名>-<授权人>` 都已被占用 | 改掉其中一个占位的服务，或让授权人改服务名 |
 | `credential-unopenable` | 这份密文不是封给“本机 + 这份授权”的（被抄到别处，或授权人与设备对不上） | 不要使用；让授权人重新授权 |
 | `key-unavailable` | 本机没有加密密钥、未登录，或密钥库正被占用 | 登录并让设备发布加密公钥后，下一个周期会自动补上 |
-| `entry-exists` | `grant.<id>` 这个名字下已经有一条不是本切片写的条目 | 换掉或挪走那条条目 |
+| `entry-exists` | `grant.<id>` 这个名字下已经有一条不是本切片写的条目（包括在检查与写入之间才出现的） | 换掉或挪走那条条目 |
 | `entry-modified` | 本切片写的 Key 已被改成别的值 | 无需处理；这条条目不再受管 |
 
 带 `@members` 的授权永远没有 Key：`@members` 文档里出现 `credential` 时，整份文档被 S3 的读取接口当作无效文档丢弃，既不连接也不开封，也没有事件。
@@ -226,4 +228,6 @@ Key 成功存好时发一条 `service.grant.received`（info 级别），同样�
 
 - “读不到目录”不等于“没有授权”：某个 org 暂时读不出来时，保留上一次的结果，不收回任何 Key。
 - 授权被撤销到本机收回之间有一个维护周期（默认 5 秒）的延迟；对方服务端自己的访问控制才是即时的边界。
-- 启动时那次“有没有授权”的检查有 0.2 秒的预算，超时按“没有”处理，不拖慢 daemon 启动；worker 会在第一次 service 请求时补启动。
+- 启动时那次“有没有授权”的检查有 0.2 秒的预算，超时按“没有”处理，不拖慢 daemon 启动；worker 会在第一次 service 请求时补启动。预算一直传到列举和逐份读取授权文档，不只在 org 之间检查。
+- 每个 org 一次最多处理 1024 份授权文档、按列举出的大小合计最多读 2 MiB；周期性维护每个 org 另有 2 秒预算。超过任一上限都按“未知”处理：启动检查回答“不启动”，周期性维护保留上一次的结果（只去掉其间已经到期的授权），没有上一次结果时什么都不推导、什么都不收回。每次发一条 `service.grant.scan-limited`（warn 级别，组件 `service`，只含 org、`phase`（`startup` 或 `periodic`）和 `reason`（`documents`、`bytes` 或 `deadline`））；目录不变时同一个 org 不再重扫、也不重复发事件（**实测**：`test_bounded_scan.py`）。
+- 超限期间该 org 里的撤销看不到：保留上一次结果意味着已撤销的授权在本机继续生效，直到该 org 回到上限以内。

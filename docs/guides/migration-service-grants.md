@@ -60,4 +60,4 @@
 ## 5. 回退与范围说明
 
 - 若在已有授权文档写入之后把某台设备回退到 S3 之前的版本，该旧版副本会拒绝同步 `service-grants` 文档以及非 owner 成员的 `directory/service-grants/<owner>` 树更新（见第 3 节，读代码推断），直到该设备重新升级。
-- 本切片（S3）只落地授权文档存储、`service.grant|revoke|grants` 与只读查询；暴露方按授权集合放行（S4）以及接收方自动生成服务映射与落盘凭据（S5）由后续切片启用。
+- 本切片（S3）只落地授权文档存储、`service.grant|revoke|grants` 与只读查询；暴露方按授权集合放行（S4）由后续切片启用；接收方自动生成服务映射与落盘凭据已由 S5 启用，接收方看到什么、还要手工做什么见 [服务授权：接收方指南](service-grants-recipient.md)。

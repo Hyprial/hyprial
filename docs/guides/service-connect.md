@@ -29,10 +29,14 @@ put it in a public OrgFS document, or copy its address or server key into a bug
 report. Missing, unreadable, invalid, disabled, or stale records fail closed;
 there is no last-good private-record fallback.
 
-An unconfigured daemon stays inactive: with neither this record nor persisted
-service intents it starts no service-connect worker or polling cadence. Installing
-the record later requires `hyprial daemon restart` or any `hyprial org service ...`
-call to activate the manager; the daemon does not poll the absent file.
+An unconfigured daemon stays inactive: with neither this record, persisted
+service intents, nor an effective service grant addressed to this device, it
+starts no service-connect worker or polling cadence. A grant-only recipient is
+started without the record; see
+[Service grants: what the recipient gets](service-grants-recipient.md).
+Installing the record later, or receiving a first grant after startup, requires
+`hyprial daemon restart` or any `hyprial org service ...` call to activate the
+manager; the daemon does not poll the absent file.
 
 The source-only host package is generic TCP, not a sub2api-specific image:
 
