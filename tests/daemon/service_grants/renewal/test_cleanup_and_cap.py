@@ -121,7 +121,8 @@ def test_a_new_grant_id_is_refused_at_the_cap(world: World) -> None:
 
     assert refused.value.code == "SERVICE_UNAVAILABLE"
     assert str(CAP) in str(refused.value)
-    assert "撤销不用的授权，7 天后自动清理" in str(refused.value)
+    assert "revoke grants you no longer use; they are deleted 7 days later" in str(refused.value)
+    assert str(refused.value).isascii()
     assert len(ids(world)) == CAP
     renewed = world.grants().grant(org=ORG, port=PORT, device=BOB_NODE.slug, name="magpie")
     assert renewed["updated"] is True
