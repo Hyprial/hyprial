@@ -9,11 +9,38 @@
 #   in hyprial.kernel.ipc_errors.
 # - S3 fix (2026-11-26, critic S1, S2, S3, N3, N4): a grant is refused unless
 #   this device has a row under the caller in that org's directory; identifiers
-#   are validated before any secret is read. At most one effective grant exists
-#   per (local device, port, recipient): a new grant revokes the earlier ones
-#   first and reports them in "superseded". Revocation never depends on parsing
-#   the old document: an unreadable own document is replaced by a revoked
-#   tombstone that keeps whatever fields still validate.
+#   are validated before any secret is read. Revocation never depends on
+#   parsing the old document: an unreadable own document is replaced by a
+#   revoked tombstone that keeps whatever fields still validate.
+# - Integration fix (2026-11-27): at most one effective grant exists per
+#   (local device, port, recipient), and a grant that finds it rewrites it in
+#   place: the grantId and grantedAtMs stay, credential, expiry, name,
+#   protocol and note are written again and updatedAtMs is set. The recipient
+#   keeps the same Key entry and service entry, and its own edits to them. A
+#   new grantId is issued only when no effective grant exists (never granted,
+#   revoked or expired). Should a race have left several effective grants for
+#   one target, the earliest is updated and the others are revoked. The reply
+#   is {grant, updated}; a first grant emits service.grant.created and an
+#   update service.grant.updated, with the same fields.
+# - Every grant and revoke also deletes the caller's own documents in that
+#   org that died (were revoked, or expired) more than CLEANUP_AFTER_MS ago,
+#   so a grantor's directory stays within what recipients read
+#   (MAX_GRANTOR_GRANT_DOCUMENTS). A document that cannot be parsed is not
+#   touched. A failed deletion never fails the write: it is one
+#   service.grant.cleanup_failed event; what was deleted is one
+#   service.grant.cleaned event.
+# - A new grantId is refused while the caller holds GRANT_DOCUMENT_CAP
+#   documents in the org after that cleanup; an update in place is never
+#   refused. No frozen error code names a quota, so the refusal is
+#   SERVICE_UNAVAILABLE, already declared for service.grant, with a message
+#   that says why and what to do.
+# - service.grants reads other grantors within the recipient's scan bounds:
+#   a grantor over a limit is left out of "received" and named in
+#   limitedGrantors (grantor null when the whole org stopped), so the listing
+#   never answers "no grant" for what the daemon could not read either. The
+#   caller's own grants are listed whole. documentCount gives each org's
+#   document count under the caller, beside documentLimit, the per-grantor
+#   bound recipients read by.
 """Service-grant domain service: ``service.grant``, ``service.revoke``, ``service.grants``."""
 
 from __future__ import annotations
@@ -50,12 +77,22 @@ from .models import (
     validate_grant_id,
 )
 from .queries import (
+    MAX_GRANTOR_GRANT_DOCUMENTS,
+    GrantScanLimited,
+    ScanLimits,
     effective_grants_for_recipient,
     is_grant_effective,
     load_org_service_grants,
     recipient_matches,
+    scan_org_service_grants,
 )
 
+GRANT_DOCUMENT_CAP = 240
+CLEANUP_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+CREATED_EVENT = "service.grant.created"
+UPDATED_EVENT = "service.grant.updated"
+CLEANED_EVENT = "service.grant.cleaned"
+CLEANUP_FAILED_EVENT = "service.grant.cleanup_failed"
 _CREDENTIAL_KEYS = frozenset({"entryId", "fieldName"})
 _UNPARSEABLE = (ValueError, TypeError, KeyError, RecursionError)
 
@@ -123,6 +160,11 @@ def _read_secret(home: Path, entry_id: str, field_name: str | None) -> bytes:
             ipc_errors.AGENT_SECRET_RESOLUTION_FAILED,
             f"secret resolution invalid: entry={entry_id!r} phase='encode'",
         ) from None
+
+
+def _died_at(grant: ServiceGrant) -> int | None:
+    ends = [value for value in (grant.revoked_at_ms, grant.expires_at_ms) if value is not None]
+    return min(ends) if ends else None
 
 
 def _row_owner(row: Any) -> str | None:
@@ -255,7 +297,18 @@ class ServiceGrantService:
                         "recipient device encryption public key is invalid",
                     ) from None
 
-        grant_id = generate_grant_id()
+        current = self._current(org, port=port, recipient=recipient, now=now)
+        self._clean(org, now)
+        if current is None:
+            self._check_room(org)
+            grant_id = generate_grant_id()
+            granted_at_ms: int | None = now
+            updated_at_ms: int | None = None
+        else:
+            grant_id = current.grant_id
+            granted_at_ms = current.granted_at_ms
+            updated_at_ms = now
+
         sealed_credential: dict[str, Any] | None = None
         if cred_ref is not None:
             assert isinstance(recipient, GrantRecipient)
@@ -282,18 +335,12 @@ class ServiceGrantService:
             grant_id=grant_id,
             service=endpoint,
             recipient=recipient,
-            granted_at_ms=now,
+            granted_at_ms=granted_at_ms,
             expires_at_ms=expires_at_ms,
             revoked_at_ms=None,
             credential=sealed_credential,
+            updated_at_ms=updated_at_ms,
         )
-        superseded = [
-            item.grant.grant_id
-            for item in self._own_effective(org, port=port, now=now)
-            if item.grant.recipient == recipient
-        ]
-        for old_id in superseded:
-            self.revoke(org=org, grant_id=old_id)
         try:
             self._store.put_service_grant(org, self._owner, grant_id, grant.as_record())
         except OrgFsError as error:
@@ -302,7 +349,7 @@ class ServiceGrantService:
         stored = StoredServiceGrant(org=org, grantor=self._owner, grant=grant)
         self._emit(
             "info",
-            "service.grant.created",
+            CREATED_EVENT if current is None else UPDATED_EVENT,
             org=org,
             grantId=grant_id,
             grantor=self._owner,
@@ -315,12 +362,75 @@ class ServiceGrantService:
             ),
             hasCredential=sealed_credential is not None,
             expiresAtMs=expires_at_ms,
-            superseded=superseded,
         )
         return {
             "grant": grant_view(stored, now_ms=now, effective=is_grant_effective(grant, now_ms=now)),
-            "superseded": superseded,
+            "updated": current is not None,
         }
+
+    def _current(
+        self, org: str, *, port: int, recipient: GrantRecipient | str, now: int
+    ) -> ServiceGrant | None:
+        """The effective grant to rewrite for this target; extra ones a race left are revoked."""
+
+        matches = sorted(
+            (
+                item.grant
+                for item in self._own_effective(org, port=port, now=now)
+                if item.grant.recipient == recipient
+            ),
+            key=lambda grant: (grant.granted_at_ms or 0, grant.grant_id),
+        )
+        for extra in matches[1:]:
+            self._revoke(org, extra.grant_id)
+        return matches[0] if matches else None
+
+    def _check_room(self, org: str) -> None:
+        try:
+            count = len(self._store.service_grant_ids(org, self._owner))
+        except OrgFsError as error:
+            raise _translate_orgfs_error(error, context="count service grants") from None
+        if count >= GRANT_DOCUMENT_CAP:
+            raise DaemonRequestError(
+                ipc_errors.SERVICE_UNAVAILABLE,
+                f"service grant document limit reached in org {org}: {count} of "
+                f"{GRANT_DOCUMENT_CAP} documents hold no room for a new grant "
+                f"(recipients read at most {MAX_GRANTOR_GRANT_DOCUMENTS} per grantor); "
+                "renewing an existing grant still works. "
+                "撤销不用的授权，7 天后自动清理",
+            )
+
+    def _clean(self, org: str, now: int) -> None:
+        """Delete the caller's documents in ``org`` dead for more than CLEANUP_AFTER_MS; never raises."""
+
+        try:
+            loaded = load_org_service_grants(self._store, org, owner=self._owner)
+        except Exception as error:  # noqa: BLE001 - cleanup never fails the write
+            self._cleanup_failed(org, None, error)
+            return
+        removed: list[str] = []
+        for item in loaded:
+            died_at = _died_at(item.grant)
+            if died_at is None or now - died_at <= CLEANUP_AFTER_MS:
+                continue
+            try:
+                if self._store.remove_service_grant(org, self._owner, item.grant.grant_id):
+                    removed.append(item.grant.grant_id)
+            except Exception as error:  # noqa: BLE001 - cleanup never fails the write
+                self._cleanup_failed(org, item.grant.grant_id, error)
+        if removed:
+            self._emit("info", CLEANED_EVENT, org=org, grantor=self._owner, grantIds=removed)
+
+    def _cleanup_failed(self, org: str, grant_id: str | None, error: Exception) -> None:
+        code = getattr(error, "code", None)
+        self._emit(
+            "warn",
+            CLEANUP_FAILED_EVENT,
+            org=org,
+            grantor=self._owner,
+            grantId=grant_id,
+            errorCode=code if isinstance(code, str) else type(error).__name__,
+        )
 
     def revoke(self, *, org: str, grant_id: str) -> dict[str, Any]:
         """Revoke one of the caller's grants by setting ``revokedAtMs`` and clearing ``credential``.
@@ -329,7 +439,8 @@ class ServiceGrantService:
         caller's own document exists but cannot be read or validated, a
         minimal revoked tombstone replaces it, keeping each field that still
         validates; the reader lists it as revoked. An absent document returns
-        ``revoked: false``; a write failure is a request error.
+        ``revoked: false``; a write failure is a request error. Either way the
+        caller's long-dead documents in ``org`` are then cleaned up.
         """
 
         try:
@@ -337,7 +448,11 @@ class ServiceGrantService:
             validate_grant_id(grant_id)
         except ValueError as error:
             raise DaemonRequestError(ipc_errors.INVALID_ARGUMENT, str(error)) from None
+        result = self._revoke(org, grant_id)
+        self._clean(org, self._now_ms())
+        return result
 
+    def _revoke(self, org: str, grant_id: str) -> dict[str, Any]:
         try:
             raw_doc = self._store.read_service_grant(org, self._owner, grant_id)
             exists = raw_doc is not None or self._store.service_grant_exists(
@@ -421,10 +536,11 @@ class ServiceGrantService:
         for org in orgs:
             try:
                 for item in self._own_effective(org, port=port, now=now):
-                    if self.revoke(org=org, grant_id=item.grant.grant_id)["revoked"]:
+                    if self._revoke(org, item.grant.grant_id)["revoked"]:
                         revoked.append({"org": org, "grantId": item.grant.grant_id})
             except DaemonRequestError as error:
                 failed.append({"org": org, "code": error.code})
+            self._clean(org, now)
         return {"port": port, "revoked": revoked, "failed": failed}
 
     def _own_effective(
@@ -449,7 +565,7 @@ class ServiceGrantService:
         org: str | None = None,
         port: int | None = None,
         include_revoked: bool = False,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, Any]:
         """List caller-authored and caller-received grants without decrypting or connecting."""
 
         try:
@@ -469,18 +585,22 @@ class ServiceGrantService:
             raise _translate_orgfs_error(error, context="list orgs") from None
         granted_items: list[StoredServiceGrant] = []
         received_items: list[StoredServiceGrant] = []
+        document_count: dict[str, int] = {}
+        limited: list[dict[str, Any]] = []
 
         for target_org in orgs:
             try:
-                loaded = load_org_service_grants(self._store, target_org)
+                own_items, other_items, org_limited = self._read_org(target_org)
+                document_count[target_org] = len(
+                    self._store.service_grant_ids(target_org, self._owner)
+                )
             except OrgFsError as error:
                 if org is not None:
                     raise _translate_orgfs_error(
                         error, context="list service grants"
                     ) from None
                 continue
-            own_items = [item for item in loaded if item.grantor == self._owner]
-            other_items = [item for item in loaded if item.grantor != self._owner]
+            limited.extend(org_limited)
 
             for item in own_items:
                 if port is not None and (item.grant.service is None or item.grant.service.port != port):
@@ -531,7 +651,34 @@ class ServiceGrantService:
                 )
                 for item in received_items
             ],
+            "documentCount": document_count,
+            "documentLimit": MAX_GRANTOR_GRANT_DOCUMENTS,
+            "limitedGrantors": limited,
         }
+
+    def _read_org(
+        self, org: str
+    ) -> tuple[
+        tuple[StoredServiceGrant, ...], list[StoredServiceGrant], list[dict[str, Any]]
+    ]:
+        """The caller's grants in ``org`` read whole, and other grantors' within the scan bounds."""
+
+        try:
+            scan = scan_org_service_grants(self._store, org, ScanLimits(self._store.orgfs))
+        except GrantScanLimited as stopped:
+            own = load_org_service_grants(self._store, org, owner=self._owner)
+            return own, [], [{"org": org, "grantor": None, "reason": stopped.reason}]
+        if self._owner in scan.limited:
+            own = load_org_service_grants(self._store, org, owner=self._owner)
+        else:
+            own = tuple(item for item in scan.grants if item.grantor == self._owner)
+        others = [item for item in scan.grants if item.grantor != self._owner]
+        limited = [
+            {"org": org, "grantor": grantor, "reason": reason}
+            for grantor, reason in sorted(scan.limited.items())
+            if grantor != self._owner
+        ]
+        return own, others, limited
 
     def _emit(self, level: str, event: str, **fields: Any) -> None:
         if self._logger is not None:

@@ -147333,6 +147333,13 @@
                     "type": "object"
                   }
                 ]
+              },
+              "updatedAtMs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -147345,27 +147352,25 @@
               "grantedAtMs",
               "expiresAtMs",
               "revokedAtMs",
+              "updatedAtMs",
               "hasCredential",
               "effective"
             ],
             "type": "object"
           },
-          "superseded": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "updated": {
+            "type": "boolean"
           }
         },
         "required": [
           "grant",
-          "superseded"
+          "updated"
         ],
         "type": "object"
       },
       "retry": "never",
       "x-hyprial-example-gaps": {
-        "empty": "Creating a service grant always returns the created grant view."
+        "empty": "A service grant always returns the created or updated grant view."
       },
       "x-hyprial-examples": [
         {
@@ -147404,11 +147409,10 @@
                 "note": null,
                 "port": 8447,
                 "protocol": "http"
-              }
+              },
+              "updatedAtMs": null
             },
-            "superseded": [
-              "sg.bbbbbbbbbbbbbbbbbbbbbbbbbb"
-            ]
+            "updated": false
           }
         },
         {
@@ -147528,6 +147532,17 @@
       "resultSchema": {
         "additionalProperties": false,
         "properties": {
+          "documentCount": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "documentLimit": {
+            "minimum": 1,
+            "type": "integer"
+          },
           "granted": {
             "items": {
               "additionalProperties": false,
@@ -147643,6 +147658,13 @@
                       "type": "object"
                     }
                   ]
+                },
+                "updatedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -147655,8 +147677,40 @@
                 "grantedAtMs",
                 "expiresAtMs",
                 "revokedAtMs",
+                "updatedAtMs",
                 "hasCredential",
                 "effective"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "limitedGrantors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "grantor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "org": {
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "documents",
+                    "bytes",
+                    "grantors",
+                    "deadline"
+                  ]
+                }
+              },
+              "required": [
+                "org",
+                "grantor",
+                "reason"
               ],
               "type": "object"
             },
@@ -147777,6 +147831,13 @@
                       "type": "object"
                     }
                   ]
+                },
+                "updatedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -147789,6 +147850,7 @@
                 "grantedAtMs",
                 "expiresAtMs",
                 "revokedAtMs",
+                "updatedAtMs",
                 "hasCredential",
                 "effective"
               ],
@@ -147799,7 +147861,10 @@
         },
         "required": [
           "granted",
-          "received"
+          "received",
+          "documentCount",
+          "documentLimit",
+          "limitedGrantors"
         ],
         "type": "object"
       },
@@ -147814,6 +147879,10 @@
             "port": 8447
           },
           "result": {
+            "documentCount": {
+              "group-acme": 1
+            },
+            "documentLimit": 256,
             "granted": [
               {
                 "effective": true,
@@ -147835,9 +147904,11 @@
                   "note": null,
                   "port": 8447,
                   "protocol": "http"
-                }
+                },
+                "updatedAtMs": null
               }
             ],
+            "limitedGrantors": [],
             "received": []
           }
         },
@@ -147850,7 +147921,12 @@
           },
           "reason": "No effective service grants exist for caller.",
           "result": {
+            "documentCount": {
+              "group-acme": 0
+            },
+            "documentLimit": 256,
             "granted": [],
+            "limitedGrantors": [],
             "received": []
           }
         },

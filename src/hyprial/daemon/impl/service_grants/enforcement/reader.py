@@ -14,8 +14,14 @@
 #   path. The caller decides when it is logged. Nothing can be reported per
 #   grant for such an org, because its grants are exactly what could not be
 #   read.
-# - One document that fails to parse never hides the others: that is S3's
-#   load_org_service_grants, used as is.
+# - One document that fails to parse never hides the others.
+# - Integration fix (2026-11-27): this device's own directory is read with the
+#   same bounded scan the recipients use (scan_org_service_grants with its
+#   default limits). A directory over a limit is unreadable here too: the org
+#   contributes no key, which tightens, and is named with the read
+#   GRANTS_LIMITED, so the operator sees the same event and a step that says
+#   why. Recipients stop reading such a grantor, so admitting its grants would
+#   open ports nobody can be told about.
 """Reading this device's service grants out of the org directories."""
 
 from __future__ import annotations
@@ -26,11 +32,12 @@ from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 
 from ..models import StoredServiceGrant
-from ..queries import load_org_service_grants
+from ..queries import GrantScanLimited, ScanLimits, scan_org_service_grants
 
 Unreadable = Callable[[str, str], None]
 ORGS = "orgs"
 GRANTS = "grants"
+GRANTS_LIMITED = "grants-limited"
 
 
 def own_grants(
@@ -43,16 +50,24 @@ def own_grants(
     """``org`` to this owner's stored grants in it, for the orgs that could be read.
 
     Each org whose documents could not be read is left out, and is named to
-    ``unreadable`` with the grant read when it is given.
+    ``unreadable`` with the grant read when it is given: ``GRANTS`` when a
+    read failed, ``GRANTS_LIMITED`` when the directory is over a scan limit.
     """
 
     grants: dict[str, tuple[StoredServiceGrant, ...]] = {}
     for org in orgs:
         try:
-            grants[org] = load_org_service_grants(store, org, owner=owner)
+            scan = scan_org_service_grants(store, org, ScanLimits(store.orgfs), owner=owner)
         except OrgFsError:
-            if unreadable is not None:
-                unreadable(org, GRANTS)
+            step: str | None = GRANTS
+        except GrantScanLimited:
+            step = GRANTS_LIMITED
+        else:
+            step = GRANTS_LIMITED if scan.limited else None
+        if step is None:
+            grants[org] = scan.grants
+        elif unreadable is not None:
+            unreadable(org, step)
     return grants
 
 
@@ -71,4 +86,4 @@ def orgs(store: OrgFsDirectoryStore, *, unreadable: Unreadable | None = None) ->
         return ()
 
 
-__all__ = ["GRANTS", "ORGS", "orgs", "own_grants"]
+__all__ = ["GRANTS", "GRANTS_LIMITED", "ORGS", "orgs", "own_grants"]

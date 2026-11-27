@@ -20,6 +20,12 @@
 # - A revoked tombstone may carry null service, recipient and grantedAtMs when
 #   the original document could not be parsed; such a document is never
 #   effective, never carries a credential, and is listed as revoked.
+# - updatedAtMs (integration fix, 2026-11-27) is null until the grantor
+#   rewrites an effective grant in place (a renewal or a new Key), and then
+#   the time of the latest rewrite; grantedAtMs keeps its first value. It is
+#   always written, and a document without it reads as null, so documents
+#   written before the field existed still parse. Every other key stays
+#   closed. The schema version stays 1 because the field is optional.
 """Service-grant domain models, id generation, and boundary normalization."""
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "credential",
     }
 )
+_OPTIONAL_KEYS = frozenset({"updatedAtMs"})
 _SERVICE_KEYS = frozenset({"deviceId", "port", "name", "protocol", "note"})
 _RECIPIENT_KEYS = frozenset({"owner", "deviceId"})
 NOTE_MAX_CHARS = 512
@@ -287,6 +294,7 @@ class ServiceGrant:
     expires_at_ms: int | None = None
     revoked_at_ms: int | None = None
     credential: Mapping[str, Any] | None = None
+    updated_at_ms: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != SCHEMA_VERSION:
@@ -307,6 +315,7 @@ class ServiceGrant:
         _optional_non_negative_int(self.granted_at_ms, "grantedAtMs")
         _optional_non_negative_int(self.expires_at_ms, "expiresAtMs")
         _optional_non_negative_int(self.revoked_at_ms, "revokedAtMs")
+        _optional_non_negative_int(self.updated_at_ms, "updatedAtMs")
         if self.credential is not None:
             if not isinstance(self.credential, Mapping):
                 raise ValueError("credential must be null or a JSON object")
@@ -322,6 +331,7 @@ class ServiceGrant:
             "grantedAtMs": self.granted_at_ms,
             "expiresAtMs": self.expires_at_ms,
             "revokedAtMs": self.revoked_at_ms,
+            "updatedAtMs": self.updated_at_ms,
             "credential": (
                 None if self.credential is None else sealed_credential(self.credential)
             ),
@@ -331,7 +341,7 @@ class ServiceGrant:
     def from_record(cls, value: object) -> "ServiceGrant":
         if not isinstance(value, Mapping):
             raise ValueError("service grant document must be a JSON object")
-        if set(value) != _TOP_LEVEL_KEYS:
+        if not _TOP_LEVEL_KEYS <= set(value) <= _TOP_LEVEL_KEYS | _OPTIONAL_KEYS:
             raise ValueError("service grant document keys do not match schema")
         raw_cred = value["credential"]
         return cls(
@@ -343,6 +353,7 @@ class ServiceGrant:
             expires_at_ms=value["expiresAtMs"],
             revoked_at_ms=value["revokedAtMs"],
             credential=None if raw_cred is None else sealed_credential(raw_cred),
+            updated_at_ms=value.get("updatedAtMs"),
         )
 
     @classmethod
@@ -359,6 +370,7 @@ class ServiceGrant:
             expires_at_ms=_salvage(_non_negative_int, fields.get("expiresAtMs"), "expiresAtMs"),
             revoked_at_ms=revoked_at_ms,
             credential=None,
+            updated_at_ms=_salvage(_non_negative_int, fields.get("updatedAtMs"), "updatedAtMs"),
         )
 
 
@@ -414,6 +426,7 @@ def grant_view(stored: StoredServiceGrant, *, now_ms: int, effective: bool) -> d
         "grantedAtMs": grant.granted_at_ms,
         "expiresAtMs": grant.expires_at_ms,
         "revokedAtMs": grant.revoked_at_ms,
+        "updatedAtMs": grant.updated_at_ms,
         "hasCredential": grant.credential is not None,
         "effective": effective,
     }

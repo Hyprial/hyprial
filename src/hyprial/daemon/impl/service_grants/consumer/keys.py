@@ -19,6 +19,12 @@
 #   as a first write that cannot be opened already is. The ownership check
 #   runs right before the write and outside identity's lock; the window
 #   between them is what remains of the race for a replaced credential.
+# - Integration fix (2026-11-27): a renewal or a new Key rewrites the grant in
+#   place, so the replacement above is the ordinary path of a renewal and the
+#   entry keeps its name. Identity's writer replaces every field of a plain
+#   (unconfigured) entry, so the replacement writes the entry's other fields
+#   back beside the new Key: a field the recipient added stays. A configured
+#   entry already keeps its fields in identity's writer.
 #   A ledger row without the credential digest is not read (no migration:
 #   nothing of this slice has shipped), which fails towards keeping files.
 # - Ownership is proved by a private ledger, not by the name: one row per
@@ -443,12 +449,31 @@ def _rotate(
         ledger.release(row.key)
         return KeyOutcome.refused(grant, ENTRY_MODIFIED)
     try:
-        SecretResolver(home, None).write_user_provider(row.entry_id, {KEY_FIELD: text})  # type: ignore[arg-type]
+        values = {**_other_fields(home, row.entry_id), KEY_FIELD: text}
+        SecretResolver(home, None).write_user_provider(row.entry_id, values)  # type: ignore[arg-type]
         info = entry_path(home, row.entry_id).lstat()
     except Exception:
         return KeyOutcome(row.entry_id, True, False, Rejection(grant.org, grant.grant_id, grant.grantor, KEY_UNAVAILABLE))
     _claim(ledger, grant, row.entry_id, text, info)
     return KeyOutcome(row.entry_id, True, True)
+
+
+def _other_fields(home: Path, entry_id: str) -> dict[str, str]:
+    """The fields of a plain entry besides the Key, which identity's writer would otherwise drop.
+
+    A configured entry is refused here (it needs a field name) and yields
+    nothing, because identity's writer keeps a configured entry's fields itself.
+    """
+
+    try:
+        value = json.loads(read_user_provider_value(home, entry_id, None))
+    except (SecretResolutionError, ValueError):
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str) and isinstance(field, str) for name, field in value.items()
+    ):
+        return {}
+    return {name: field for name, field in value.items() if name != KEY_FIELD}
 
 
 def _restore(

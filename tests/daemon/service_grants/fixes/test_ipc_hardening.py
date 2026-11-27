@@ -4,7 +4,8 @@ Decision (service grant S3 fix, 2026-11-26, critic N1, N2, N3 and S7 items 9
 and 12): every failure leaves the handler as a ``DaemonRequestError`` without a
 local path; an unreadable device record is refused instead of falling back to
 ``node_id``; a grant is refused while this device has no row in that org's
-directory. The ``superseded`` list travels through the real router.
+directory. The ``updated`` flag of an in-place rewrite travels through the
+real router.
 """
 
 from __future__ import annotations
@@ -142,12 +143,13 @@ def test_secret_errors_through_the_router_carry_no_entry_content(
     assert all(SYNTHETIC_SECRET not in repr(event) for event in app.events)
 
 
-def test_superseded_ids_travel_through_the_router(routed: dict[str, Any]) -> None:
+def test_the_updated_flag_travels_through_the_router(routed: dict[str, Any]) -> None:
     _publish_local_device(routed)
     app: _RouterApp = routed["app"]
     first = app.handle("service.grant", {"org": ORG, "port": 8447, "device": "bob/device-b"})
     second = app.handle("service.grant", {"org": ORG, "port": 8447, "device": "bob/device-b"})
-    assert first["superseded"] == []
-    assert second["superseded"] == [first["grant"]["grantId"]]
+    assert first["updated"] is False
+    assert second["updated"] is True
+    assert second["grant"]["grantId"] == first["grant"]["grantId"]
     listed = app.handle("service.grants", {"org": ORG})
     assert [item["grantId"] for item in listed["granted"]] == [second["grant"]["grantId"]]

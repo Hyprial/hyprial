@@ -141,6 +141,12 @@ class OrgFsDirectoryStore(ServiceGrantDocuments):
         self._invalid_device_quiet = quarantine.entries
         self._invalid_device_lock = quarantine.lock
 
+    @property
+    def orgfs(self) -> OrgFs:
+        """The OrgFS facade this store addresses, for a bounded scan beside it."""
+
+        return self._fs
+
     # -- DirectoryStore ---------------------------------------------------
 
     def list_devices(self, org: str) -> list[DirectoryDevice]:

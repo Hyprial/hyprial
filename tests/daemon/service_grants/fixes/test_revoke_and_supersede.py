@@ -4,8 +4,10 @@ Decision (service grant S3 fix, 2026-11-26, critic S1, S2, S3 and S7 items 6,
 7 and 8): a document under the caller's own path is revoked even when it no
 longer parses, by writing a minimal revoked document that the reader lists as
 revoked. ``revoke_all_for_port`` revokes this device's effective grants for one
-port in every org. A new grant for the same ``(device, port, recipient)``
-revokes the effective ones first and reports their ids in ``superseded``.
+port in every org. A grant for a ``(device, port, recipient)`` that already
+has an effective grant rewrites that grant in place (integration fix,
+2026-11-27): the same grantId, ``updated: true``, and still one effective
+grant per target.
 """
 
 from __future__ import annotations
@@ -182,17 +184,16 @@ def test_new_grant_supersedes_effective_grants_for_the_same_recipient(
 
     service: ServiceGrantService = harness["service"]
     first = service.grant(org=ORG, port=8447, device="bob/device-b")
-    assert first["superseded"] == []
+    assert first["updated"] is False
     members = service.grant(org=ORG, port=8447, device="@members")
-    assert members["superseded"] == []
+    assert members["updated"] is False
 
     second = service.grant(org=ORG, port=8447, device="user:bob/device-b")
 
-    assert second["superseded"] == [first["grant"]["grantId"]]
+    assert second["updated"] is True
+    assert second["grant"]["grantId"] == first["grant"]["grantId"]
     effective = sorted(item["grantId"] for item in service.grants(org=ORG)["granted"])
     assert effective == sorted([second["grant"]["grantId"], members["grant"]["grantId"]])
-    revoked = _granted_view(service, first["grant"]["grantId"])
-    assert revoked["revokedAtMs"] is not None
     assert service.revoke(org=ORG, grant_id=second["grant"]["grantId"])["revoked"] is True
     assert [item["grantId"] for item in service.grants(org=ORG)["granted"]] == [
         members["grant"]["grantId"]
@@ -215,4 +216,5 @@ def test_expiry_boundary_and_expired_grants_are_not_superseded(harness: dict[str
     assert _granted_view(service, short["grant"]["grantId"])["effective"] is False
 
     renewed = service.grant(org=ORG, port=8447, device="bob/device-b")
-    assert renewed["superseded"] == []
+    assert renewed["updated"] is False
+    assert renewed["grant"]["grantId"] != short["grant"]["grantId"]

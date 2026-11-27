@@ -73,7 +73,7 @@ def test_a_renewal_keeps_the_recipients_entry_and_updates_its_key(world: World, 
         assert renewed["grant"]["grantId"] == first["grant"]["grantId"]
         assert read_user_provider_value(bob, entry_id, "KEY") == ROTATED
         assert read_user_provider_value(bob, entry_id, "BASE_URL") == "http://127.0.0.1:9/v1"
-        assert sorted(path.stem for path in (bob / "secrets" / "providers").iterdir()) == [entry_id]
+        assert sorted(path.stem for path in (bob / "secrets" / "providers").glob("*.json")) == [entry_id]
         after = {row["name"]: row for row in manager.handle("service.list", {})["services"]}
         assert list(after) == list(before) == ["magpie"]
         assert after["magpie"]["state"] == before["magpie"]["state"]

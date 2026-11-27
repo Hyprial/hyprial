@@ -172,3 +172,23 @@ def test_the_listing_shows_updated_at(world: World) -> None:
     assert granted["updatedAtMs"] == world.clock[0]
     [received] = world.grants(BOB_NODE).grants(org=ORG)["received"]
     assert received["updatedAtMs"] == world.clock[0]
+
+
+def test_a_document_written_without_updated_at_reads_as_never_updated() -> None:
+    from hyprial.daemon.impl.service_grants.models import ServiceGrant
+
+    record = {
+        "schemaVersion": 1,
+        "grantId": "sg." + "a" * 26,
+        "service": {"deviceId": "device-a", "port": PORT, "name": None, "protocol": "tcp", "note": None},
+        "recipient": "@members",
+        "grantedAtMs": 1,
+        "expiresAtMs": None,
+        "revokedAtMs": None,
+        "credential": None,
+    }
+
+    assert ServiceGrant.from_record(record).updated_at_ms is None
+    assert ServiceGrant.from_record({**record, "updatedAtMs": 5}).updated_at_ms == 5
+    with pytest.raises(ValueError):
+        ServiceGrant.from_record({**record, "extra": 1})

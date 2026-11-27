@@ -48,6 +48,7 @@ GRANT_VIEW = obj({
     "grantedAtMs": {"type": ["integer", "null"], "minimum": 0},
     "expiresAtMs": {"type": ["integer", "null"], "minimum": 0},
     "revokedAtMs": {"type": ["integer", "null"], "minimum": 0},
+    "updatedAtMs": {"type": ["integer", "null"], "minimum": 0},
     "hasCredential": {"type": "boolean"},
     "effective": {"type": "boolean"},
 })
@@ -106,10 +107,17 @@ RESULTS = {
     "service.disconnect": obj({"name": STR, "removed": {"type": "boolean"}}),
     "service.guide": obj({"entry": ENTRY, "source": STR}),
     "service.list": obj({"services": {"type": "array", "items": ROW}, "registry": REGISTRY}),
-    "service.grant": obj({"grant": GRANT_VIEW, "superseded": {"type": "array", "items": STR}}),
+    "service.grant": obj({"grant": GRANT_VIEW, "updated": {"type": "boolean"}}),
     "service.revoke": obj({"grantId": STR, "revoked": {"type": "boolean"}}),
     "service.grants": obj({
         "granted": {"type": "array", "items": GRANT_VIEW},
         "received": {"type": "array", "items": GRANT_VIEW},
+        "documentCount": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "documentLimit": {"type": "integer", "minimum": 1},
+        "limitedGrantors": {"type": "array", "items": obj({
+            "org": STR,
+            "grantor": NSTR,
+            "reason": {"enum": ["documents", "bytes", "grantors", "deadline"]},
+        })},
     }),
 }

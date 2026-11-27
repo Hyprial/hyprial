@@ -54,6 +54,7 @@ GRANT_VIEW = {
     "grantedAtMs": 1700000000000,
     "expiresAtMs": None,
     "revokedAtMs": None,
+    "updatedAtMs": None,
     "hasCredential": True,
     "effective": True,
 }
@@ -83,7 +84,7 @@ SERVICE_EXAMPLES = (
                     "protocol": "http",
                     "credential": {"entryId": "magpie", "fieldName": "API_KEY"},
                 },
-                result={"grant": GRANT_VIEW, "superseded": ["sg.bbbbbbbbbbbbbbbbbbbbbbbbbb"]},
+                result={"grant": GRANT_VIEW, "updated": False},
             ),
             case(
                 "invalid-params",
@@ -104,7 +105,7 @@ SERVICE_EXAMPLES = (
                 ),
             ),
         ),
-        empty_not_applicable="Creating a service grant always returns the created grant view.",
+        empty_not_applicable="A service grant always returns the created or updated grant view.",
     ),
     MethodExampleSet(
         method="service.revoke",
@@ -149,13 +150,25 @@ SERVICE_EXAMPLES = (
                 "success",
                 "success",
                 {"org": "group-acme", "port": 8447},
-                result={"granted": [GRANT_VIEW], "received": []},
+                result={
+                    "granted": [GRANT_VIEW],
+                    "received": [],
+                    "documentCount": {"group-acme": 1},
+                    "documentLimit": 256,
+                    "limitedGrantors": [],
+                },
             ),
             case(
                 "empty",
                 "empty",
                 {"org": "group-acme"},
-                result={"granted": [], "received": []},
+                result={
+                    "granted": [],
+                    "received": [],
+                    "documentCount": {"group-acme": 0},
+                    "documentLimit": 256,
+                    "limitedGrantors": [],
+                },
                 reason="No effective service grants exist for caller.",
             ),
             case(

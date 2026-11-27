@@ -5,6 +5,9 @@
 #   closed with `services.CliError("INVALID_ARGUMENT", ...)` on malformed values.
 # - All output routes through `CliResult` / `services.runtime.execute`; human
 #   views never display credential ciphertext or secret values.
+# - Integration fix (2026-11-27): a grant to a target that already has an
+#   effective grant rewrites it in place, so the human view says "Updated"
+#   instead of "Granted" and there is no superseded list any more.
 """Service-grant CLI leaves mounted under ``hyprial org service``."""
 
 from __future__ import annotations
@@ -79,11 +82,10 @@ def _render_grant_row(grant: Mapping[str, Any]) -> str:
 
 def _render_grant_created(data: Mapping[str, Any]) -> str:
     grant = data.get("grant")
-    lines = [f"Granted: {_render_grant_row(grant)}" if isinstance(grant, Mapping) else "Grant created."]
-    superseded = data.get("superseded")
-    if isinstance(superseded, list) and superseded:
-        lines.append("Superseded (revoked): " + ", ".join(str(item) for item in superseded))
-    return "\n".join(lines)
+    label = "Updated" if data.get("updated") is True else "Granted"
+    if isinstance(grant, Mapping):
+        return f"{label}: {_render_grant_row(grant)}"
+    return f"Grant {label.lower()}."
 
 
 def _render_revoke(data: Mapping[str, Any]) -> str:
@@ -110,6 +112,21 @@ def _render_grants(data: Mapping[str, Any]) -> str:
         )
     else:
         lines.append("  (none)")
+    limited = data.get("limitedGrantors")
+    if isinstance(limited, list):
+        for item in limited:
+            if not isinstance(item, Mapping):
+                continue
+            who = item.get("grantor") or "every grantor"
+            lines.append(
+                f"  Not read: {who} in {item.get('org', '-')} is over a read limit "
+                f"({item.get('reason', '-')}); grants from it are unknown, not absent."
+            )
+    counts = data.get("documentCount")
+    limit = data.get("documentLimit")
+    if isinstance(counts, Mapping) and counts:
+        lines.append("Grant documents:")
+        lines.extend(f"  {org}\t{count}/{limit}" for org, count in sorted(counts.items()))
     return "\n".join(lines)
 
 
