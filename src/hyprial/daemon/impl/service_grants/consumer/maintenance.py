@@ -45,13 +45,20 @@
 #   entry is withdrawn like any grant that yields nothing. A changed set
 #   re-derives at once, so the seam's own read already sees the result. The
 #   device list keeps every candidate: the seam alone decides what conflicts.
-# - S5 fix (2026-11-27, critic 3): an org's grants are loaded with bounds
-#   (MAX_ORG_GRANT_DOCUMENTS documents, SCAN_READ_BYTES_LIMIT listed bytes,
-#   PERIODIC_BUDGET_SECONDS per org). A limited load is "unknown": the previous
-#   answer stays (minus grants that have expired since, which needs no read),
-#   or nothing is derived and nothing withdrawn when there is none. One
-#   service.grant.scan-limited event (org, phase "periodic", reason) says so,
-#   and the same fingerprint is not scanned again until it changes.
+# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
+#   an org's grants are scanned with bounds. Each grantor directory may hold
+#   MAX_GRANTOR_GRANT_DOCUMENTS documents and GRANTOR_READ_BYTES_LIMIT listed
+#   bytes; a grantor over either is "unknown" on its own: that grantor's part
+#   of the previous answer stays (minus grants expired since, which needs no
+#   read) while every other grantor is read afresh, new grants and
+#   revocations included. A grantor that is unknown with no earlier answer to
+#   keep derives nothing, and its Key entries are not withdrawn. More than
+#   MAX_ORG_GRANTORS grantor directories, or PERIODIC_BUDGET_SECONDS spent, is
+#   "unknown" for the whole org: the previous answer stays, or nothing is
+#   derived and nothing withdrawn when there is none, and the same fingerprint
+#   is not scanned again until it changes. service.grant.scan-limited (org,
+#   phase "periodic", reason, and grantor for a grantor's limit) is emitted
+#   when a limit starts or its reason changes, not on every tick it lasts.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
 
 from __future__ import annotations
@@ -70,13 +77,14 @@ from hyprial.daemon.impl.service_connect.derived import DerivedEntry, alternativ
 from hyprial.daemon.impl.service_connect.models import ProtectedDevice
 from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
 from hyprial.daemon.impl.service_grants.queries import (
-    MAX_ORG_GRANT_DOCUMENTS,
-    SCAN_READ_BYTES_LIMIT,
+    GRANTOR_READ_BYTES_LIMIT,
+    MAX_GRANTOR_GRANT_DOCUMENTS,
+    MAX_ORG_GRANTORS,
     SERVICE_GRANTS_DIR,
     GrantScanLimited,
     ScanLimits,
     can_open_grant_credential,
-    load_org_service_grants,
+    scan_org_service_grants,
 )
 from hyprial.identity import DIRECTORY_DIR, ORG_META_DOC, org_space_name
 
@@ -98,7 +106,6 @@ from .keys import (
     sync_entry,
     withdraw_entry,
 )
-
 from .startup import SCAN_LIMITED_EVENT
 
 RECEIVED_EVENT = "service.grant.received"
@@ -130,13 +137,15 @@ class _OrgAnswer:
     ``expires_at_ms`` is the earliest expiry among the grants this answer
     derives from: an expiring grant changes nothing in the directory, so the
     answer is re-read when that moment passes even though the fingerprint is
-    the same.
+    the same. ``unknown`` names the grantors this answer could not read and
+    had no earlier answer for: their Key entries are not withdrawn.
     """
 
     fingerprint: object = _UNKNOWN
     wanted: tuple[tuple[DerivedGrant, ProtectedDevice], ...] = ()
     rejected: tuple[Rejection, ...] = ()
     expires_at_ms: int | None = None
+    unknown: frozenset[str] = frozenset()
 
     def expired(self, now_ms: int) -> bool:
         return self.expires_at_ms is not None and self.expires_at_ms <= now_ms
@@ -150,8 +159,7 @@ class _OrgAnswer:
             pair for pair in self.wanted
             if pair[0].stored.grant.expires_at_ms is None or pair[0].stored.grant.expires_at_ms > now_ms
         )
-        expiries = [pair[0].stored.grant.expires_at_ms for pair in wanted if pair[0].stored.grant.expires_at_ms is not None]
-        return _OrgAnswer(self.fingerprint, wanted, self.rejected, min(expiries) if expiries else None)
+        return _OrgAnswer(self.fingerprint, wanted, self.rejected, _earliest(wanted), self.unknown)
 
 
 @dataclass(slots=True)
@@ -194,7 +202,8 @@ class GrantConsumer:
         self._reported: set[tuple[str, str, str, str]] = set()
         self._unresolved: tuple[str, ...] = ()
         self._contested: frozenset[str] = frozenset()
-        self._limited: dict[str, object] = {}
+        self._limited: dict[str, tuple[object, str]] = {}
+        self._grantor_limits: dict[tuple[str, str], str] = {}
 
     @property
     def active(self) -> bool:
@@ -239,7 +248,8 @@ class GrantConsumer:
             ]
             self._unresolved = ()
             settled = all(answer.fingerprint is not _UNKNOWN for answer in answers.values())
-            keys = self._pass_keys(items, settled)
+            unknown = {(org, grantor) for org, answer in answers.items() for grantor in answer.unknown}
+            keys = self._pass_keys(items, settled, unknown)
             grants = tuple(
                 grant.with_key_state(*keys.states.get((grant.org, grant.grant_id), (KEY_NONE, None)))
                 if grant.has_credential
@@ -258,45 +268,66 @@ class GrantConsumer:
         if previous is not None and previous.fingerprint == fingerprint and not previous.expired(self._now()):
             return previous
         kept = previous.unexpired(self._now()) if previous is not None else _OrgAnswer()
-        if self._limited.get(org) == fingerprint:
+        stopped = self._limited.get(org)
+        if stopped is not None and stopped[0] == fingerprint:
             return kept
         try:
-            answer = self._load(org, fingerprint)
-        except GrantScanLimited as limited:
-            self._limited[org] = fingerprint
-            self._emit("warn", SCAN_LIMITED_EVENT, org=org, phase="periodic", reason=limited.reason)
+            answer, limited = self._load(org, fingerprint, previous)
+        except GrantScanLimited as error:
+            if stopped is None or stopped[1] != error.reason:
+                self._emit("warn", SCAN_LIMITED_EVENT, org=org, phase="periodic", reason=error.reason)
+            self._limited[org] = (fingerprint, error.reason)
             return kept
         except Exception:
             return previous if previous is not None else _OrgAnswer()
         self._limited.pop(org, None)
+        self._note_grantor_limits(org, limited)
         return answer
 
-    def _load(self, org: str, fingerprint: object) -> _OrgAnswer:
+    def _load(
+        self, org: str, fingerprint: object, previous: _OrgAnswer | None
+    ) -> tuple[_OrgAnswer, dict[str, str]]:
         now = self._now()
         if self._store.org_state(org) == "deleted":
-            return _OrgAnswer(fingerprint)
+            return _OrgAnswer(fingerprint), {}
         limits = ScanLimits(
             self._fs,
             deadline=self._monotonic() + PERIODIC_BUDGET_SECONDS,
-            max_documents=MAX_ORG_GRANT_DOCUMENTS,
-            max_bytes=SCAN_READ_BYTES_LIMIT,
+            max_documents=MAX_GRANTOR_GRANT_DOCUMENTS,
+            max_bytes=GRANTOR_READ_BYTES_LIMIT,
+            max_grantors=MAX_ORG_GRANTORS,
             clock=self._monotonic,
         )
+        scan = scan_org_service_grants(self._store, org, limits)
         wanted, rejected = derive_org(
-            load_org_service_grants(self._store, org, limits=limits),
+            scan.grants,
             self._store.list_devices(org),
             owner=self._owner,
             device_id=self._device_id,
             now_ms=now,
         )
-        expiries = [
-            grant.stored.grant.expires_at_ms
-            for grant, _device in wanted
-            if grant.stored.grant.expires_at_ms is not None
-        ]
-        return _OrgAnswer(fingerprint, wanted, rejected, min(expiries) if expiries else None)
+        unknown: frozenset[str] = frozenset()
+        if scan.limited:
+            base = previous.unexpired(now) if previous is not None else _OrgAnswer()
+            if base.fingerprint is _UNKNOWN:
+                unknown = frozenset(scan.limited)
+            else:
+                wanted = (*wanted, *(pair for pair in base.wanted if pair[0].grantor in scan.limited))
+                rejected = (*rejected, *(item for item in base.rejected if item.grantor in scan.limited))
+                unknown = frozenset(grantor for grantor in scan.limited if grantor in base.unknown)
+        return _OrgAnswer(fingerprint, tuple(wanted), tuple(rejected), _earliest(wanted), unknown), scan.limited
 
-    def _pass_keys(self, items: tuple[DerivedGrant, ...], settled: bool) -> _KeyPass:
+    def _note_grantor_limits(self, org: str, limited: dict[str, str]) -> None:
+        for grantor, reason in sorted(limited.items()):
+            if self._grantor_limits.get((org, grantor)) != reason:
+                self._emit("warn", SCAN_LIMITED_EVENT, org=org, phase="periodic", reason=reason, grantor=grantor)
+        for key in [key for key in self._grantor_limits if key[0] == org and key[1] not in limited]:
+            del self._grantor_limits[key]
+        self._grantor_limits.update({(org, grantor): reason for grantor, reason in limited.items()})
+
+    def _pass_keys(
+        self, items: tuple[DerivedGrant, ...], settled: bool, unknown: Collection[tuple[str, str]] = ()
+    ) -> _KeyPass:
         keys = _KeyPass()
         openable: dict[tuple[str, str], DerivedGrant] = {}
         for item in items:
@@ -310,8 +341,8 @@ class GrantConsumer:
             ):
                 openable[(item.org, item.grant_id)] = item
         if settled:
-            for key in tuple(self._ledger.rows):
-                if key not in openable:
+            for key, row in tuple(self._ledger.rows.items()):
+                if key not in openable and (row.org, row.grantor) not in unknown:
                     self._withdraw(key)
         for key, item in openable.items():
             outcome = sync_entry(item, self._ledger, self._opener(), self._home)
@@ -402,6 +433,13 @@ class GrantConsumer:
 
 def _order(rejection: Rejection) -> tuple[str, str, str, str]:
     return (rejection.org, rejection.grant_id, rejection.grantor, rejection.reason)
+
+
+def _earliest(wanted: Collection[tuple[DerivedGrant, ProtectedDevice]]) -> int | None:
+    expiries = [
+        grant.stored.grant.expires_at_ms for grant, _device in wanted if grant.stored.grant.expires_at_ms is not None
+    ]
+    return min(expiries) if expiries else None
 
 
 def _bare_owner(owner: object) -> str | None:

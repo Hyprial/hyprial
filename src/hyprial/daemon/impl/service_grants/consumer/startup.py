@@ -13,13 +13,17 @@
 #   skipped: "@members" is a membership claim, so it is checked the same way
 #   the periodic consumer checks it.
 # - Nothing here writes, opens a credential, or creates a key store.
-# - S5 fix (2026-11-27, critic 3): the time budget is no longer read only
-#   between orgs. The deadline goes into the loader, which also refuses an
-#   org with more than MAX_ORG_GRANT_DOCUMENTS documents or more than
-#   SCAN_READ_BYTES_LIMIT listed bytes before reading any of them. A limited
-#   or late scan is "unknown", so the answer is "do not start", and it is
-#   said once per call with the fixed event service.grant.scan-limited
-#   (org, phase "startup", reason), nothing else.
+# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
+#   the time budget is no longer read only between orgs. The deadline goes
+#   into the bounded scan, which leaves unread any grantor directory with
+#   more than MAX_GRANTOR_GRANT_DOCUMENTS documents or GRANTOR_READ_BYTES_LIMIT
+#   listed bytes, and stops the org when it holds more than MAX_ORG_GRANTORS
+#   grantor directories. A limited grantor is "unknown": another grantor's
+#   effective grant still answers yes, but without one the answer is "do not
+#   start". Too many grantors or a spent deadline is "unknown" for the whole
+#   question. Each limit is said once per call with the fixed event
+#   service.grant.scan-limited (org, phase "startup", reason, and grantor
+#   when one grantor was limited), nothing else.
 """The startup question: does any org hold an effective grant for this device?"""
 
 from __future__ import annotations
@@ -33,12 +37,13 @@ from hyprial.daemon.impl.org.network.state import read_left_orgs
 from hyprial.daemon.impl.orgfs.api import OrgFs
 from hyprial.daemon.impl.service_grants.models import normalize_bare_owner
 from hyprial.daemon.impl.service_grants.queries import (
-    MAX_ORG_GRANT_DOCUMENTS,
-    SCAN_READ_BYTES_LIMIT,
+    GRANTOR_READ_BYTES_LIMIT,
+    MAX_GRANTOR_GRANT_DOCUMENTS,
+    MAX_ORG_GRANTORS,
     GrantScanLimited,
     ScanLimits,
     effective_grants_for_recipient,
-    load_org_service_grants,
+    scan_org_service_grants,
 )
 from hyprial.identity import read_device_record
 
@@ -61,7 +66,8 @@ def has_effective_grant(
     Cheap by construction, ``False`` on any failure, over a scan limit or once
     the time budget is spent, and never raises. The budget is checked between
     orgs, before and after the listing of one org's grants and before every
-    document read; one call into the directory is not interrupted.
+    document read; one call into the directory is not interrupted. A grantor
+    over a limit does not hide another grantor's grant.
     """
 
     try:
@@ -79,8 +85,9 @@ def has_effective_grant(
         limits = ScanLimits(
             orgfs,
             deadline=deadline,
-            max_documents=MAX_ORG_GRANT_DOCUMENTS,
-            max_bytes=SCAN_READ_BYTES_LIMIT,
+            max_documents=MAX_GRANTOR_GRANT_DOCUMENTS,
+            max_bytes=GRANTOR_READ_BYTES_LIMIT,
+            max_grantors=MAX_ORG_GRANTORS,
             clock=clock,
         )
         for org in store.orgs():
@@ -88,22 +95,27 @@ def has_effective_grant(
                 limits.check_time()
                 if org in left or not store.is_member(org, f"user:{owner}"):
                     continue
-                grants = load_org_service_grants(store, org, limits=limits)
+                scan = scan_org_service_grants(store, org, limits)
             except GrantScanLimited as limited:
                 _limited(logger, org, limited.reason)
                 return False
-            if effective_grants_for_recipient(grants, owner=owner, device_id=device_id, now_ms=now):
+            for grantor, reason in sorted(scan.limited.items()):
+                _limited(logger, org, reason, grantor)
+            if effective_grants_for_recipient(scan.grants, owner=owner, device_id=device_id, now_ms=now):
                 return True
         return False
     except Exception:
         return False
 
 
-def _limited(logger: Callable[..., None] | None, org: str, reason: str) -> None:
+def _limited(logger: Callable[..., None] | None, org: str, reason: str, grantor: str | None = None) -> None:
     if logger is None:
         return
+    fields = {"org": org, "phase": "startup", "reason": reason}
+    if grantor is not None:
+        fields["grantor"] = grantor
     try:
-        logger("warn", "service", SCAN_LIMITED_EVENT, org=org, phase="startup", reason=reason)
+        logger("warn", "service", SCAN_LIMITED_EVENT, **fields)
     except Exception:
         pass
 

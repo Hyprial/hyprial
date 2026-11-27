@@ -9,16 +9,21 @@
 #   validate for any reason, RecursionError included, is skipped alone. A revoked
 #   tombstone may have null service or recipient; it is never effective, so the
 #   effective-only helpers never see those nulls.
-# - S5 fix (2026-11-27, critic 3): the loader takes optional ScanLimits. Without
-#   them nothing changes (S4-py's call and every existing caller). With them one
-#   recursive listing of the org's grants tree gives the document count and the
-#   sizes before anything is read; more than max_documents documents, or more
-#   than max_bytes of listed size in total, raises GrantScanLimited before the
-#   first read. Documents are then read one at a time through the store's own
-#   verified reader, and the deadline is checked before the listing, after it
-#   and before every read. One OrgFS call is not interrupted: the deadline
-#   bounds the scan, not a single call. "Limited" is never "no grant": callers
-#   decide what an unknown answer means.
+# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
+#   load_org_service_grants is unchanged (S4-py's call and every existing
+#   caller). The bounded path is a separate function, scan_org_service_grants,
+#   so no caller can get a bounded answer without seeing what it left out. One
+#   recursive listing of the org's grants tree gives every document and its
+#   listed size before anything is read. The document and byte limits apply to
+#   each grantor directory on its own: a grantor over either one is left
+#   unread and named in GrantScan.limited, and every other grantor is read, so
+#   one member's junk only makes that member's grants unknown. More grantor
+#   directories than max_grantors, or a spent deadline, still stops the whole
+#   org with GrantScanLimited. Documents are read one at a time through the
+#   store's own verified reader, and the deadline is checked before the
+#   listing, after it and before every read. One OrgFS call is not
+#   interrupted: the deadline bounds the scan, not a single call. "Limited" is
+#   never "no grant": callers decide what an unknown answer means.
 """Pure service-grant query and OrgFS loading helpers shared with S4-py and S5."""
 
 from __future__ import annotations
@@ -40,16 +45,18 @@ from .models import (
 )
 
 
-MAX_ORG_GRANT_DOCUMENTS = 1024
-SCAN_READ_BYTES_LIMIT = 2 * 1024 * 1024
+MAX_GRANTOR_GRANT_DOCUMENTS = 256
+GRANTOR_READ_BYTES_LIMIT = 512 * 1024
+MAX_ORG_GRANTORS = 1024
 SERVICE_GRANTS_DIR = "directory/service-grants"
 SCAN_DOCUMENTS = "documents"
 SCAN_BYTES = "bytes"
+SCAN_GRANTORS = "grantors"
 SCAN_DEADLINE = "deadline"
 
 
 class GrantScanLimited(Exception):
-    """A bounded load stopped; ``reason`` is ``documents``, ``bytes`` or ``deadline``."""
+    """A bounded scan stopped for the whole org; ``reason`` is ``grantors`` or ``deadline``."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -58,17 +65,30 @@ class GrantScanLimited(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ScanLimits:
-    """The bounds of one org's grant load; ``deadline`` is a reading of ``clock``."""
+    """The bounds of one org's grant scan; ``deadline`` is a reading of ``clock``.
+
+    ``max_documents`` and ``max_bytes`` bound each grantor directory;
+    ``max_grantors`` bounds how many grantor directories the org may hold.
+    """
 
     orgfs: OrgFs
     deadline: float | None = None
-    max_documents: int = MAX_ORG_GRANT_DOCUMENTS
-    max_bytes: int = SCAN_READ_BYTES_LIMIT
+    max_documents: int = MAX_GRANTOR_GRANT_DOCUMENTS
+    max_bytes: int = GRANTOR_READ_BYTES_LIMIT
+    max_grantors: int = MAX_ORG_GRANTORS
     clock: Callable[[], float] = field(default=time.monotonic)
 
     def check_time(self) -> None:
         if self.deadline is not None and self.clock() > self.deadline:
             raise GrantScanLimited(SCAN_DEADLINE)
+
+
+@dataclass(frozen=True, slots=True)
+class GrantScan:
+    """What a bounded scan read, and which grantors it left unread (grantor to reason)."""
+
+    grants: tuple[StoredServiceGrant, ...] = ()
+    limited: dict[str, str] = field(default_factory=dict)
 
 
 def is_grant_effective(grant: ServiceGrant, *, now_ms: int) -> bool:
@@ -195,21 +215,60 @@ def load_org_service_grants(
     org: str,
     *,
     owner: str | None = None,
-    limits: ScanLimits | None = None,
 ) -> tuple[StoredServiceGrant, ...]:
     """Load and validate all verified service grants from OrgFS for ``org``.
 
     Invalid documents or documents whose ``grantId`` disagrees with the filename
     are skipped rather than aborting observation of valid grants; any parse or
     validation failure, ``RecursionError`` included, skips only that document.
-    With ``limits`` the load is bounded and raises :class:`GrantScanLimited`
-    instead of exceeding them; without, it behaves exactly as before.
     """
 
-    if limits is None:
-        records = store.list_service_grants(org, owner=owner)
-    else:
-        records = _bounded_records(store, org, owner, limits)
+    return _parsed(org, store.list_service_grants(org, owner=owner))
+
+
+def scan_org_service_grants(
+    store: OrgFsDirectoryStore,
+    org: str,
+    limits: ScanLimits,
+    *,
+    owner: str | None = None,
+) -> GrantScan:
+    """Load ``org``'s grants as :func:`load_org_service_grants` does, within ``limits``.
+
+    A grantor directory over the document or byte limit is not read and is
+    named in :attr:`GrantScan.limited`; every other grantor is read. Too many
+    grantor directories or a spent deadline raises :class:`GrantScanLimited`.
+    """
+
+    limits.check_time()
+    targets = _listed_documents(limits.orgfs, org, None if owner is None else normalize_bare_owner(owner))
+    limits.check_time()
+    by_grantor: dict[str, list[tuple[str, int]]] = {}
+    for grantor, grant_id, size in targets:
+        by_grantor.setdefault(grantor, []).append((grant_id, size))
+    if len(by_grantor) > limits.max_grantors:
+        raise GrantScanLimited(SCAN_GRANTORS)
+    limited: dict[str, str] = {}
+    records: list[tuple[str, str, dict]] = []
+    for grantor, documents in sorted(by_grantor.items()):
+        if len(documents) > limits.max_documents:
+            limited[grantor] = SCAN_DOCUMENTS
+            continue
+        if sum(size for _grant_id, size in documents) > limits.max_bytes:
+            limited[grantor] = SCAN_BYTES
+            continue
+        for grant_id, _size in documents:
+            limits.check_time()
+            try:
+                record = store.read_service_grant(org, grantor, grant_id)
+            except ValueError:
+                continue
+            if record is not None:
+                records.append((grantor, grant_id, record))
+    return GrantScan(_parsed(org, records), limited)
+
+
+def _parsed(org: str, records: Iterable[tuple[str, str, dict]]) -> tuple[StoredServiceGrant, ...]:
     loaded: list[StoredServiceGrant] = []
     for bare_owner, filename_grant_id, record in records:
         try:
@@ -222,28 +281,6 @@ def load_org_service_grants(
         except (ValueError, TypeError, KeyError, RecursionError):
             continue
     return tuple(loaded)
-
-
-def _bounded_records(
-    store: OrgFsDirectoryStore, org: str, owner: str | None, limits: ScanLimits
-) -> list[tuple[str, str, dict]]:
-    limits.check_time()
-    targets = _listed_documents(limits.orgfs, org, None if owner is None else normalize_bare_owner(owner))
-    limits.check_time()
-    if len(targets) > limits.max_documents:
-        raise GrantScanLimited(SCAN_DOCUMENTS)
-    if sum(size for _owner, _grant_id, size in targets) > limits.max_bytes:
-        raise GrantScanLimited(SCAN_BYTES)
-    records: list[tuple[str, str, dict]] = []
-    for bare, grant_id, _size in targets:
-        limits.check_time()
-        try:
-            record = store.read_service_grant(org, bare, grant_id)
-        except ValueError:
-            continue
-        if record is not None:
-            records.append((bare, grant_id, record))
-    return records
 
 
 def _listed_documents(fs: OrgFs, org: str, owner: str | None) -> list[tuple[str, str, int]]:
@@ -276,12 +313,15 @@ def _listed_documents(fs: OrgFs, org: str, owner: str | None) -> list[tuple[str,
 
 
 __all__ = [
-    "MAX_ORG_GRANT_DOCUMENTS",
+    "GRANTOR_READ_BYTES_LIMIT",
+    "MAX_GRANTOR_GRANT_DOCUMENTS",
+    "MAX_ORG_GRANTORS",
     "SCAN_BYTES",
     "SCAN_DEADLINE",
     "SCAN_DOCUMENTS",
-    "SCAN_READ_BYTES_LIMIT",
+    "SCAN_GRANTORS",
     "SERVICE_GRANTS_DIR",
+    "GrantScan",
     "GrantScanLimited",
     "ScanLimits",
     "can_open_grant_credential",
@@ -290,4 +330,5 @@ __all__ = [
     "is_grant_effective",
     "load_org_service_grants",
     "recipient_matches",
+    "scan_org_service_grants",
 ]
