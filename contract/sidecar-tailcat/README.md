@@ -279,9 +279,10 @@ v4 引入固定槽位池（design-stable-zenoh-session-slots-2026-10-08 §4）�
 v7 要求每条 `expose` 命令**显式提供** `admission`（`"allow"` 或 `"keys"`；缺省直接拒绝并返回 `BAD_REQUEST`，不再默认 `"allow"`），并在 `admission: "keys"` 时新增 `keys` 数组：
 
 - `keys` 编码与上限：仅在 `admission: "keys"` 时出现且不得为 `null`；每项必须是规范写法（小写 `nodekey:` 前缀 + 64 位小写十六进制非零公钥，与成员表公钥写法一致），拒绝大写十六进制、无前缀写法、零值公钥与重复项；数组上限为 **4096** 项，超限时返回带 `requestId` 的 `BAD_REQUEST` 且边车不退出。
-- 准入语义：对端必须先通过 tailnet 成员准入，且其连接本机 server 时出示的每 server 派生客户端公钥（对方设备行 `clientPublicByServer[本机 serverPublic]`）必须命中该端口的 `keys` 集合；未命中的连接在 accept 或入池复查阶段直接关闭并计入 `deniedCount`，不触达本地后端。
+- 准入语义：对端必须先通过 tailnet 成员准入，且其连接本机 server 时出示的每 server 派生客户端公钥（本边车成员名册中该成员的 `clientPublicByServer[本机 serverPublic]`，daemon 经 `membership-status` 读取；不取自目录设备行）必须命中该端口的 `keys` 集合；未命中的连接在 accept 或入池复查阶段直接关闭并计入 `deniedCount`，不触达本地后端。
 - 空集合（`"keys": []`）拒绝所有对端（包括在册成员），不回退到 `allow`。
 - 对同一端口、同一 `target` 与 `proxyProtocol` 再次发送 `expose` 时，在原监听上就地替换准入规则（支持 `keys` 集合增删以及 `keys` ↔ `allow` 切换），并关闭已建连接中不再被新规则放行的连接；仍被放行的连接不受影响。
 - `exposed` 事件回显 `admission`（`"allow"` 或 `"keys"`），仅在 `keys` 模式下附带整型 `keyCount`（`0..4096`），永不回显完整 `keys` 数组（含 `keys`、或 `keys` 模式缺 `keyCount`、或 `allow` 模式带 `keyCount` 的事件均在 `invalid-events.jsonl` 中被拒绝）。
+- daemon 对用户暴露端口只下发 `admission: "keys"`：集合由服务授权推导（含 `@members` 授权，展开为该 org 成员设备的公钥），没有授权时为空集合；`"allow"` 仍是协议的合法值，但 daemon 不再对用户暴露使用它。推导规则与日志事件见 [service-grants 契约](../service-grants/README.md)。
 - 协议为封闭格式，v6 及更早版本一律返回 `SIDECAR_PROTOCOL_MISMATCH`；升级步骤见 [migration-sidecar-protocol-v7.md](../../docs/guides/migration-sidecar-protocol-v7.md)。
 

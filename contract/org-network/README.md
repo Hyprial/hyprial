@@ -24,7 +24,11 @@ invalid, duplicate or cross-role-aliased maps make the entire row invalid.
 and is never an inbound admission key. Directory maps are publication data,
 not admission or HTTP attribution authority. With stdio v7 the sidecar roster
 supplies the derived-key-to-owner mapping; absent, ambiguous, master or
-foreign-server keys fail closed. The `self` pane still exposes the local public
+foreign-server keys fail closed. Service grant admission follows the same rule:
+the exposing daemon takes a recipient's admission key from its own sidecar
+roster (`membership-status`), never from this directory map, which the
+publishing path leaves empty (see
+[contract/service-grants](../service-grants/README.md)). The `self` pane still exposes the local public
 `serverPublic`. Directory outages do not change sidecar membership.
 
 UUID addressing adds `deviceUid` as an output field only; no routing key
@@ -78,7 +82,10 @@ the first 32 lowercase hex digits of the SHA-256 of those bytes. A reader
 refuses a row where only one key is present, where either is malformed, where
 the id is not the digest of the public key, or where the public key is a
 low-order point; such a row is invalid as a whole. The key set of a row stays
-closed: `encryptionKeyPrivate` or any other unknown key is rejected.
+closed: `encryptionKeyPrivate` or any other unknown key is rejected. A service
+grant credential is sealed to this public key and bound to this
+`encryptionKeyId` ([contract/service-grants](../service-grants/README.md)); a
+row without the pair can be granted access but cannot receive a credential.
 
 A device publishes the pair once it holds a committed account and a device
 record that belongs to that account (settings `owner`, `identityIssuer` and
