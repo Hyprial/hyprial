@@ -18,13 +18,13 @@
 6. 各 harness 的原生订阅登录（OAuth 类）也经 Magpie。`hyprial provider login <harness>` 由 daemon 调用 Magpie 的登录流程，harness 一律指向网关。hyprial 不再按 agent 保存原生登录文件，`agent.provider.login`、`agent.provider.logout`、`agent.provider.default` 这组方法移除。
 
 7. hyprial 不保存任何模型 Key。无头启动与交互启动拿到的都只是网关地址和模型 ID。用户添加的连接条目、owner-key 和机器默认凭据不再保留；保存和测试连接的 daemon 方法 `agent.secret.provider-configure`、`agent.secret.provider-test` 移除；启动时不再向 CLI 进程或子进程下发 Key。Magpie 因此成为必需组件：没有安装或网关不可用时，agent 无法调用模型。已保存的 Key 由用户按迁移文档重新录入 Magpie。
+8. agent 的进程只拿占位符，不拿任何网关 key。本机所有 agent 共用 Magpie 里的全部账号和模型。绑定里的模型 ID 是 hyprial 一侧的约定，网关不强制；额度和限流按 Magpie 的全局设置。按 agent 限制账号和模型不在本线范围内。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
 ## 2. 尚未决定
 
 - `hyprial provider login` 的命令形态；一条绑定怎样选定 Magpie 的分组和模型。
-- 是否以及怎样按 agent 限制可用的账号和模型。
 - 服务授权交付的 Key 落在哪里。
 - daemon 级 provider 登录设计（PR #68）的处置。
 - Windows 的范围。
