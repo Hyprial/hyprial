@@ -21,6 +21,13 @@ Decisions pinned here:
 - "exit 0 with no line" is a stop before the record, a failure here;
 - the handoff file is only ``lstat``-ed: a regular file, owned by the caller,
   mode 0600; it is never opened.
+- every stop step waits out its own timeout before the next one begins: 30 s
+  after the stdin closes, then 10 s for SIGTERM, then 5 s for SIGKILL, in the
+  child's own loop and again for a residual process group.  That case's table
+  holds signal names, and the test resolves them when it runs: a parametrize
+  table is evaluated when the module is imported, and the ``signal`` module of
+  Windows has no SIGKILL, so a number read there fails the import and with it
+  the collection of the whole file.
 """
 
 from __future__ import annotations
@@ -405,6 +412,129 @@ def test_the_real_child_handle_never_signals_an_exited_child(
         child.close()
 
     assert sent == [(31337, signal.SIGTERM)]
+
+
+def stop_phase_seconds(instance: Any, runner: Any) -> list[float]:
+    """Seconds the script waits after closing the GUI child's stdin, one entry per poll."""
+
+    waits: list[float] = []
+
+    def record(seconds: float) -> None:
+        children = runner.gui_children()
+        if children and children[0].stdin_closed_at is not None:
+            waits.append(seconds)
+
+    instance.clock.hooks.append(record)
+    return waits
+
+
+@pytest.mark.parametrize(
+    (
+        "residual",
+        "ignores",
+        "signal_names",
+        "method",
+        "seconds",
+        "rc",
+        "result",
+        "detail",
+    ),
+    [
+        (False, (), [], "stdin closed", 0.5, smoke.EXIT_OK, "PASS", "stdin closed; GUI exited rc=0"),
+        (
+            False,
+            ("stdin",),
+            ["SIGTERM"],
+            "SIGTERM",
+            30.0,
+            smoke.EXIT_FAILED,
+            "ROLLED_BACK",
+            "did not stop within 30s of its stdin closing; ended by SIGTERM (rc=143)",
+        ),
+        (
+            False,
+            ("stdin", "sigterm"),
+            ["SIGTERM", "SIGKILL"],
+            "SIGKILL",
+            40.0,
+            smoke.EXIT_FAILED,
+            "ROLLED_BACK",
+            "did not stop within 30s of its stdin closing; ended by SIGKILL (rc=137)",
+        ),
+        (
+            False,
+            ("stdin", "sigterm", "sigkill"),
+            ["SIGTERM", "SIGKILL"],
+            "SIGKILL",
+            45.0,
+            smoke.EXIT_ROLLBACK_FAILED,
+            "ROLLED_BACK_GUI_LEFT",
+            "is still alive after SIGKILL; stop it manually",
+        ),
+        (
+            True,
+            (),
+            ["SIGTERM"],
+            "SIGTERM (residual group)",
+            0.25,
+            smoke.EXIT_FAILED,
+            "ROLLED_BACK",
+            "ended by SIGTERM (residual group) (rc=0)",
+        ),
+        (
+            True,
+            ("sigterm",),
+            ["SIGTERM", "SIGKILL"],
+            "SIGKILL (residual group)",
+            10.25,
+            smoke.EXIT_FAILED,
+            "ROLLED_BACK",
+            "ended by SIGKILL (residual group) (rc=0)",
+        ),
+        (
+            True,
+            ("sigterm", "sigkill"),
+            ["SIGTERM", "SIGKILL"],
+            "SIGKILL",
+            15.25,
+            smoke.EXIT_ROLLBACK_FAILED,
+            "ROLLED_BACK_GUI_LEFT",
+            "is still alive after SIGKILL; stop it manually",
+        ),
+    ],
+)
+def test_each_stop_step_waits_out_its_timeout_before_the_next_one(
+    tmp_path: Path,
+    listener: Listener,
+    residual: bool,
+    ignores: tuple[str, ...],
+    signal_names: list[str],
+    method: str,
+    seconds: float,
+    rc: int,
+    result: str,
+    detail: str,
+) -> None:
+    instance, runner = build(tmp_path, listener.port, ["--gui"])
+    if residual:
+        runner.exit_after_record = 0.2
+        runner.exit_after_record_code = 0
+        runner.group_survives_root = True
+    else:
+        runner.stdin_stop_seconds = None if "stdin" in ignores else 0.5
+    runner.exits_on_sigterm = "sigterm" not in ignores
+    runner.exits_on_sigkill = "sigkill" not in ignores
+    runner.group_exits_on_sigterm = "sigterm" not in ignores
+    runner.group_exits_on_sigkill = "sigkill" not in ignores
+    waits = stop_phase_seconds(instance, runner)
+
+    assert instance.finish(instance.run_apply()) == rc
+
+    assert instance.result == result
+    assert runner.gui_children()[0].signals == [getattr(signal, name) for name in signal_names]
+    assert instance.gui["stopMethod"] == method
+    assert sum(waits) == pytest.approx(seconds)
+    assert detail in check(instance, "gui.stop").detail
 
 
 def test_runner_spawn_starts_its_own_session_with_pipes_and_a_stderr_file(
