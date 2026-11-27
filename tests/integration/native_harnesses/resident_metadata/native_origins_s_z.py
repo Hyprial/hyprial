@@ -165,4 +165,8 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/terminals/client/events.py": ("resident", ("new-module: hc local IPC client",)),
     "daemon/impl/terminals/client/protocol.py": ("resident", ("new-module: hc local IPC client",)),
     "daemon/impl/terminals/client/rpc.py": ("resident", ("new-module: hc local IPC client",)),
+    "daemon/impl/terminals/supervisor/__init__.py": ("resident", ("new-module: private hc core supervisor",)),
+    "daemon/impl/terminals/supervisor/environment.py": ("resident", ("new-module: private hc core supervisor",)),
+    "daemon/impl/terminals/supervisor/naming.py": ("resident", ("new-module: private hc core supervisor",)),
+    "daemon/impl/terminals/supervisor/supervisor.py": ("resident", ("new-module: private hc core supervisor",)),
 }

@@ -117,6 +117,7 @@ def test_core_restart_closes_old_stream_and_new_snapshot_resets_seq(tmp_path: Pa
         server.emit_event("created", "t-before", {})
         assert subscription.next_event().type == "created"
         server.simulate_core_restart(new_version="0.1.22")
+        assert server.socket_alive is True
         with pytest.raises(HcStreamClosed):
             subscription.next_event()
         fresh = HcEventSubscription(client, read_timeout=0.2)

@@ -78,6 +78,7 @@ class FakeHcServer:
         error_code: int = -32603,
         heartbeat_interval: float | None = None,
         initial_subscription_event: Mapping[str, Any] | None = None,
+        terminal_run_events: Sequence[str] | None = None,
     ) -> None:
         self.endpoint = Path(endpoint)
         self.version = version
@@ -89,6 +90,7 @@ class FakeHcServer:
             if initial_subscription_event is not None
             else None
         )
+        self.terminal_run_events = tuple(terminal_run_events or ())
         self._core = {"id": "fake-core-id", "name": "fake-core"}
         self._holders = [dict(holder) for holder in holders or ()]
         self._listener = listen_local_ipc(self.endpoint)
@@ -103,6 +105,7 @@ class FakeHcServer:
         self._next_pid = 41000
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.stopped = False
         self._accept_thread.start()
         self._heartbeat_thread.start()
 
@@ -111,6 +114,10 @@ class FakeHcServer:
 
     def __exit__(self, *_error: object) -> None:
         self.close()
+
+    @property
+    def socket_alive(self) -> bool:
+        return not self._stop.is_set() and self.endpoint.exists()
 
     def close(self) -> None:
         if self._stop.is_set():
@@ -379,6 +386,15 @@ class FakeHcServer:
             self._terminals[address] = record
             wire = record.wire()
         self.emit_event("created", address, wire)
+        for event_type in self.terminal_run_events:
+            if event_type == "finished":
+                self.finish_terminal(address)
+            elif event_type == "lost":
+                self.lose_holder(address)
+            elif event_type == "removed":
+                with self._lock:
+                    self._terminals.pop(address, None)
+                self.emit_event("removed", address, {})
         return wire
 
     def _terminal_list(self, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -411,9 +427,20 @@ class FakeHcServer:
 
     def _server_stop(self) -> dict[str, Any]:
         with self._lock:
-            to_finish = [item.address for item in self._terminals.values() if item.state == "live" and not item.keep]
+            to_finish = [
+                item.address for item in self._terminals.values()
+                if item.state == "live" and not item.keep
+            ]
         for address in to_finish:
             self._finish(address, None, 1, "server_stop")
+        self.stopped = True
+        self._stop.set()
+        self._listener.close()
+        with self._lock:
+            subscriptions = list(self._subscriptions)
+            self._subscriptions.clear()
+        for subscription in subscriptions:
+            subscription.stream.close()
         return {"stopped": True}
 
     def _finish(self, address: str, exit_code: int | None, signal: int | None, reason: str) -> None:
