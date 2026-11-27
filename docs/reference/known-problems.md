@@ -14,7 +14,7 @@
 | KP-006 | import ratchet 在 Python < 3.10 下读不了源码时只打印 FAIL、不阻断 | 待修 |
 | KP-007 | session_persistence_overload 在 xdist 并发下被 fd 卫生门偶发误报 teardown 泄漏 | 已修复（本轮，报告期复核瞬时描述符） |
 | KP-008 | `message.send` / `message.send.lookup` 走 registry 派发，网络门 IPC root（router `handle`）看不到它们 | 待修（0.5.5.4，网络门支持声明 handler root） |
-| KP-009 | `test_four_sides_cover_a_pure_heartbeat_load` 在本机（Apple Silicon）单独跑常红 | 不修（机器敏感，CI 绿） |
+| KP-009 | native actor 后端的 heartbeat 覆盖率测试因稳态唤醒与完成事件固定开销而低于门槛 | 已修复（方向 A，保持 `>= 0.70` 契约） |
 | KP-010 | `test_close_finishes_all_teardown_after_active_ipc_worker_times_out` 本机偶发：sentinel 错误先于 IPC client 超时错误浮出 | 不修（时序竞争，基线同分布） |
 | KP-011 | `test_shutdown_fails_loud_when_active_handle_exceeds_bound` 本机偶发 DID NOT RAISE：active client worker 的 0.05s 超时窗与线程退出竞争 | 不修（时序竞争，基线同分布） |
 | KP-015 | 本机受限执行环境中 hosted readiness 的 spawn-error 测试在 preexec 阶段失败 | 待测（本轮不修） |
@@ -51,7 +51,7 @@
 | KP-058 | provider-key HTTP 方法尚无 Contract Mock 示例（原分支 KP-047） | 待补示例与真实链路验收，不代表方法不存在 |
 | KP-059 | GUI 初始化跨进程未知回执恢复缺口（原分支 KP-048） | 已修复（代码已合入 dev：Z-3 #2861，GUI 托管的 initialize 路径随 Z-6b #2933 删除；真实 issuer、真实 Tailcat、macOS 与浏览器全旅程未验证；Z-3：serving 启动对已提交 casdoor owner 补完 promoting/unknown 的 initialize 回执、缺失的设备登记（含上一 owner 遗留的 device.json）、仅有 failed/cancelled initialize 回执的重新 initialize；`accepted` 回执与损坏日志不处理；native 隔离 home 上 kill -9 矩阵 6 行 PASS，受控身份与受控 provisioner；真实身份 issuer 与真实 Tailcat 为 BLOCKED，未验证） |
 | KP-060 | 四步引导浏览器验收等待旧按钮颜色超时 | 合并前后同样失败；随引导整理处理 |
-| KP-061 | 云工作机并发全量 pytest 中断与基线归因限制 | 待归因（五项 UNKNOWN；已确认 mock 测试适配由 #2780 修复） |
+| KP-061 | 云工作机并发全量 pytest 中断与基线归因限制 | Lark shutdown completion-custody 项已由 #59 修复；其余历史归因仍待查 |
 | KP-062 | fs purge plan 无效目标未输出 JSON 错误信封 | 已关闭（2026-11-25 OrgFS 精简实现删除了 `org fs purge plan`，问题随命令消失；与 KP-020 测试入口问题分开） |
 | KP-063 | GUI 产品代码仍保留 `/api/reference/*` 默认路径，但已无产品宿主提供 | 已修复（PR 1d、PR 1e 各段、PR 3、PR 1e-4；清单 `pending` 于 2026-11-16 清空，未发版） |
 | KP-064 | 已初始化的 home 在没有 daemon 运行时 `hyprial gui` 拒绝启动（`GUI_DAEMON_UNAVAILABLE`），经 GUI 初始化的 daemon 随 GUI 子进程结束 | 已修复（DL-1 #2845：准入前确保 daemon，校验之后启动，对恢复中的 daemon 有界等待；Z-6a #2916 起 ownerless home 同样被确保；Z-6b #2933 起 daemon 不再是 GUI 子进程；含 DL-1 的捆绑运行时在 macOS 上的第二次启动 UNKNOWN） |
@@ -227,13 +227,14 @@
 - 决定：待修。网络门需把声明的 handler 也作为 root（或采用等价规则），届时恢复 root 级可见性断言。
 - 负责人：R&D 负责人（emergent-org-structure-refactor）。
 
-## KP-009 heartbeat CPU 覆盖率测试在本机单跑常红
+## KP-009 heartbeat CPU 覆盖率测试在 native actor 后端下偏低
 
-- 现象：`tests/daemon/ipc/cost/test_ipc_cost_counters.py::test_four_sides_cover_a_pure_heartbeat_load` 断言 40 次 heartbeat 窗口内 `instrumentedCpuMs / processCpuDelta >= 0.70`。在本地 Apple Silicon（macOS，CPython 3.12）单跑时比值落在 0.68–0.74，常红（2026-11-03 实测：基线 `origin/release/v0.5.5.4` 五跑 4 红 1 绿，带 agent-git-identity 工作树五跑同样 4 红 1 绿）。窗口总 CPU 仅约 12–22 ms，未插桩的后台/GC CPU 就能把比值压到线下。
-- 影响：只影响本机手动复跑；CI（uv 管理的 3.12 runner）照常绿。不指向产品回归——基线与改动树同分布。
-- 规避：本机不以此单测结论为准；以 CI 全量结果为准，或多次重跑取稳定结论。
-- 决定：不修。比值门是为 CI 机器校准的；本地机器差异不是产品问题，不为它放宽或改写断言。若 CI 也开始变红，再按真回归处理。
-- 负责人：R&D 负责人。依据：agent-git-identity 分支调查（2026-11-03），基线/改动树同分布红绿。
+- 现象：`tests/daemon/ipc/cost/test_ipc_cost_counters.py::test_four_sides_cover_a_pure_heartbeat_load` 在默认 `native` 后端下将三个同步 actor dispatch 的固定 Rust 引擎开销计入进程 CPU 分母，但这些线程没有对应的 Python coverage span。Phase 1 的 native 基线在 macOS 单跑的 B 窗口为 `0.6492 / 0.6528 / 0.6737 / 0.7088`（min / p10 / median / max），10 次有 8 次低于 `0.70`，残余 CPU 为 `0.1487 ms/beat`（median）。Linux `taskset -c 0-3` 的 B 窗口在 daemon `-n 4` 争用下为 `0.7039 / 0.7050 / 0.7111 / 0.7165`，最低 `0.7039`，残余为 `0.1826 ms/beat`（median）。主要残差来自每次 `tell` 经 Tokio Ractor `PumpActor` 与 `oneshot` 双跳，以及每条成功命令无条件构造并发送 `command_completed` 事件。
+- 影响：native actor 后端的稳态 heartbeat 覆盖率在本机与共享 4-vCPU 争用条件下可能低于既有 `>= 0.70` 契约，造成真实测试失败。Phase 1 对照的 `reference-abi` macOS B 窗口中位数为 `0.8333`，Linux `-n 4` 中位数为 `0.8517`，说明差异来自 native 引擎路径，而不是 coverage 字段计算。未计费的 `ps` fixture 调用本身只贡献约 `0.0007 ms/beat`，不是根因。
+- 修复：方向 A 已完成。每代 executor 现在通过 cell generation wake signal 直接接收 mailbox 唤醒，Ractor 继续负责低频停止、失败与监督重启结果。`command_completed` 仅在存在 per-actor `spec_sink`、自定义 engine sink 或启用 `hyprial.actor_runtime` INFO 日志时跨 PyO3 构造与发送。成本测试改用 `app._ipc_stats_snapshot()` 排除未计费 `ps`，并按 `ipc_stats.py:83,91` 使用契约定义的 `coverageCpuMs`。`0.70` 阈值与测量契约保持不变。
+- 验证：方向 A 后 macOS native N=20 的 A/B 窗口分别为 `0.8365 / 0.8467 / 0.8532 / 0.8633` and `0.8480 / 0.8495 / 0.8534 / 0.8634`; 两者均为 `0/20` 低于 `0.70`。B 窗口残余为 `0.0415 / 0.0453 / 0.0481 / 0.0508 ms/beat`（min / p10 / median / max）。Linux powerstation fresh post-fix N=30 B 窗口为：alone `0.8284 / 0.8301 / 0.8328 / 0.8363`，daemon `-n 4` contention `0.8139 / 0.8163 / 0.8221 / 0.8419`，six CPU burners `0.8134 / 0.8155 / 0.8266 / 0.8363`，均为 `0/30` 低于 `0.70`；对应残余分别为 `0.0768 / 0.0777 / 0.0820 / 0.0880`、`0.0746 / 0.0822 / 0.0929 / 0.0998`、`0.0777 / 0.0808 / 0.0842 / 0.0942 ms/beat`。这些数字来自本轮 fresh post-fix JSONL probe，执行于 code-identical predecessor `48c0f56c1c`，最终交付即本条所属提交。此前保留的 JSONL 与旧 fixer report 中的 `0.8323–0.8426` 表来自不同验证状态，不能互相替代。Rust tests、native engine behavior、actor runtime 与 preservation 焦点套件分别完成验证，未将环境失败或未测项记为通过。
+- 决定：已修复，保留 `>= 0.70` 契约，继续以 native 后端和真实争用条件验收。
+- 负责人：R&D 负责人。依据：KP-009 Phase 1 profiling report、保留的 Linux probe JSONL 与本轮 macOS probe。
 
 ## KP-010 shutdown 遥测测试断言的错误次序在本机偶发颠倒
 
@@ -731,6 +732,7 @@
 
 ## KP-061 云工作机并发全量 pytest 的中断与基线归因限制
 
+- 状态更新（2026-11-27）：Lark shutdown 中 `completion()` 在 actor 已关闭后继续重试、占住 pending custody 的问题已由 PR `#59` 修复，提交 `441f5140f2`，标题为 `fix(lark): stop retrying completions after actor closure`。该修复覆盖本条登记的 `test_shutdown_reports_blocked_process_stop_until_custody_releases` failure item。
 - 现象：2026-11-14，在当前 4 核 / 16 GiB 云工作机上，daemon request 的四个独立候选全量 `pytest tests/` 诊断运行并发且均在完成前中断。固定候选 `60a37624e`（service）记录 3926 PASS / 9 FAIL / 1 ERROR / 5 SKIP；`a30e98556`（identity）3988 PASS / 4 FAIL / 5 SKIP；`d5d27cad0`（network）1931 PASS / 3 FAIL / 1 ERROR / 3 SKIP；`c1c9812ab`（routine）896 PASS / 5 FAIL / 1 ERROR / 3 SKIP。这些是中断时的部分计数，均非完整套件结论。Service/identity 中的 `tests/daemon/contract_mock/error_data/test_catalog.py` 参数化失败和 `test_mock_contract.py::test_the_real_registered_method_projection_loads_and_serves_success` 与新增声明未同步 mock 测试有关；共用测试修复已由 #2780 合入，基线与修复候选各 555 PASS，独立 service+routine 组合 562 PASS、identity 组合 560 PASS。network/routine 的历史全量在该段之前中断，不能将焦点通过写成那些全量通过。
 - 固定基线对照：在未改产品的 `2a494edccdee0135b0a4dbb6fd7f7cf755b803f0` 独立 checkout，使用已安装锁定依赖，仅对四轮中其余去重的 11 个失败 nodeid 做一次 `uv run --frozen pytest -q`，得到 5 PASS / 6 FAIL / 1 teardown ERROR（88.70 秒）。同一 nodeid 且同类症状的六项如下；它们在此控制中不能归因于上述新增 MethodSpec：
   - `tests/daemon/adapters/qq/test_token.py::test_token_stop_cancels_and_joins_background_task`：后台任务未全部完成，继发 `store.sqlite`/wal/shm 三个 fd 泄漏 teardown ERROR。

@@ -25,7 +25,7 @@ use ractor::Actor;
 
 use crate::cell::{lock, Cell, FailureInfo};
 use crate::events::{emit, EventValues};
-use crate::pump::{PumpActor, PumpArgs, PumpMsg};
+use crate::pump::{PumpActor, PumpArgs, WakeSignal};
 
 pub(crate) enum SupervisorMsg {
     /// A restart-backoff delay elapsed for `(cell_id, generation)`.
@@ -252,63 +252,74 @@ impl SupervisorActor {
                     cell: spawn_cell.clone(),
                     engine: engine.clone(),
                 };
-                let spawn_result =
-                    PumpActor::spawn_linked(None, spawn_actor, PumpArgs { handler }, supervisor)
-                        .await;
+                let wake = Arc::new(WakeSignal::new());
+                let spawn_result = PumpActor::spawn_linked(
+                    None,
+                    spawn_actor,
+                    PumpArgs {
+                        handler,
+                        wake: wake.clone(),
+                    },
+                    supervisor,
+                )
+                .await;
                 match spawn_result {
                     Ok((pump_ref, _handle)) => {
-                        let mut accepted = false;
-                        {
+                        let accepted = {
                             let mut inner = lock(&cell.inner);
                             if inner.stop.requested
                                 || inner.state != CellState::RestartPending
                                 || inner.generation != generation
                             {
-                                // Stop acceptance (or reset) raced the
-                                // factory: the fresh handler instance is
-                                // discarded; the pump exits on its wake.
+                                inner.respawning = false;
+                                false
                             } else {
                                 inner.generation += 1;
                                 inner.state = CellState::Running;
-                                inner.respawning = false;
                                 inner.pump = Some(pump_ref.clone());
                                 engine.remember_pump(pump_ref.get_id(), cell.clone());
-                                accepted = true;
+                                true
                             }
-                        }
-                        // The pump sees the kept mailbox either way; when a
-                        // stop raced in, its first wake exits immediately.
-                        let _ = pump_ref.send_message(PumpMsg::Wake);
-                        if accepted {
-                            crate::gate::attach(|py| {
-                                let (generation, sinks) = {
-                                    let inner = lock(&cell.inner);
-                                    (inner.generation, cell.sinks.clone())
-                                };
-                                let (group, key) = cell
-                                    .keyed()
-                                    .map_or((None, None), |(g, k)| (Some(g), Some(k)));
-                                emit(
-                                    py,
-                                    &sinks,
-                                    EventValues {
-                                        kind: "child_restarted",
-                                        actor_id: &cell.id,
-                                        name: &cell.name,
-                                        generation,
-                                        command: None,
-                                        command_type_override: None,
-                                        code: None,
-                                        detail: None,
-                                        restart_delay: None,
-                                        group,
-                                        key,
-                                    },
-                                );
-                            });
+                        };
+                        if !accepted {
+                            pump_ref.stop(None);
                             cell.cv.notify_all();
                             engine.notify_activity();
+                            return;
                         }
+                        crate::gate::attach(|py| {
+                            let generation = lock(&cell.inner).generation;
+                            let (group, key) = cell
+                                .keyed()
+                                .map_or((None, None), |(g, k)| (Some(g), Some(k)));
+                            emit(
+                                py,
+                                &cell.sinks,
+                                EventValues {
+                                    kind: "child_restarted",
+                                    actor_id: &cell.id,
+                                    name: &cell.name,
+                                    generation,
+                                    command: None,
+                                    command_type_override: None,
+                                    code: None,
+                                    detail: None,
+                                    restart_delay: None,
+                                    group,
+                                    key,
+                                },
+                            );
+                        });
+                        {
+                            let mut inner = lock(&cell.inner);
+                            inner.respawning = false;
+                            if inner.state != CellState::Stopped {
+                                inner.wake = Some(wake);
+                            }
+                        }
+                        cell.wake();
+                        cell.cv.notify_all();
+                        engine.notify_activity();
                     }
                     Err(err) => {
                         // Ractor spawn failure is an engine-internal fault;

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +24,7 @@ import hyprial.kernel.impl.actor_runtime.port.host as port_host
 from hyprial.kernel.impl.actor_runtime import (
     ActorAdmissionError,
     ActorEvent,
+    ActorEventKind,
     ActorFailedError,
     ActorHandle,
     ActorSpec,
@@ -185,6 +187,246 @@ def test_actor_spec_event_sink_routes_spec_then_engine() -> None:
         ("engine", "command_completed", handle.actor_id),
     ]
     assert engine.shutdown(1.0) is True
+
+
+def test_command_completed_logging_gate_toggles_without_leaking_from_spec_sink(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("hyprial.actor_runtime")
+    previous_level = logger.level
+    logger.setLevel(logging.WARNING)
+    caplog.handler.setLevel(logging.NOTSET)
+    spec_events: list[ActorEvent] = []
+    engine = create_engine(_config())
+    try:
+        handle = engine.spawn(
+            ActorSpec(
+                name="gated",
+                handler_factory=lambda: _echo([]),
+                event_sink=spec_events.append,
+            )
+        )
+        assert engine.tell(handle, "warning") is AdmissionResult.ACCEPTED
+        _wait_until(lambda: len(spec_events) == 1)
+        assert not [
+            record
+            for record in caplog.records
+            if getattr(record, "actor_event", {}).get("kind") == "command_completed"
+        ]
+
+        logger.setLevel(logging.INFO)
+        assert engine.tell(handle, "info") is AdmissionResult.ACCEPTED
+        _wait_until(lambda: len(spec_events) == 2)
+        _wait_until(
+            lambda: sum(
+                getattr(record, "actor_event", {}).get("kind")
+                == "command_completed"
+                for record in caplog.records
+            )
+            == 1
+        )
+    finally:
+        engine.shutdown(1.0)
+        logger.setLevel(previous_level)
+
+
+def test_restart_orders_publication_before_generation_completion() -> None:
+    events: list[ActorEvent] = []
+    factories = 0
+    handle_holder: list[ActorHandle] = []
+
+    def factory() -> Callable[[object], object]:
+        nonlocal factories
+        factories += 1
+        if factories == 1:
+            def fail(command: object) -> object:
+                raise RuntimeError(str(command))
+
+            return fail
+        return lambda command: command
+
+    def on_event(event: ActorEvent) -> None:
+        events.append(event)
+        if event.kind.value == "restart_scheduled":
+            assert engine.tell(handle_holder[0], "queued") is AdmissionResult.ACCEPTED
+
+    engine = create_engine(_config(event_sink=on_event))
+    try:
+        handle = engine.spawn(ActorSpec(name="restart-order", handler_factory=factory))
+        handle_holder.append(handle)
+        assert engine.tell(handle, "die") is AdmissionResult.ACCEPTED
+        _wait_until(
+            lambda: any(event.kind.value == "command_completed" for event in events)
+        )
+        kinds = [event.kind.value for event in events]
+        assert kinds[:4] == [
+            "child_failed",
+            "restart_scheduled",
+            "child_restarted",
+            "command_completed",
+        ]
+        assert events[2].generation == 2
+        assert events[3].generation == 2
+        assert engine.snapshot(handle).generation == 2
+    finally:
+        engine.shutdown(1.0)
+
+
+def test_nonsteady_events_reach_custom_sink_when_info_is_disabled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("hyprial.actor_runtime")
+    previous_level = logger.level
+    logger.setLevel(logging.WARNING)
+    events: list[ActorEvent] = []
+    builds = 0
+
+    def restarting_factory() -> Callable[[object], object]:
+        nonlocal builds
+        builds += 1
+        if builds == 1:
+            def first_generation(command: object) -> object:
+                if command == "reject":
+                    raise ExpectedActorError("E_REJECT", "rejected")
+                if command == "fail":
+                    raise RuntimeError("failed")
+                return command
+
+            return first_generation
+        return lambda command: command
+
+    engine = create_engine(_config(max_restarts=1, event_sink=events.append))
+    try:
+        restarting = engine.spawn(
+            ActorSpec(name="nonsteady-restart", handler_factory=restarting_factory)
+        )
+        assert engine.tell(restarting, "reject") is AdmissionResult.ACCEPTED
+        _wait_until(
+            lambda: any(event.kind is ActorEventKind.COMMAND_REJECTED for event in events)
+        )
+        assert engine.tell(restarting, "fail") is AdmissionResult.ACCEPTED
+        _wait_until(
+            lambda: any(event.kind is ActorEventKind.CHILD_RESTARTED for event in events)
+        )
+        assert engine.stop(restarting, 1.0) is True
+        _wait_until(
+            lambda: any(event.kind is ActorEventKind.CHILD_STOPPED for event in events)
+        )
+
+        quarantined = create_engine(_config(max_restarts=0, event_sink=events.append))
+        try:
+            doomed = quarantined.spawn(
+                ActorSpec(
+                    name="nonsteady-quarantine",
+                    handler_factory=lambda: lambda command: (_ for _ in ()).throw(
+                        RuntimeError("quarantined")
+                    ),
+                )
+            )
+            assert quarantined.tell(doomed, "fail") is AdmissionResult.ACCEPTED
+            _wait_until(
+                lambda: any(
+                    event.kind is ActorEventKind.CHILD_QUARANTINED
+                    and event.handle == doomed
+                    for event in events
+                )
+            )
+        finally:
+            assert quarantined.shutdown(1.0) is True
+    finally:
+        assert engine.shutdown(1.0) is True
+        logger.setLevel(previous_level)
+
+    kinds = {event.kind for event in events}
+    assert {
+        ActorEventKind.COMMAND_REJECTED,
+        ActorEventKind.CHILD_FAILED,
+        ActorEventKind.RESTART_SCHEDULED,
+        ActorEventKind.CHILD_RESTARTED,
+        ActorEventKind.CHILD_QUARANTINED,
+        ActorEventKind.CHILD_STOPPED,
+    } <= kinds
+    assert not [
+        record
+        for record in caplog.records
+        if getattr(record, "actor_event", {}).get("kind") == "command_completed"
+    ]
+
+
+def test_concurrent_tell_during_restart_preserves_event_order_for_100_trials() -> None:
+    for trial in range(100):
+        events: list[ActorEvent] = []
+        restarted = threading.Event()
+        stop_producers = threading.Event()
+        builds = 0
+
+        def factory() -> Callable[[object], object]:
+            nonlocal builds
+            builds += 1
+            if builds == 1:
+                def fail_once(command: object) -> object:
+                    if command == "fail":
+                        raise RuntimeError("restart")
+                    return command
+
+                return fail_once
+            return lambda command: command
+
+        def record(event: ActorEvent) -> None:
+            events.append(event)
+            if (
+                event.kind is ActorEventKind.CHILD_RESTARTED
+                and event.generation == 2
+            ):
+                restarted.set()
+
+        engine = create_engine(_config(event_sink=record))
+        handle = engine.spawn(ActorSpec(name=f"stress-{trial}", handler_factory=factory))
+        producers = [
+            threading.Thread(
+                target=lambda: _tell_until_stopped(engine, handle, stop_producers),
+                daemon=True,
+            )
+            for _ in range(2)
+        ]
+        try:
+            assert engine.tell(handle, "fail") is AdmissionResult.ACCEPTED
+            for producer in producers:
+                producer.start()
+            assert restarted.wait(2.0), trial
+            stop_producers.set()
+            for producer in producers:
+                producer.join(1.0)
+            assert not any(producer.is_alive() for producer in producers), trial
+            assert engine.ask(handle, "probe", 1.0) == "probe"
+            restart_index = next(
+                index
+                for index, event in enumerate(events)
+                if event.kind is ActorEventKind.CHILD_RESTARTED
+                and event.generation == 2
+            )
+            assert not any(
+                event.kind is ActorEventKind.COMMAND_COMPLETED
+                and event.generation == 2
+                and index < restart_index
+                for index, event in enumerate(events)
+            ), trial
+            assert engine.snapshot(handle).generation == 2
+        finally:
+            stop_producers.set()
+            for producer in producers:
+                producer.join(1.0)
+            assert not any(producer.is_alive() for producer in producers), trial
+            assert engine.stop(handle, 1.0) is True
+            assert engine.shutdown(1.0) is True
+
+
+def _tell_until_stopped(
+    engine: ActorEngine, handle: ActorHandle, stop: threading.Event
+) -> None:
+    while not stop.is_set():
+        engine.tell(handle, "background")
+        time.sleep(0.0001)
 
 
 def test_event_sink_failures_are_isolated_per_sink() -> None:
