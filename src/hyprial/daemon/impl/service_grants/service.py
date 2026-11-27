@@ -409,8 +409,8 @@ class ServiceGrantService:
                 f"service grant document limit reached in org {org}: {count} of "
                 f"{GRANT_DOCUMENT_CAP} documents hold no room for a new grant "
                 f"(recipients read at most {MAX_GRANTOR_GRANT_DOCUMENTS} per grantor); "
-                "renewing an existing grant still works. "
-                "撤销不用的授权，7 天后自动清理",
+                "renewing an existing grant still works; "
+                "revoke grants you no longer use; they are deleted 7 days later",
             )
 
     def _clean(self, org: str, now: int) -> None:
