@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from hyprial.daemon.impl.service_connect.models import _IDENTIFIER as SERVICE_NAME_PATTERN
+from hyprial.daemon.impl.service_connect.models import SERVICE_NAME_PATTERN
 from hyprial.identity import directory_owner_principal, org_space_name
 from hyprial.kernel import parse_user_uri
 

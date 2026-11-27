@@ -24,6 +24,8 @@ Decision record (service grant S1, 2026-11-26: the published encryption key):
   is the same answer the reader gives for any missing prerequisite.
 - The key is ensured at serving start by the onboarding recovery pass, not
   here: this path needs an org to publish into and a sidecar address.
+- ``invalid_device_diagnostics`` is public for other modules; the underscore
+  alias remains only for the org callers that still import it.
 """
 
 from __future__ import annotations
@@ -94,12 +96,17 @@ from hyprial.daemon.impl.org.cell_actor.sync import (
 )
 
 
-def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+def invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+    """The application's one invalid-device quarantine, created on first use."""
+
     quarantine = getattr(app, "_org_directory_quarantine", None)
     if quarantine is None:
         quarantine = InvalidDeviceQuarantine()
         app._org_directory_quarantine = quarantine
     return quarantine
+
+
+_invalid_device_diagnostics = invalid_device_diagnostics
 
 
 def _encryption_key_cache(app: Any) -> EncryptionKeyCache:
@@ -265,7 +272,7 @@ def _build_service(
         owner=str(app.owner),
         store=OrgFsDirectoryStore(
             fs,
-            invalid_devices=_invalid_device_diagnostics(app),
+            invalid_devices=invalid_device_diagnostics(app),
             logger=lambda level, domain, event, **fields: app._log(
                 level, domain, event, **fields
             ),
@@ -970,6 +977,7 @@ def _access_changed(app: Any, reason: str, result: Any, **fields: Any) -> Any:
 
 __all__ = [
     "directory_peers_for_app",
+    "invalid_device_diagnostics",
     "ipc_org_acl_grant",
     "ipc_org_acl_ls",
     "ipc_org_acl_revoke",

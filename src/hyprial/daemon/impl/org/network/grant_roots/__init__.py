@@ -25,7 +25,7 @@ def ensure_owner_roots_for_app(app: Any, orgs: Iterable[str]) -> dict[str, list[
     and tests. An org already confirmed in this process is skipped.
     """
 
-    from hyprial.daemon.impl.org.network.ipc import _invalid_device_diagnostics
+    from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
 
     ensured: list[str] = []
     failed: list[str] = []
@@ -42,7 +42,7 @@ def ensure_owner_roots_for_app(app: Any, orgs: Iterable[str]) -> dict[str, list[
             for space in fs.spaces()
             if directory_owner_principal(space.owner) == caller
         }
-        store = OrgFsDirectoryStore(fs, invalid_devices=_invalid_device_diagnostics(app))
+        store = OrgFsDirectoryStore(fs, invalid_devices=invalid_device_diagnostics(app))
     except Exception as error:  # noqa: BLE001 - the publish tick must not depend on it
         _warn(app, None, error)
         return {"ensured": ensured, "failed": failed}

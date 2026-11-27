@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from hyprial.kernel import ipc_errors
 
 
-_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+SERVICE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _ENV_DENY_EXACT = frozenset(
     {
@@ -80,7 +80,7 @@ def invalid_registry(message: str = "service catalog is invalid") -> ServiceConn
 
 
 def _identifier(value: object, label: str) -> str:
-    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+    if not isinstance(value, str) or SERVICE_NAME_PATTERN.fullmatch(value) is None:
         raise invalid_registry(f"{label} is invalid")
     return value
 

@@ -116,7 +116,7 @@ def test_value_with_lone_surrogate_is_a_request_error(harness: dict[str, Any]) -
 def test_service_name_reuses_the_service_connect_rule(harness: dict[str, Any]) -> None:
     """S6: one service-name rule, shared with service-connect."""
 
-    assert grant_models.SERVICE_NAME_PATTERN is connect_models._IDENTIFIER
+    assert grant_models.SERVICE_NAME_PATTERN is connect_models.SERVICE_NAME_PATTERN
     service: ServiceGrantService = harness["service"]
     for bad in ("../x\ny" + "z" * 5000, "Gateway", "a" * 64, "-gw", "gw.local"):
         assert _refused(service, device="@members", name=bad).code == ipc_errors.INVALID_ARGUMENT
