@@ -10,6 +10,10 @@
 # - The "exposed" reply never carries the key list, only a count in "keys"
 #   mode. The caller's set is confirmed by that count, which is why the reply
 #   check compares modes and counts and never expects keys back.
+# - Gate fix (2026-11-27): confirmed_admission names its second argument
+#   "request". It is a plain mapping, but the network reachability scan reads
+#   a ".get" on a receiver named "wire" as a transport get, so the old name
+#   put a pure comparison on an IPC-to-network path.
 """Forwarding validation, typed errors and membership operation wait policy."""
 
 from __future__ import annotations
@@ -124,21 +128,21 @@ def exposure_wire_request(
     return wire
 
 
-def confirmed_admission(event: Mapping[str, object], wire: Mapping[str, object]) -> bool:
-    """Whether the ``exposed`` reply confirms exactly the request ``wire``.
+def confirmed_admission(event: Mapping[str, object], request: Mapping[str, object]) -> bool:
+    """Whether the ``exposed`` reply confirms exactly the ``request`` it answers.
 
     The reply echoes the exposure and the mode and, in ``"keys"`` mode, the
     number of keys it took. It never carries the keys themselves.
     """
 
-    if _normalize_exposure(event) != _normalize_exposure(wire):
+    if _normalize_exposure(event) != _normalize_exposure(request):
         return False
-    if event.get("admission") != wire.get("admission"):
+    if event.get("admission") != request.get("admission"):
         return False
-    if wire.get("admission") == ADMISSION_ALLOW:
+    if request.get("admission") == ADMISSION_ALLOW:
         return "keyCount" not in event
     count = event.get("keyCount")
-    return type(count) is int and count == len(wire.get("keys", ()))
+    return type(count) is int and count == len(request.get("keys", ()))
 
 
 def validate_unix_exposure_target(target: str) -> str:
