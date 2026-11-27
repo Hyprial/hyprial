@@ -132,7 +132,9 @@ Field formats are in the [contract](../../contract/service-grants/README.md).
 - **Limits.** One grantor holds at most 256 documents in one org (the limit
   every reader applies, see below). `service.grant` refuses to mint a new
   `grantId` once the grantor already holds 240 documents in that org after
-  cleanup; in-place updates are not limited. `service.grants` reports
+  cleanup (`SERVICE_UNAVAILABLE`, with a message naming the count and the way
+  out); in-place updates are not limited. A document that cannot be parsed is
+  never deleted by cleanup. `service.grants` reports
   `documentCount` and `documentLimit` next to the grantor's own grants.
 
 ### Readers' bounds
@@ -142,8 +144,10 @@ check, and the exposing side's read of its own grants) applies the same bounds:
 at most 256 documents and 512 KiB of listed size per grantor directory, at most
 1024 grantor directories per org, a 2.0 second budget per org per periodic pass
 and 0.2 seconds for the recipient's startup check. A grantor over a per-grantor
-bound is unknown, not empty: readers keep their previous answer for that
-grantor and never treat it as "no grant".
+bound is unknown, not empty, and never treated as "no grant". The recipient
+keeps its previous answer for that grantor; the exposing side, reading only its
+own grants, counts them as unreadable and admits nothing for that org
+(`directory_unavailable`, step `grants-limited`).
 
 ## Trust
 
@@ -196,7 +200,8 @@ How the set is derived:
 4. An `@members` grant contributes the same key for every active roster member
    of that org's tailnet that is also a member device of that org. For a sub-org
    that shares its parent's tailnet, the org's own directory decides membership,
-   so members of the parent alone are not admitted.
+   so members of the parent alone are not admitted; when that directory cannot
+   be read, the sub-org's grants contribute nothing.
 5. A port's set is the union over all orgs and grants. No grant means an empty
    set: nobody is admitted. User exposures no longer use `admission: "allow"`.
 
@@ -312,8 +317,9 @@ stored in the entry is kept. Bob binds the entry to an agent with
 `hyprial agent secret grant`.
 
 **Withdrawal.** When a grant stops applying (revoked, expired, credential
-cleared, the grantor's device row gone, this device left the org, or a device
-conflict), the daemon removes the entry, tears down the mapping and deletes the
+cleared, the grantor's device row gone, this device left the org or is no
+longer a member, the org deleted, the document gone, or a check such as a
+device conflict now failing), the daemon removes the entry, tears down the mapping and deletes the
 key entry it wrote, and logs `service.grant.withdrawn` with a fixed reason. A
 key entry whose value the user changed is no longer managed and is not deleted.
 "Cannot read the directory" is never treated as "no grant": an unreadable org
@@ -332,7 +338,13 @@ nothing when the directory did not change.
 
 **Listing.** `service.grants` lists what this device granted and received.
 Without `--org`, orgs whose directory cannot be read are named in
-`unreadableOrgs` instead of being skipped silently.
+`unreadableOrgs` instead of being skipped silently. A grantor over a reader
+bound is not listed under `received`; it is named in `limitedGrantors`
+(`grantor` is null when the whole org stopped), so the listing never answers
+"no grant" for what it could not read. The listing reads the directory itself;
+it does not show the previous answer the reconcile keeps for that grantor. The
+caller's own grants are always read in full, and `documentCount` gives the
+caller's document count per org next to `documentLimit`.
 
 What Bob still does by hand: `hyprial org service connect <name>`; binding the
 key to an agent; and, when the service is a model gateway, creating a model
@@ -358,7 +370,7 @@ sidecar-internal period that decides when a new member's key appears.
 
 | Item | Shape |
 | --- | --- |
-| Methods | `service.grant {org, port, device, expiresAtMs?, name?, protocol?, note?, credential?: {entryId, fieldName?}}` → `{grant, updated}`; `service.revoke {org, grantId}` → `{grantId, revoked}`; `service.grants {org?, port?, includeRevoked?}` → `{granted, received, documentCount, documentLimit, unreadableOrgs?}`. All `local-operator` only, not HTTP-exposed. `org` is the full directory-space name (`group-<name>`); `device` is `<owner>/<deviceId>` or `@members`. |
+| Methods | `service.grant {org, port, device, expiresAtMs?, name?, protocol?, note?, credential?: {entryId, fieldName?}}` → `{grant, updated}`; `service.revoke {org, grantId}` → `{grantId, revoked}`; `service.grants {org?, port?, includeRevoked?}` → `{granted, received, documentCount: {<org>: n}, documentLimit, limitedGrantors: [{org, grantor, reason}], unreadableOrgs}`. All `local-operator` only, not HTTP-exposed. `org` is the full directory-space name (`group-<name>`); `device` is `<owner>/<deviceId>` or `@members`. |
 | CLI | `hyprial org service grant PORT --org --device [--name] [--protocol] [--note] [--expires-at-ms] [--credential ENTRY[:FIELD]] [--json]`; `hyprial org service revoke GRANT_ID --org [--json]`; `hyprial org service grants [--org] [--port] [--include-revoked] [--json]` |
 | Directory | device row keys `encryptionKeyId`, `encryptionPublicKey`; protected section `service-grants` with an owner-created parent directory |
 | Sidecar | stdio protocol v7: `expose` requires `admission`; `keys` mode with at most 4096 keys |
