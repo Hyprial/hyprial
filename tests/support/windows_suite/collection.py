@@ -19,8 +19,8 @@ so the comparison does not depend on the platform's path flavour or on
 whether pytest was started with relative or absolute arguments.
 
 Decision (same date): the registry is a data file outside ``tests/support``
-and is read once per process.  Its shape is checked by
-``tests/tooling/ci/windows/test_windows_registries.py``; this module only
+and is read once per process.  Its shape is checked by the gate under
+``tests/tooling/ci/windows/registries/``; this module only
 reads it.  A registry it cannot read or parse is treated as empty, so a broken
 file cannot turn every Windows run into a collection error; the gate test is
 what turns a broken file red.
