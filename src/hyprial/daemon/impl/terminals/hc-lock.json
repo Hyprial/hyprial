@@ -1,0 +1,31 @@
+{
+  "version": "0.1.22",
+  "generation": 1,
+  "targets": {
+    "linux-aarch64": {
+      "url": "https://releases.herdr.dev/core/0.1.22/herdr-core-linux-aarch64.tar.gz",
+      "sha256": "98757985245d45f8d73dd85e68b139b7f167c28488bb89edd9834c3f5a5cf4cf",
+      "size": 3039707
+    },
+    "linux-x86_64": {
+      "url": "https://releases.herdr.dev/core/0.1.22/herdr-core-linux-x86_64.tar.gz",
+      "sha256": "3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df",
+      "size": 3298845
+    },
+    "macos-aarch64": {
+      "url": "https://releases.herdr.dev/core/0.1.22/herdr-core-macos-aarch64.tar.gz",
+      "sha256": "90798daadefa8d126b90ef0bcdbe9c7dda9c6cfbf011a247065ab5da348f350e",
+      "size": 5404856
+    },
+    "macos-x86_64": {
+      "url": "https://releases.herdr.dev/core/0.1.22/herdr-core-macos-x86_64.tar.gz",
+      "sha256": "35144041969e870ddb4edcd2fd08fd26dfe5cee7d18e6b48adb276f90a48aa19",
+      "size": 5983849
+    },
+    "windows-x86_64": {
+      "url": "https://releases.herdr.dev/core/0.1.22/herdr-core-windows-x86_64.zip",
+      "sha256": "37cae9d6c522e205efcdb55a42d354285f41b8cbb4c6e60fb505b73b151966c9",
+      "size": 3953341
+    }
+  }
+}

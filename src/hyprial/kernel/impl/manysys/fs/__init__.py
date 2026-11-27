@@ -19,8 +19,10 @@ from hyprial.kernel.impl.manysys.fs.file_lock import (
     unlock,
 )
 from hyprial.kernel.impl.manysys.fs.links import (
+    create_relative_file_symlink,
     is_directory_link,
     link_directory,
+    mark_executable,
     unlink_directory_link,
 )
 from hyprial.kernel.impl.manysys.fs.private_access import (
@@ -45,6 +47,7 @@ __all__ = [
     "ProcessFileLock",
     "append_private_file",
     "apply_private_umask",
+    "create_relative_file_symlink",
     "current_uid",
     "fsync_directory",
     "harden_private_path",
@@ -53,6 +56,7 @@ __all__ = [
     "is_directory_link",
     "link_directory",
     "lock_exclusive",
+    "mark_executable",
     "open_private_file",
     "path_is_reparse",
     "posix_metadata_enforced",
