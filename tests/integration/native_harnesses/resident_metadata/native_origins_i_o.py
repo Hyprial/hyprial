@@ -343,6 +343,7 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/onboarding/first_run_attempt.py": ("resident", ("new-module: P3 private first-run attempt storage; no login credentials",)),
     "daemon/impl/org/network/member_agents/__init__.py": ("resident", ("new-module: owner-published Agent directory over OrgFS",)),
     "daemon/impl/org/network/grant_roots/__init__.py": ("resident", ("new-module: service grant owner directory backfill on the publish tick",)),
+    "daemon/impl/org/network/grant_docs/__init__.py": ("resident", ("new-module: service grant documents in the org directory, moved out of directory.py",)),
     "kernel/impl/facts/launch_spec/__init__.py": ("resident", ("src/hyprial/daemon/desired_state.py",)),
     "kernel/impl/facts/launch_spec/args.py": ("resident", ("src/hyprial/daemon/desired_state.py",)),
     "kernel/impl/facts/launch_spec/spec.py": ("resident", ("src/hyprial/daemon/desired_state.py",)),
