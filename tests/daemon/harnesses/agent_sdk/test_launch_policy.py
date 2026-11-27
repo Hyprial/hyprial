@@ -9,9 +9,9 @@ recomputes the policy digest over the lists it actually received, and the
 reconcile check (``cells/reconcile/policy.require_policy_ack``) refuses an
 absent or different acknowledgement.  The policy path reaches no IM, Lark or
 squire module and installs no live ``can_use_tool`` approval hook.
+Direct worker subprocesses preserve an ambient SYSTEMROOT when present;
+client-managed base environments remain product-owned.
 """
-
-from __future__ import annotations
 
 import ast
 import asyncio
@@ -125,6 +125,8 @@ def _run_worker(tmp_path: Path, options: dict[str, object]):
         "PYTHONPATH": str(tmp_path),
         "HYPRIAL_AGENT_SDK_OPTIONS": json.dumps(options, separators=(",", ":")),
     }
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     result = subprocess.run(
         [sys.executable, str(WORKER)],
         input='{"op":"stop"}\n',

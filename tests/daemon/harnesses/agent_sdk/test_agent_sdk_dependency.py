@@ -6,6 +6,9 @@ worker runs under ``uv run --isolated`` with a pinned release. These tests
 guard that boundary: the pin, the clean daemon env, the fail-closed capability
 check for per-worker identity options, and clear errors when the SDK is
 missing instead of an opaque ImportError traceback.
+
+Reduced subprocess environments preserve an ambient SYSTEMROOT when present;
+all other isolation boundaries are unchanged.
 """
 
 from __future__ import annotations
@@ -34,6 +37,8 @@ WORKER = Path(agent_sdk_module.__file__).with_name("_agent_sdk_worker.py")
 
 def _clean_env(**overrides: str) -> dict[str, str]:
     env = {"PATH": os.environ.get("PATH", "")}
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     env.update(overrides)
     return env
 
@@ -277,6 +282,8 @@ def _assert_launch_selects(root: Path, interpreter: str) -> None:
         "UV_PYTHON_DOWNLOADS": "never",
         "PATH": str(shadow),
     }
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     result = subprocess.run(
         _launch_command_for_probe(probe),
         env=environment,

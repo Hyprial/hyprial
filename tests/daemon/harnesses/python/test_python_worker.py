@@ -1,4 +1,8 @@
-"""Packaged Jev worker protocol tests (credential-free)."""
+"""Packaged Jev worker protocol tests (credential-free).
+
+Reduced worker environments preserve an ambient SYSTEMROOT when present;
+the shadowed-package negative test still omits PYTHONPATH deliberately.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ def test_jev_worker_emits_ready_and_decode_error_without_a_credential() -> None:
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name in {"PATH", "HOME", "LANG", "PYTHONPATH"}
+        if name in {"PATH", "HOME", "LANG", "PYTHONPATH", "SYSTEMROOT"}
     }
     process = subprocess.Popen(
         [
@@ -120,7 +124,7 @@ def test_worker_starts_from_a_non_source_cwd_and_restarts(tmp_path: Path) -> Non
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name in {"PATH", "HOME", "LANG", "PYTHONPATH"}
+        if name in {"PATH", "HOME", "LANG", "PYTHONPATH", "SYSTEMROOT"}
     }
     hashes: list[str] = []
     for _ in range(2):
@@ -149,7 +153,7 @@ def test_worker_fails_closed_when_cwd_shadows_package_names(tmp_path: Path) -> N
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name in {"PATH", "HOME", "LANG"}
+        if name in {"PATH", "HOME", "LANG", "SYSTEMROOT"}
     }
     process = subprocess.run(
         [sys.executable, "-m", "hyprial.daemon.impl.harnesses.python_worker._python_worker", "--kind", "jev"],
@@ -215,7 +219,7 @@ def test_a_started_worker_logs_how_long_ready_took(tmp_path: Path) -> None:
     env = {
         name: value
         for name, value in os.environ.items()
-        if name in {"PATH", "LANG"}
+        if name in {"PATH", "LANG", "SYSTEMROOT"}
     }
     env["HOME"] = str(home)
     env["HARNESS_STATE_DIR"] = str(tmp_path / "state")

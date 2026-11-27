@@ -1,4 +1,8 @@
-"""The host as a child process: bind, ready line, signals and startup refusals."""
+"""The host as a child process: bind, ready line, signals and startup refusals.
+
+The reduced host environment preserves an ambient SYSTEMROOT when present;
+explicit overrides and refusal cases retain their existing environment keys.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +39,8 @@ def child_env(**overrides: str) -> dict[str, str]:
         "HYPRIAL_GUI_UPSTREAM_TOKEN": UPSTREAM_TOKEN,
         "HYPRIAL_GUI_LAUNCH_GRANT": GRANT,
     }
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     env.update(overrides)
     return env
 

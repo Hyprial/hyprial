@@ -4,6 +4,9 @@ The daemon persists each managed worker's native session/thread ref into
 desired state (``sessionRef``) so a daemon restart resumes the conversation
 instead of cold-starting every connector. Claude refuses a dead resume target;
 the legacy Pi and Codex recovery contracts below remain separate.
+
+Reduced fake-worker environments preserve an ambient SYSTEMROOT when present;
+all session and failure-injection variables retain their existing meanings.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 from tests.support.runtime.cell_delivery import AdmittingCellDelivery
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -312,6 +316,12 @@ def test_an_unchanged_ref_is_not_sent_to_the_state_writer(
 # --------------------------------------------------------------------------- #
 
 
+def _with_system_root(env: dict[str, str]) -> dict[str, str]:
+    if "SYSTEMROOT" in os.environ:
+        env.setdefault("SYSTEMROOT", os.environ["SYSTEMROOT"])
+    return env
+
+
 def _pi_process(
     spec: HarnessLaunchSpec,
     *,
@@ -320,7 +330,7 @@ def _pi_process(
     return PiRpcProcess(
         spec,
         command=(sys.executable, str(FAKE_PI)),
-        env=env,
+        env=_with_system_root(env),
         reconnect_delay_seconds=0.01,
     )
 
@@ -570,7 +580,7 @@ def _codex_process(
     return CodexAppServerProcess(
         _codex_spec(session_ref),
         command=(sys.executable, str(FAKE_CODEX)),
-        env={"FAKE_CODEX_MODE": mode, "FAKE_CODEX_LOG": str(log_path)},
+        env=_with_system_root({"FAKE_CODEX_MODE": mode, "FAKE_CODEX_LOG": str(log_path)}),
         reconnect_delay_seconds=0.01,
     )
 
@@ -714,7 +724,7 @@ def _run_sdk_worker(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 
 def _clean_env(**extra: str) -> dict[str, str]:
-    return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **extra}
+    return _with_system_root({"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **extra})
 
 
 def _ready_line(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
