@@ -24,12 +24,13 @@
 11. daemon 持有一把只限本机的 Magpie 管理 key，经 Magpie 的管理接口完成登录、录入 Key 以及第 9 条的登记和删除。这把 key 由 daemon 在首次需要时通过命令行在用户的 Magpie 里建立并设为本机管理，存在 hyprial 的私有目录，不进入 agent 的进程和终端。它不是模型 Key，第 7 条不受影响。模型 Key 不经过命令行参数。
 12. 一条绑定里的模型可以是本机 Magpie 网关列出的任何 ID，包括 `group/<档位>` 这样的分组。可选的 ID 来自网关，不在 hyprial 里写死。`hyprial agent model configure` 的 `--connection` 和 `--config-revision` 删除，绑定里不再有指向连接的字段。daemon 在配置时向网关核对这个 ID 是否存在。恢复会话时的模型一致性检查只比较绑定的 ID。
 13. `hyprial provider` 是一族顶层命令：`login <名字>`、`logout <名字>`、`list`。订阅登录和按 Key 接入的厂商都走它。可用的名字由 daemon 向 Magpie 查询，不在 hyprial 里写死。订阅类由 daemon 调用 Magpie 的登录流程，CLI 只显示链接和用户码并等待。Key 类由 CLI 用不回显的提示或标准输入读入 Key，交给 daemon 写进 Magpie。GUI 使用同一组 daemon 方法。命令行上的 `hyprial agent provider` 和 `hyprial user provider` 两族不再保留；按 agent 授权 Key 和轮换 Key 的功能随第 7、8 条取消。
+14. 名词用 provider，账号是它下面的一层，与 Magpie 的用词一致。一个 provider 下可以有多个账号或多把 Key：`hyprial provider login <provider>` 每执行一次就多加一个；`list` 按 provider 列出它下面的各个账号和 Key，不显示 Key 的值；`logout <provider> [账号]` 可以只退出其中一个。daemon 一侧改写现有的 `user.provider.login`、`user.provider.logout`、`user.provider.list`，方法名不变，后面调用 Magpie，并对 GUI 开放；`user.provider.rotate` 和 hyprial 自己的 Key 封存存储删除。这组方法的契约随之修改。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
 ## 2. 尚未决定
 
-- 第 13 条有两点待定：daemon 一侧是改写现有的 `user.provider.*` 方法，还是另起方法名；一个 provider 下有多个账号或多把 Key 时，命令怎样表达。
+- 第 14 条有一点尚未核实：Magpie 的管理接口能否删除单个订阅账号（它的命令行帮助里没有这样的命令）。实现前先确认。
 - PR #84、#85、#86 是在原分支上改，还是另开 PR 取代。
 - 第 12 条有一点尚未核实：分组在会话中途换了实际提供服务的模型之后，恢复检查和 thinking 签名是否受影响。实现前先测。
 - 第 9 条有一点尚未核实：授权方的网关是否校验交出的那把 key（流量经转发后从授权方本机回环进入网关时）。
