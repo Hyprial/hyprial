@@ -486,6 +486,35 @@ def _app(tmp_path: Path, monkeypatch, *, command: str) -> DaemonApplication:
     **_deep_module_daemon_dependencies())
 
 
+def test_forwarding_ops_do_not_import_service_grants() -> None:
+    source = Path(
+        "src/hyprial/daemon/impl/application/netendpoints/forwarding.py"
+    ).read_text(encoding="utf-8")
+
+    assert "service_grants" not in source
+
+
+def test_forwarding_start_waits_for_orgfs_before_service_admission(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app(tmp_path, monkeypatch, command=json.dumps([sys.executable, str(FIXTURE)]))
+    from hyprial.daemon.impl.service_grants.enforcement import wiring
+
+    installed: list[DaemonApplication] = []
+    monkeypatch.setattr(wiring, "install", installed.append)
+
+    def require_orgfs() -> Any:
+        raise AssertionError("forwarding startup must not construct OrgFsRuntime")
+
+    monkeypatch.setattr(app, "_require_orgfs_runtime", require_orgfs)
+    try:
+        app._start_forwarding_supervisor()
+        assert installed == []
+        assert app._orgfs_runtime is None
+    finally:
+        app._close()
+
+
 def test_status_payload_exposes_off_running_and_failed(tmp_path, monkeypatch) -> None:
     plain = DaemonApplication(
         state_dir=tmp_path / "a-state",

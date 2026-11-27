@@ -361,6 +361,7 @@ class DaemonApplication(
         self._forwarding_effective: tuple[str, ...] = ()
         self._forwarding_start_attempted = forwarding_discovery is not None
         self._forwarding_supervisor: ForwardingSidecarSupervisor | None = None
+        self._service_admission_lock = threading.Lock()
         self._service_manager_lock = threading.Lock()
         self._service_manager: Any | None = None
         self._grant_recheck_lock = threading.Lock()

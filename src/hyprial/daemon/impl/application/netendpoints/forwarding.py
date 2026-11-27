@@ -1,7 +1,7 @@
 # Decision notes (service grant exposing side, 2026-11-26):
 # - The daemon owns one admission enforcer for the lifetime of its forwarding
-#   supervisor. It is created with the supervisor, because the supervisor's
-#   on_installed hook is what re-pushes the admission sets after a (re)spawn.
+#   supervisor. It is installed after the supervisor and OrgFS runtime exist,
+#   while the supervisor's on_installed hook re-pushes admission after a spawn.
 # - An immediate trigger (a grant, a revoke, a new exposure, the sidecar being
 #   installed) only marks the sets stale and hands one tick to a bounded
 #   cadence: the derivation, with its bounded roster read, never runs on an
@@ -98,10 +98,6 @@ class _ForwardingOpsMixin:
             # its side of the wire here: idempotent, unix-only, before
             # any slots-carrying up can leave the process (e2e 2026-10-08).
             ensure_slots_dir(self.hyprial_home)
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
-            install as install_service_admission,
-        )
-
         supervisor = ForwardingSidecarSupervisor(
             {**os.environ, **self._forwarding_environment},
             event_log=lambda level, event, **fields: self._log(
@@ -115,67 +111,10 @@ class _ForwardingOpsMixin:
             slot_transport=slot_transport(),
             on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
             up_slots=lambda: slot_store_for_app(self).specs(),
-            on_installed=self._service_admission_installed,
+            on_installed=getattr(self, "_service_admission_installed", None),
         )
         self._forwarding_supervisor = supervisor
-        install_service_admission(self)
         supervisor.ensure_started()
-
-    def _service_admission_installed(self) -> None:
-        """The sidecar is (re)installed: its exposures admit nobody until re-derived.
-
-        The supervisor isolates its installed hook and reports a failure
-        itself, so this one does not repeat that.
-        """
-
-        self._service_admission_changed("sidecar-installed")
-
-    def _service_admission_changed(self, method: str) -> None:
-        """The inputs changed: mark the sets stale and offer the cadence a tick.
-
-        Called by the service grant handler after a grant or a revoke, by the
-        exposure path after a new exposure, and by the supervisor's installed
-        hook. It never derives and never raises. A tick that could not be
-        offered is logged here, once, for every caller: the change that
-        triggered it is already durable, so the only thing left to report is
-        that its re-derivation was not scheduled.
-        """
-
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
-            mark_stale,
-            trigger_failed,
-        )
-
-        failure = mark_stale(self)
-        if failure is not None:
-            trigger_failed(self, method, failure)
-
-    def _service_port_unexposing(self, port: int, remove: Any) -> Any:
-        """Take a port off the sidecar without a derivation exposing it again.
-
-        ``remove`` is the caller's step (sidecar unexpose, exposure store) and
-        its result or exception is passed through. Once it has succeeded this
-        device's grants for the port are revoked; that part never raises.
-
-        A derivation may run meanwhile; the enforcer's registration of the
-        port is what keeps its push from reopening it, not a lock over the
-        whole derivation. Only a push of this very port already in flight is
-        waited for, with a bound, and at that bound this raises the error the
-        exposure path reports before ``remove`` is asked for. The bounds and
-        what each of them leaves unchanged are written with
-        ``unexpose_port``.
-        """
-
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import unexpose_port
-
-        return unexpose_port(self, port, remove)
-
-    def _retire_service_admission(self) -> None:
-        """Close the admission cadence before its sidecar goes away."""
-
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import retire
-
-        retire(self)
 
     def _rebind_forwarding_endpoint(self, listener: str) -> None:
         """Restart the sidecar on the loopback listener chosen after a re-pick."""
@@ -186,7 +125,9 @@ class _ForwardingOpsMixin:
         target = inbound_target_from_listener(listener)
         self._forwarding_environment = self._forwarding_automatic.environment(target)
         if self._forwarding_supervisor is not None:
-            self._retire_service_admission()
+            retire = getattr(self, "_retire_service_admission", None)
+            if callable(retire):
+                retire()
             self._forwarding_supervisor.close()
             self._forwarding_supervisor = None
         self._forwarding_start_attempted = False
@@ -423,7 +364,9 @@ class _ForwardingOpsMixin:
         self._retry_degraded_redemption_throttled()
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
-        self._offer_service_admission_tick()
+        offer_tick = getattr(self, "_offer_service_admission_tick", None)
+        if callable(offer_tick):
+            offer_tick()
         backend = self._forwarding_backend()
         if backend is None:
             return
@@ -456,27 +399,6 @@ class _ForwardingOpsMixin:
             current=list(current),
             restartRequired=current != self._forwarding_dialed,
         )
-
-    def _offer_service_admission_tick(self) -> None:
-        """Offer the admission cadence the maintenance tick, without marking stale.
-
-        The cadence owns the throttle, so this is one non-blocking submit per
-        tick. It is what re-derives after directory changes, expiry and a
-        roster that completed later, and what re-offers a tick an immediate
-        trigger could not get admitted.
-        """
-
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import offer_tick
-
-        try:
-            offer_tick(self)
-        except Exception as error:  # noqa: BLE001 - one concern of the tick
-            self._log(
-                "warn",
-                "service",
-                "service.grant.admission_tick_deferred",
-                errorType=type(error).__name__,
-            )
 
     def _process_org_leave_requests_throttled(self) -> None:
         """§4.3 owner/admin reconcile: fulfil pending org leave requests.

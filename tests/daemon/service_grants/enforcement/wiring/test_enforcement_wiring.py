@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -271,7 +272,6 @@ def _effective_grants(daemon: Daemon) -> list[str]:
         pytest.param("raises", "failed", "RuntimeError", id="the-submit-raises"),
         pytest.param(AdmissionResult.CLOSED, "unscheduled", None, id="the-cadence-is-closed"),
         pytest.param(AdmissionResult.OVERLOADED, "unscheduled", None, id="the-cadence-is-overloaded"),
-        pytest.param(None, "unscheduled", None, id="there-is-no-cadence"),
     ],
 )
 def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_durable(
@@ -392,6 +392,74 @@ def test_a_new_exposure_whose_trigger_cannot_be_delivered_is_logged_under_its_ow
     assert daemon.logged(TRIGGER_FAILED) == [
         ("warn", {"method": "network.expose", "reason": "unscheduled"})
     ]
+
+
+def test_service_start_installs_admission_after_late_orgfs_setup(
+    tmp_path: Path, harness: Harness
+) -> None:
+    root = tmp_path / "daemon-late-orgfs"
+    root.mkdir()
+    daemon = Daemon(root, harness)
+    daemon.app._orgfs_runtime = None
+    try:
+        daemon.app._start_forwarding_supervisor()
+        assert getattr(daemon.app, "_service_admission_cadence", None) is None
+
+        daemon.app._orgfs_runtime = harness.runtime
+        daemon.app._start_service_connect()
+        daemon.settle()
+
+        assert daemon.app._service_admission_cadence is not None
+        assert _last_keys(daemon) == []
+    finally:
+        daemon.close()
+
+
+def test_lazy_forwarding_start_installs_admission_for_first_exposure(
+    tmp_path: Path, harness: Harness
+) -> None:
+    root = tmp_path / "daemon-lazy-forwarding"
+    root.mkdir()
+    daemon = Daemon(root, harness)
+    daemon.app._forwarding_supervisor = None
+    daemon.app._forwarding_start_attempted = False
+    try:
+        daemon.app.handle("network.expose", dict(OTHER_EXPOSURE))
+        daemon.settle()
+
+        assert getattr(daemon.app, "_service_admission_cadence", None) is not None
+        assert _last_keys(daemon, OTHER_PORT) == []
+        _grant(daemon, CAROL_NODE, port=OTHER_PORT)
+        assert _last_keys(daemon, OTHER_PORT) == [CAROL_KEY]
+    finally:
+        daemon.close()
+
+
+def test_rebinding_forwarding_reinstalls_admission_on_new_supervisor(
+    tmp_path: Path, harness: Harness
+) -> None:
+    root = tmp_path / "daemon-rebind-forwarding"
+    root.mkdir()
+    daemon = Daemon(root, harness)
+    daemon.start()
+    try:
+        _grant(daemon, BOB_NODE)
+        setattr(
+            daemon.app,
+            "_forwarding_automatic",
+            SimpleNamespace(
+                environment=lambda _target: dict(daemon.app._forwarding_environment)
+            ),
+        )
+        daemon.app._rebind_forwarding_endpoint(
+            f"unixsock-stream/{root / 'rebound.sock'}"
+        )
+        daemon.settle()
+
+        assert daemon.app._service_admission_cadence is not None
+        assert _last_keys(daemon) == [BOB_KEY]
+    finally:
+        daemon.close()
 
 
 def test_the_start_up_trigger_names_the_sidecar_installation(

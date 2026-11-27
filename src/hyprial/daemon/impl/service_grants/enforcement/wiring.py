@@ -82,7 +82,10 @@ def build_enforcer(app: Any) -> ServiceAdmissionEnforcer:
 
 
 def _inputs(app: Any) -> EnforcementInputs:
-    fs = app._require_orgfs_runtime().facade
+    runtime = getattr(app, "_orgfs_runtime", None)
+    if runtime is None:
+        raise RuntimeError("OrgFS runtime is unavailable")
+    fs = runtime.facade
     home = app.hyprial_home
     record = read_device_record(home)
     return EnforcementInputs(
@@ -160,10 +163,10 @@ def offer_tick(app: Any) -> bool:
 def install(app: Any) -> None:
     """Create the enforcer and its cadence for the supervisor that now exists.
 
-    Called after the supervisor is on the application and before it is
-    started. It offers no tick of its own: there is no sidecar to push to yet.
-    The supervisor reports through its installed hook as soon as a sidecar is
-    up, and that hook is the first trigger, after the start-up replay that
+    Called by service startup after the supervisor and OrgFS runtime exist. It
+    offers no tick of its own: the caller triggers the first derivation after
+    installation. The supervisor reports through its installed hook as soon as
+    a sidecar is up, and that hook is the first trigger, after the start-up replay that
     left every exposure admitting nobody.
     """
 

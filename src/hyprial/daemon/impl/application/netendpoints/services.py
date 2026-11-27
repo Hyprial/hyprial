@@ -35,6 +35,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
 from hyprial.daemon.impl.service_connect import ServiceManager
@@ -140,6 +141,8 @@ class _ServiceConnectOpsMixin:
         return None if backend is None else getattr(backend, "controller", None)
 
     def _start_service_connect(self, *, force: bool = False) -> None:
+        if self._start_service_admission():
+            self._service_admission_changed("sidecar-installed")
         if self._service_manager is not None:
             return
         with self._service_manager_lock:
@@ -157,6 +160,89 @@ class _ServiceConnectOpsMixin:
                     if not self._held_grant(runtime):
                         return
             self._build_service_manager(state, access_path, runtime)
+
+    def _start_service_admission(self) -> bool:
+        """Install admission after forwarding and OrgFS startup are complete."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return False
+        with self._service_admission_lock:
+            if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+                return False
+            if getattr(self, "_service_admission_cadence", None) is not None:
+                return False
+            from hyprial.daemon.impl.service_grants.enforcement.wiring import install
+
+            install(self)
+            return True
+
+    def _service_admission_installed(self) -> None:
+        """Re-derive admission after the sidecar is installed."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return
+        self._start_service_admission()
+        self._service_admission_changed("sidecar-installed")
+
+    def _service_admission_changed(self, method: str) -> None:
+        """Mark admission stale after a grant, exposure, or sidecar change."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return
+        self._start_service_admission()
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
+            mark_stale,
+            trigger_failed,
+        )
+
+        failure = mark_stale(self)
+        if failure is not None:
+            trigger_failed(self, method, failure)
+
+    def _service_port_unexposing(self, port: int, remove: Any) -> Any:
+        """Remove a port and revoke its admission without reopening it."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return remove()
+        self._start_service_admission()
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import unexpose_port
+
+        return unexpose_port(self, port, remove)
+
+    def _retire_service_admission(self) -> None:
+        """Close admission before its forwarding supervisor goes away."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return
+        with self._service_admission_lock:
+            if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+                return
+            if (
+                getattr(self, "_service_admission_cadence", None) is None
+                and getattr(self, "_service_admission_enforcer", None) is None
+            ):
+                return
+            from hyprial.daemon.impl.service_grants.enforcement.wiring import retire
+
+            retire(self)
+
+    def _offer_service_admission_tick(self) -> None:
+        """Offer a maintenance tick after ensuring admission is installed."""
+
+        if self._forwarding_supervisor is None or self._orgfs_runtime is None:
+            return
+        self._start_service_admission()
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import offer_tick
+
+        try:
+            offer_tick(self)
+        except Exception as error:  # noqa: BLE001 - one concern of the tick
+            self._log(
+                "warn",
+                "service",
+                "service.grant.admission_tick_deferred",
+                errorType=type(error).__name__,
+            )
 
     def _service_state(self) -> object:
         return getattr(
