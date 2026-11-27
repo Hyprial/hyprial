@@ -19,7 +19,7 @@ from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.service_connect import ServiceManager
 from hyprial.daemon.impl.service_grants import ServiceGrantService
 from hyprial.daemon.impl.service_grants.consumer import GrantConsumer, has_effective_grant
-from hyprial.daemon.impl.service_grants.consumer.startup import STARTUP_BUDGET_SECONDS
+from hyprial.daemon.impl.service_grants.consumer.startup import GRANT_QUERY_BUDGET_SECONDS
 from tests.daemon.service_connect.support import FakeController, FakeStatePort
 from tests.daemon.service_grants.consumer.support import (
     ORG,
@@ -338,7 +338,7 @@ def test_the_startup_check_gives_up_once_its_budget_is_spent(world: dict[str, An
     try:
         assert ask(world, [500.0, 500.1]) is True
         assert len(reads) == 1
-        assert ask(world, [500.0, 500.0 + STARTUP_BUDGET_SECONDS + 1.0]) is False
+        assert ask(world, [500.0, 500.0 + GRANT_QUERY_BUDGET_SECONDS + 1.0]) is False
     finally:
         object.__setattr__(facade, "read_text", original)
 

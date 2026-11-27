@@ -100,6 +100,7 @@ from hyprial.daemon.impl.service_grants.queries import (
     scan_org_service_grants,
 )
 from hyprial.identity import DIRECTORY_DIR, ORG_META_DOC, org_space_name
+from hyprial.kernel import canonical_user_uri
 
 from .derive import (
     DEVICE_CONFLICT,
@@ -266,7 +267,7 @@ class GrantConsumer:
             answers = {
                 org: self._answer_for(org)
                 for org in known
-                if org not in left and self._store.is_member(org, f"user:{self._owner}")
+                if org not in left and self._store.is_member(org, canonical_user_uri(self._owner))
             }
             self._answers = answers
             items, devices, contested = assemble(answer.wanted for answer in answers.values())

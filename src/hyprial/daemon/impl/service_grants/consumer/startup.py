@@ -46,8 +46,9 @@ from hyprial.daemon.impl.service_grants.queries import (
     scan_org_service_grants,
 )
 from hyprial.identity import read_device_record
+from hyprial.kernel import canonical_user_uri
 
-STARTUP_BUDGET_SECONDS = 0.2
+GRANT_QUERY_BUDGET_SECONDS = 0.2
 SCAN_LIMITED_EVENT = "service.grant.scan_limited"
 
 
@@ -75,7 +76,7 @@ def has_effective_grant(
     if owner is None or orgfs is None or not device_id:
         return False
     clock = monotonic or time.monotonic
-    deadline = clock() + STARTUP_BUDGET_SECONDS
+    deadline = clock() + GRANT_QUERY_BUDGET_SECONDS
     try:
         store = OrgFsDirectoryStore(orgfs, invalid_devices=invalid_devices)
         left = set(read_left_orgs(Path(home)))
@@ -91,7 +92,7 @@ def has_effective_grant(
         for org in store.orgs():
             try:
                 limits.check_time()
-                if org in left or not store.is_member(org, f"user:{owner}"):
+                if org in left or not store.is_member(org, canonical_user_uri(owner)):
                     continue
                 scan = scan_org_service_grants(store, org, limits)
             except GrantScanLimited as limited:
@@ -128,4 +129,4 @@ def device_id_of(home: Path) -> str | None:
     return None if record is None else record.device_id
 
 
-__all__ = ["SCAN_LIMITED_EVENT", "STARTUP_BUDGET_SECONDS", "device_id_of", "has_effective_grant"]
+__all__ = ["GRANT_QUERY_BUDGET_SECONDS", "SCAN_LIMITED_EVENT", "device_id_of", "has_effective_grant"]

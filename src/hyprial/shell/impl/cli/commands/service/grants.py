@@ -12,6 +12,10 @@
 #   service entry, and --credential needs --name (the daemon refuses it).
 #   The listing says which orgs it could not read (unreadableOrgs): their
 #   grants are unknown, not absent.
+# - Gate fix (2026-11-27): error codes come from hyprial.error.codes, and the
+#   '<entryId>:<fieldName>' reference is cut at its one ':' by index. It is a
+#   user-provider entry reference, not an agent/channel URI, and the address
+#   parsing guard reserves split/partition on ':' for the URI module.
 """Service-grant CLI leaves mounted under ``hyprial org service``."""
 
 from __future__ import annotations
@@ -21,31 +25,27 @@ from typing import Any
 
 import typer
 
+from hyprial.error import codes
 from hyprial.shell.impl.cli.commands.common.services import get_services
 from hyprial.shell.impl.cli.commands.service.commands import service_app
 from hyprial.shell.impl.cli.output import CliResult
 
 
+_CREDENTIAL_SHAPE = "credential must be '<entryId>' or '<entryId>:<fieldName>'"
+
+
 def _parse_credential_option(raw: str, *, cli_error: type[BaseException]) -> dict[str, str]:
-    if not raw or raw.strip() != raw:
-        raise cli_error(
-            "INVALID_ARGUMENT",
-            "credential must be '<entryId>' or '<entryId>:<fieldName>'",
-        )
+    if not raw or raw.strip() != raw or raw.count(":") > 1:
+        raise cli_error(codes.INVALID_ARGUMENT, _CREDENTIAL_SHAPE)
     if ":" not in raw:
         return {"entryId": raw}
-    parts = raw.split(":")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise cli_error(
-            "INVALID_ARGUMENT",
-            "credential must be '<entryId>' or '<entryId>:<fieldName>'",
-        )
-    if parts[0].strip() != parts[0] or parts[1].strip() != parts[1]:
-        raise cli_error(
-            "INVALID_ARGUMENT",
-            "credential must be '<entryId>' or '<entryId>:<fieldName>'",
-        )
-    return {"entryId": parts[0], "fieldName": parts[1]}
+    cut = raw.index(":")
+    entry_id, field_name = raw[:cut], raw[cut + 1 :]
+    if not entry_id or not field_name:
+        raise cli_error(codes.INVALID_ARGUMENT, _CREDENTIAL_SHAPE)
+    if entry_id.strip() != entry_id or field_name.strip() != field_name:
+        raise cli_error(codes.INVALID_ARGUMENT, _CREDENTIAL_SHAPE)
+    return {"entryId": entry_id, "fieldName": field_name}
 
 
 def _format_recipient(recipient: object) -> str:
