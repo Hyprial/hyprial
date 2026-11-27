@@ -72,9 +72,6 @@ def user_writes_after_the_look(monkeypatch: pytest.MonkeyPatch, home: Path) -> N
     monkeypatch.setattr(keys_module, "_inspect", racing)
 
 
-# -- critic 1: the race between the look and the write --------------------------------
-
-
 def test_a_user_entry_created_after_the_look_is_never_overwritten(
     world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,9 +127,6 @@ def test_a_new_entry_never_goes_through_the_merging_writer(
 
     assert calls == []
     assert len(list(providers_dir(world["bob_home"]).glob("*.json"))) == 1
-
-
-# -- critic 5: the ciphertext of one grant is replaced --------------------------------
 
 
 def replace_credential(world: dict[str, Any], grant_id: str, *, secret: str) -> None:
