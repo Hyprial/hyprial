@@ -209,6 +209,7 @@ def test_grant_refuses_unexposed_port_unknown_recipient_members_with_credential_
             org=ORG,
             port=8447,
             device="bob/device-b-nokey",
+            name="svc",
             credential={"entryId": "gateway", "fieldName": "API_KEY"},
         )
     assert no_key.value.code == ipc_errors.SERVICE_DEVICE_UNAVAILABLE
@@ -289,6 +290,7 @@ def test_grant_with_credential_round_trips_and_blocks_moved_owner_and_never_leak
         org=ORG,
         port=8447,
         device="bob/device-b",
+        name="svc",
         credential={"entryId": "raw"},
     )["grant"]
     raw_single = store.read_service_grant(ORG, "alice", single_field["grantId"])
@@ -321,6 +323,7 @@ def test_revoke_clears_credential_keeps_document_and_refuses_other_owners_grant(
         org=ORG,
         port=8447,
         device="bob/device-b",
+        name="svc",
         credential={"entryId": "gateway", "fieldName": "API_KEY"},
     )["grant"]
     grant_id = created["grantId"]
@@ -369,6 +372,7 @@ def test_grants_lists_granted_and_received_readonly_without_decrypting(
         org=ORG,
         port=8447,
         device="bob/device-b",
+        name="svc",
         credential={"entryId": "gateway", "fieldName": "API_KEY"},
     )["grant"]
     g_members = service.grant(org=ORG, port=8447, device="@members")["grant"]

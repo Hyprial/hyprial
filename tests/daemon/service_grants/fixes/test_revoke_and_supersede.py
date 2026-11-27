@@ -42,6 +42,7 @@ def _grant_with_credential(harness: dict[str, Any]) -> str:
         org=ORG,
         port=8447,
         device="bob/device-b",
+        name="svc",
         credential={"entryId": "gateway", "fieldName": "API_KEY"},
     )["grant"]["grantId"]
 

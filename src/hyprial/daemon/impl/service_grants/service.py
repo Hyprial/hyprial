@@ -34,6 +34,10 @@
 #   refused. No frozen error code names a quota, so the refusal is
 #   SERVICE_UNAVAILABLE, already declared for service.grant, with a message
 #   that says why and what to do.
+# - A credential without a name is refused (INVALID_ARGUMENT): the recipient
+#   derives a service entry only from a named grant, so the Key would arrive
+#   with nothing to use it through. Without a credential a name stays
+#   optional: such a grant only admits the device.
 # - service.grants reads other grantors within the recipient's scan bounds:
 #   a grantor over a limit is left out of "received" and named in
 #   limitedGrantors (grantor null when the whole org stopped), so the listing
@@ -240,6 +244,13 @@ class ServiceGrantService:
                 raise DaemonRequestError(
                     ipc_errors.INVALID_ARGUMENT,
                     "service grant for @members cannot include a credential",
+                )
+            if endpoint.name is None:
+                raise DaemonRequestError(
+                    ipc_errors.INVALID_ARGUMENT,
+                    "a service grant with a credential needs a name: the recipient "
+                    "uses the Key through a service entry, and gets one only for a "
+                    "named service",
                 )
             cred_ref = _parse_credential_ref(credential)
 

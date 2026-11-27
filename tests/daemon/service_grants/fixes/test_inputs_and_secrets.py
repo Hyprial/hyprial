@@ -43,7 +43,7 @@ def _write_raw_provider(home: Path, entry_id: str, document: object) -> None:
 
 def _refused(service: ServiceGrantService, **kwargs: Any) -> DaemonRequestError:
     with pytest.raises(DaemonRequestError) as caught:
-        service.grant(org=ORG, port=8447, **kwargs)
+        service.grant(org=ORG, port=8447, **{"name": "svc", **kwargs})
     return caught.value
 
 

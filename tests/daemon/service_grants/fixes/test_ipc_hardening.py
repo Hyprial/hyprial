@@ -136,7 +136,7 @@ def test_secret_errors_through_the_router_carry_no_entry_content(
     _publish_local_device(routed)
     app: _RouterApp = routed["app"]
     _write_user_provider(app.hyprial_home, "gateway", {"API_KEY": SYNTHETIC_SECRET, "OTHER": "SYNTHETIC-OTHER"})
-    error = _routed_error(app, {"org": ORG, "port": 8447, "device": "bob/device-b", "credential": credential})
+    error = _routed_error(app, {"org": ORG, "port": 8447, "device": "bob/device-b", "name": "svc", "credential": credential})
     assert error.code == ipc_errors.AGENT_SECRET_RESOLUTION_FAILED
     for forbidden in (SYNTHETIC_SECRET, "SYNTHETIC-OTHER", str(routed["tmp"])):
         assert forbidden not in str(error)

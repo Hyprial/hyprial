@@ -7,7 +7,9 @@
 #   views never display credential ciphertext or secret values.
 # - Integration fix (2026-11-27): a grant to a target that already has an
 #   effective grant rewrites it in place, so the human view says "Updated"
-#   instead of "Granted" and there is no superseded list any more.
+#   instead of "Granted" and there is no superseded list any more. A grant
+#   without --name only admits: the human view says the recipient gets no
+#   service entry, and --credential needs --name (the daemon refuses it).
 """Service-grant CLI leaves mounted under ``hyprial org service``."""
 
 from __future__ import annotations
@@ -83,9 +85,16 @@ def _render_grant_row(grant: Mapping[str, Any]) -> str:
 def _render_grant_created(data: Mapping[str, Any]) -> str:
     grant = data.get("grant")
     label = "Updated" if data.get("updated") is True else "Granted"
-    if isinstance(grant, Mapping):
-        return f"{label}: {_render_grant_row(grant)}"
-    return f"Grant {label.lower()}."
+    if not isinstance(grant, Mapping):
+        return f"Grant {label.lower()}."
+    lines = [f"{label}: {_render_grant_row(grant)}"]
+    service = grant.get("service")
+    if isinstance(service, Mapping) and not service.get("name"):
+        lines.append(
+            "Note: no --name, so the recipient is only admitted and will not get a "
+            "service entry automatically."
+        )
+    return "\n".join(lines)
 
 
 def _render_revoke(data: Mapping[str, Any]) -> str:
@@ -139,7 +148,12 @@ def service_grant(
     device: str = typer.Option(
         ..., "--device", help="Recipient '<owner>/<deviceId>' or '@members'."
     ),
-    name: str | None = typer.Option(None, "--name", help="Optional service name."),
+    name: str | None = typer.Option(
+        None,
+        "--name",
+        help="Service name; the recipient gets a service entry only for a named grant. "
+        "Required with --credential.",
+    ),
     protocol: str | None = typer.Option(
         None, "--protocol", help="Optional catalog protocol: tcp or http."
     ),
