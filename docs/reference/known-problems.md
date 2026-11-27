@@ -159,6 +159,7 @@
 | KP-171 | 接受邀请在一次性 token 消费之后失败，重试只得到 `INVITE_CONSUMED` | 接受（owner 2026-11-27：不单独修，随加入方式重做消除） |
 | KP-172 | 持有方不在线或组织 actor 被占用时，加入组织约 30 秒后报 `DAEMON_ERROR` | 延后（owner 2026-11-27：OrgFS 精简合入后修） |
 | KP-173 | 加入组织后最初几毫秒，两篇必有文档之外的内容可能还没到 | 接受 |
+| KP-174 | Lark worker 的 `online` 与 stale 健康行在 ready 观测之间存在竞态，导致 exit 75 退避偶发失效 | 已修复（进程先消费缓冲健康行；测试使用单次原子写入） |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -1883,3 +1884,12 @@
 - 决定：接受。这是"目录先到、内容按需"的既定语义。
 - 依据：设计 §9.2"真实节点第六轮之后的裁定"；包 F10、F10b 的只读复审。
 - 负责人：OrgFS 维护者。
+
+## KP-174 Lark worker 的 ready 观测与 stale 健康状态存在竞态
+
+- 现象：`test_exit_75_worker_is_restarted_with_supervisor_backoff` 在并发或调度受限环境中偶发在第二个 exit 75 worker 后错误地再次启动 worker，`reconcile()` 返回 `1` 而不是退避窗口内的 `0`。
+- 影响：CI 合并门可能间歇失败，且 Lark adapter 的失败计数与退避状态可能被一次尚未完整观测的 `online` 状态清除。
+- 规避：无；不跳过、不放宽断言。
+- 决定：已修复。`LarkWorkerProcess._run_ready` 现在先消费同一读取批次中已完整缓冲的健康行，再解除 `wait_ready()`；测试假 worker 将 `online` 与 `health(streamHealth="stale")` 合并为一次原子管道写入。`handler.py` 保持不变，健康 worker 上线后立即清除失败与重试状态的既有契约仍由 `test_quarantine_retries_then_online_clears_all_failure_state` 固定。另有独立的产品语义候选：健康状态驻留一段时间后再执行 `_clear_failures`，该候选需要单独评审，不在本修复中实现。
+- 依据：`src/hyprial/daemon/impl/adapters/lark/worker/process.py` 的 ready 与健康流读取顺序；`src/hyprial/daemon/impl/adapters/lark/runtime/effects.py` 的 ready 后观测；本条新增的确定性回归测试与 exit 75 退避测试。
+- 负责人：Lark adapter 生命周期维护者 / CI 稳定性线。

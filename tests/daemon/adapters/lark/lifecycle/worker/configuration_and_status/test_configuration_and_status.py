@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -13,6 +14,7 @@ from hyprial.daemon.impl.adapters.lark import HarnessDelivery, ReconcileReport
 from hyprial.daemon.impl.adapters.lark.runtime.runtime import AdapterRuntime
 from hyprial.daemon.impl.adapters.lark.worker.bridge import _serve_reply_bridge
 from hyprial.daemon.impl.adapters.lark.worker.entry import _bounded_integer, _bounded_seconds, _rebuild_after_stale, _recovery_timing_from_environment
+from hyprial.daemon.impl.adapters.lark.worker.process import LarkWorkerProcess, ONLINE
 from hyprial.daemon.impl.adapters.lark.worker.sweep import STALE_REBUILD_EXIT_CODE
 from hyprial.kernel import Logger
 from hyprial.kernel import ChannelConfiguration, LarkGatewayConfig
@@ -304,6 +306,58 @@ def test_worker_stale_rebuild_uses_documented_numeric_exit_code() -> None:
     assert exits == [75]
 
 
+def test_ready_wait_exposes_health_from_the_same_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        stdout = None
+        pid = 12345
+
+        def poll(self) -> int | None:
+            return None
+
+    ready_read, ready_write = os.pipe()
+    release_health = threading.Event()
+    original_read_health_stream = LarkWorkerProcess._read_health_stream
+
+    def hold_health_stream(
+        process: LarkWorkerProcess, buffer: bytearray
+    ) -> None:
+        release_health.wait(timeout=2.0)
+        original_read_health_stream(process, buffer)
+
+    monkeypatch.setattr(LarkWorkerProcess, "_read_health_stream", hold_health_stream)
+    worker = LarkWorkerProcess(
+        Process(),
+        name="lark-test",
+        ready_fd=ready_read,
+        startup_timeout=1.0,
+    )
+    try:
+        os.write(
+            ready_write,
+            (
+                json.dumps({"status": "online", "name": "lark-test"}).encode()
+                + b"\n"
+                + json.dumps(
+                    {
+                        "status": "health",
+                        "name": "lark-test",
+                        "streamHealth": "stale",
+                    }
+                ).encode()
+                + b"\n"
+            ),
+        )
+        assert worker.wait_ready(1.0) == ONLINE
+        assert worker.health["streamHealth"] == "stale"
+    finally:
+        release_health.set()
+        os.close(ready_write)
+        worker._ready_thread.join(timeout=2.0)
+        assert not worker._ready_thread.is_alive()
+
+
 def test_exit_75_worker_is_restarted_with_supervisor_backoff(tmp_path: Path) -> None:
     spawn_log = tmp_path / "spawns.log"
     script = _write(
@@ -315,11 +369,16 @@ def test_exit_75_worker_is_restarted_with_supervisor_backoff(tmp_path: Path) -> 
         with open(os.environ["SPAWN_LOG"], "a", encoding="utf-8") as stream:
             stream.write("spawn\\n")
         fd = int(os.environ["HYPRIAL_LARK_READY_FD"])
-        os.write(fd, json.dumps({"status": "online", "name": name}).encode() + b"\\n")
-        os.write(fd, json.dumps({
-            "status": "health", "name": name, "streamHealth": "stale",
-            "reason": "history-probe-failed"
-        }).encode() + b"\\n")
+        payload = (
+            json.dumps({"status": "online", "name": name}).encode()
+            + b"\\n"
+            + json.dumps({
+                "status": "health", "name": name, "streamHealth": "stale",
+                "reason": "history-probe-failed"
+            }).encode()
+            + b"\\n"
+        )
+        os.write(fd, payload)
         time.sleep(0.03)
         raise SystemExit(75)
         """,

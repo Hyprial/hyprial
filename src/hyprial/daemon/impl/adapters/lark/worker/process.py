@@ -261,22 +261,27 @@ class LarkWorkerProcess:
         # stops right away must not log adapter.stopped ahead of ready.
         if self._logger is not None:
             self._logger.info("adapter.ready", pid=self._process.pid)
+        pending = self._consume_buffered_health(pending)
         self._resolve(ONLINE)
         self._read_health_stream(pending)
         self._log_exit()
+
+    def _consume_buffered_health(self, buffer: bytearray) -> bytearray:
+        while b"\n" in buffer:
+            line, _, rest = buffer.partition(b"\n")
+            buffer = bytearray(rest)
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            self._record_health(message)
+        return buffer
 
     def _read_health_stream(self, buffer: bytearray) -> None:
         """Consume health telemetry for the lifetime of an online worker."""
 
         while True:
-            while b"\n" in buffer:
-                line, _, rest = buffer.partition(b"\n")
-                buffer = bytearray(rest)
-                try:
-                    message = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                self._record_health(message)
+            buffer = self._consume_buffered_health(buffer)
             if not _wait_readable(self._ready_fd, 0.5):
                 continue
             try:
