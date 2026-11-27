@@ -51,6 +51,7 @@ from pathlib import Path
 
 import pytest
 
+from hyprial.kernel import secure_private_directory
 from hyprial.kernel.impl.primitives.node_identity import mint_node_id, node_id_path
 
 
@@ -61,7 +62,7 @@ def home_with_node_id(home: Path) -> Path:
     the host name is never a node-id fallback (2026-11-20).
     """
 
-    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    secure_private_directory(home.resolve(), create=True)
     if not node_id_path(home).exists():
         mint_node_id(home)
     return home
@@ -76,7 +77,7 @@ def _windows_profile_environment(home: Path) -> dict[str, str]:
     """Point every Windows account-home variable inside *home*."""
 
     for directory in (home / "AppData" / "Roaming", home / "AppData" / "Local"):
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        secure_private_directory(directory.resolve(), create=True)
     drive, rest = ntpath.splitdrive(str(home))
     return {
         "USERPROFILE": str(home),
@@ -105,7 +106,7 @@ def isolated_environment(root: Path) -> dict[str, str]:
         if key.startswith(("HYPRIAL_", "HARNESS_", "DBUS_")):
             env.pop(key)
     for key, path in paths.items():
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        secure_private_directory(path.resolve(), create=True)
         env[key] = str(path)
     if os.name == "nt":
         env.update(_windows_profile_environment(home))

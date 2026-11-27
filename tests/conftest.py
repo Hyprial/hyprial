@@ -89,6 +89,7 @@ from pathlib import Path
 import pytest
 
 from hyprial.identity.impl.agents import set_default_registry
+from hyprial.kernel import secure_private_directory
 from hyprial.kernel.impl.primitives.node_identity import mint_node_id
 
 # Warm every known one-time fd owner before any per-test measurement, so a
@@ -134,6 +135,14 @@ def pytest_runtest_protocol(item, nextitem):
     tmp_path = item.stash.get(_TMP_PATH_STASH, None)
     if tmp_path is not None and item.stash.get(_TEST_FAILED_STASH, False) is not True:
         _remove_tmp_path(tmp_path)
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path) -> Path:
+    """Harden pytest's shared temporary directory before tests hand it to products."""
+
+    secure_private_directory(tmp_path.resolve(), create=True)
+    return tmp_path
 
 
 @pytest.fixture(autouse=True)
@@ -186,7 +195,8 @@ def isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     with tempfile.TemporaryDirectory(prefix="hyprial-unit-", dir=hyprial_test_tmp_root()) as raw:
         from tests.support.runtime.environment import WINDOWS_PROFILE_KEYS, isolated_environment
 
-        root = Path(raw)
+        root = Path(raw).resolve()
+        secure_private_directory(root, create=True)
         environment = isolated_environment(root)
         for key, value in environment.items():
             if key == "HOME" or key.startswith("XDG_") or key in WINDOWS_PROFILE_KEYS:
@@ -194,10 +204,8 @@ def isolated_hyprial_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         for key in tuple(os.environ):
             if key.startswith("DBUS_"):
                 monkeypatch.delenv(key)
-        home = root / "home"
-        state = root / "state"
-        home.mkdir(mode=0o700)
-        state.mkdir(mode=0o700)
+        home = secure_private_directory(root / "home", create=True)
+        state = secure_private_directory(root / "state", create=True)
         (home / "settings.json").write_text(
             json.dumps({"version": 1, "owner": "hyprial-unit-owner"}),
             encoding="utf-8",

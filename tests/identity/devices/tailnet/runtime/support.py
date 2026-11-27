@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives import serialization
 from hyprial.identity import (
     TailnetAuthorityPin, TailnetCredentials, TailnetMember, TailnetMembership, write_device_record,
 )
+from hyprial.kernel import secure_private_directory
 from tests.identity.devices.binding import support as b
 
 
@@ -29,9 +30,9 @@ def frame(body):
 
 class Context:
     def __init__(self, home):
-        self.home = Path(home)
-        self.home.mkdir(parents=True, mode=0o700, exist_ok=True)
-        (self.home / "state").mkdir(mode=0o700, exist_ok=True)
+        self.home = Path(home).resolve()
+        secure_private_directory(self.home, create=True)
+        secure_private_directory((self.home / "state").resolve(), create=True)
         self.record = b.device_record(uuid4().hex)
         write_device_record(self.home, self.record)
         self.ca = b.make_ca()
