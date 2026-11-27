@@ -89,6 +89,11 @@
 # - An org whose tailnet binding cannot be resolved while its grants were
 #   read is the one directory failure that knows the grants, so it is also
 #   reported per grant, each as key_unavailable under tailnet-unresolved.
+# - Integration fix (2026-11-27): an org that inherits its tailnet (its
+#   effective tailnet id is not its own space id) has its own directory read
+#   too: its device rows whose owners are its members are what its grants may
+#   admit out of the parent's roster. That directory read failing is the
+#   read DEVICES, reported once like the others, and tightens that org.
 """Pushing each exposure's derived admission set to the sidecar."""
 
 from __future__ import annotations
@@ -104,7 +109,11 @@ from hyprial.daemon.impl.org.network.binding import resolve_org_directory_space
 from hyprial.daemon.impl.org.network.create.sub_org import effective_tailnet_id
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.api import OrgFs
-from hyprial.daemon.impl.service_grants import ServiceGrantService, StoredServiceGrant
+from hyprial.daemon.impl.service_grants import (
+    ServiceGrantService,
+    StoredServiceGrant,
+    normalize_bare_owner,
+)
 
 from .derive import derive_admission
 from .models import AdmissionSet, EnforcementInputs, NOBODY, UnresolvedGrant
@@ -120,6 +129,7 @@ ROSTER_UNREADABLE = "service.grant.roster_unreadable"
 DIRECTORY_UNAVAILABLE = "service.grant.directory_unavailable"
 PUSH_REJECTED = "network.exposure.admission_rejected"
 TAILNET = "tailnet"
+DEVICES = "devices"
 DEFAULT_INTERVAL_SECONDS = 30.0
 DEFAULT_MEMBERSHIP_TIMEOUT = 5.0
 DEFAULT_UNEXPOSE_WAIT_SECONDS = 15.0
@@ -482,7 +492,9 @@ class ServiceAdmissionEnforcer:
             roster = self._read_roster()
             inputs = self._inputs()
             grants = self._read_grants(inputs, unreadable)
-            tailnet_ids = self._tailnet_ids(inputs, grants, unreadable)
+            inherited: set[str] = set()
+            tailnet_ids = self._tailnet_ids(inputs, grants, unreadable, inherited)
+            org_devices = self._org_devices(inputs, inherited, unreadable)
             projection = derive_admission(
                 grants,
                 {org: roster for org in grants},
@@ -492,6 +504,7 @@ class ServiceAdmissionEnforcer:
                 server_public=snapshot.server_public,
                 now_ms=self._now_ms(),
                 tailnets_unresolved=tuple(org for org, step in unreadable if step == TAILNET),
+                org_devices=org_devices,
             )
         except Exception as error:  # noqa: BLE001
             self._log("warn", DERIVATION_FAILED, errorType=type(error).__name__)
@@ -607,8 +620,11 @@ class ServiceAdmissionEnforcer:
         inputs: EnforcementInputs,
         grants: Mapping[str, Sequence[StoredServiceGrant]],
         unreadable: set[tuple[str, str]],
+        inherited: set[str],
     ) -> dict[str, str]:
         """Each org's effective tailnet id: a sub-org inherits its parent's tailnet.
+
+        An org whose id is not its own space id is added to ``inherited``.
 
         An org whose id cannot be resolved is left out and named to
         ``unreadable`` as the tailnet read, which derives it with no roster:
@@ -629,7 +645,33 @@ class ServiceAdmissionEnforcer:
             except Exception:  # noqa: BLE001
                 unreadable.add((org, TAILNET))
                 continue
+            if ids[org] != space.space_id:
+                inherited.add(org)
         return ids
+
+    @staticmethod
+    def _org_devices(
+        inputs: EnforcementInputs, orgs: set[str], unreadable: set[tuple[str, str]]
+    ) -> dict[str, frozenset[tuple[str, str]] | None]:
+        """Each org's own devices whose owners are its members; ``None`` when unreadable."""
+
+        result: dict[str, frozenset[tuple[str, str]] | None] = {}
+        for org in sorted(orgs):
+            try:
+                membership: dict[str, bool] = {}
+                devices: set[tuple[str, str]] = set()
+                for device in inputs.store.list_devices(org):
+                    owner = normalize_bare_owner(device.owner)
+                    if owner not in membership:
+                        membership[owner] = inputs.store.is_member(org, owner)
+                    if membership[owner]:
+                        devices.add((owner, device.device_id))
+            except Exception:  # noqa: BLE001
+                unreadable.add((org, DEVICES))
+                result[org] = None
+                continue
+            result[org] = frozenset(devices)
+        return result
 
     def _log(self, level: str, event: str, **fields: Any) -> None:
         if self._logger is None:
@@ -644,6 +686,7 @@ __all__ = [
     "DEFAULT_INTERVAL_SECONDS",
     "DEFAULT_MEMBERSHIP_TIMEOUT",
     "DEFAULT_UNEXPOSE_WAIT_SECONDS",
+    "DEVICES",
     "DIRECTORY_UNAVAILABLE",
     "KEY_UNAVAILABLE",
     "LIMIT_EVENT",

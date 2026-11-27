@@ -15,6 +15,13 @@
 #   reported as ROSTER_UNAVAILABLE, which sends the operator to a sidecar
 #   that is answering: the roster was read, and it is the binding that is
 #   not known.
+# - Integration fix (2026-11-27): a @members grant is expanded to the keys of
+#   every active row with a canonical key (member_keys); it never becomes
+#   "allow". A row without this device's entry, or with a key that is not
+#   canonical, is left out of that expansion without a report, because a
+#   @members grant names nobody in particular. NOT_ORG_MEMBER and
+#   DEVICES_UNAVAILABLE belong to a sub-org, whose inherited roster is cut
+#   down to the devices of its own directory.
 """Reading admission keys out of one membership observation."""
 
 from __future__ import annotations
@@ -27,6 +34,8 @@ MEMBER_NOT_IN_ROSTER = "member-not-in-roster"
 MEMBER_WITHOUT_LOCAL_KEY = "member-without-local-key"
 KEY_MALFORMED = "key-malformed"
 TAILNET_UNRESOLVED = "tailnet-unresolved"
+NOT_ORG_MEMBER = "not-org-member"
+DEVICES_UNAVAILABLE = "org-devices-unavailable"
 
 _NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
 _ZERO_NODEKEY = "nodekey:" + "0" * 64
@@ -74,6 +83,19 @@ def member_key(
     return key
 
 
+def member_keys(rows: list[Mapping[str, Any]], *, server_public: str) -> tuple[str, ...]:
+    """The canonical key of every active row that has an entry for this device."""
+
+    keys: list[str] = []
+    for row in rows:
+        if row.get("state") != "active":
+            continue
+        key = member_key(row, server_public)
+        if key is not None and _NODEKEY.fullmatch(key):
+            keys.append(key)
+    return tuple(keys)
+
+
 def admission_keys(
     rows: list[Mapping[str, Any]] | None,
     recipients: list[tuple[str, str]],
@@ -117,12 +139,15 @@ def admission_keys(
 
 
 __all__ = [
+    "DEVICES_UNAVAILABLE",
     "KEY_MALFORMED",
     "MEMBER_NOT_IN_ROSTER",
+    "NOT_ORG_MEMBER",
     "MEMBER_WITHOUT_LOCAL_KEY",
     "ROSTER_UNAVAILABLE",
     "TAILNET_UNRESOLVED",
     "admission_keys",
     "member_key",
+    "member_keys",
     "tailnet_rows",
 ]

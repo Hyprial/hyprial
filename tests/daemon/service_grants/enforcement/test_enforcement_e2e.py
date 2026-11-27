@@ -406,7 +406,7 @@ def test_the_tick_reads_the_roster_once_however_many_ports_and_grants(make_rig: 
     assert rig.roster_reads == 1
     assert {push["port"]: push["admission"] for push in rig.exposes()} == {
         PORT: "keys",
-        OTHER_PORT: "allow",
+        OTHER_PORT: "keys",
     }
     assert rig.exposes(port=PORT)[-1]["keys"] == [BOB_KEY]
 
@@ -600,7 +600,7 @@ def test_unexpose_revokes_every_grant_for_the_port_and_leaves_other_ports(make_r
     assert {item["org"] for item in result["revoked"]} == {ORG}
     assert [item["grantId"] for item in rig.harness.grants().grants(org=ORG)["granted"]] == [kept]
     assert enforcer.last_set(PORT) is None
-    assert enforcer.last_set(OTHER_PORT) == "allow"
+    assert enforcer.last_set(OTHER_PORT) == "keys"
 
 
 def test_a_revoke_that_fails_during_unexpose_is_logged_and_does_not_raise(make_rig: Any) -> None:

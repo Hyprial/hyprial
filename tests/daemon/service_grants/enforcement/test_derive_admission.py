@@ -44,7 +44,6 @@ SERVER_PUBLIC = ALICE_NODE.server_public
 BOB_KEY = peer_key(BOB_NODE, ALICE_NODE)
 CAROL_KEY = peer_key(CAROL_NODE, ALICE_NODE)
 EMPTY = AdmissionSet(admission="keys", keys=())
-ALLOW = AdmissionSet(admission="allow", keys=())
 ROSTER_UNAVAILABLE = "roster-unavailable"
 TAILNET_UNRESOLVED = "tailnet-unresolved"
 
@@ -128,6 +127,7 @@ def _derive(
     now_ms: int = NOW_MS,
     tailnet_ids: dict | None = None,
     tailnets_unresolved: tuple[str, ...] = (),
+    org_devices: dict | None = None,
 ) -> dict:
     return derive_admission(
         grants_by_org,
@@ -138,6 +138,7 @@ def _derive(
         server_public=SERVER_PUBLIC,
         now_ms=now_ms,
         tailnets_unresolved=tailnets_unresolved,
+        org_devices=org_devices,
     )
 
 def _reasons(projection: AdmissionProjection) -> list[tuple[str, str, str, str]]:
@@ -178,13 +179,18 @@ def test_an_expired_grant_no_longer_contributes() -> None:
     assert at_expiry[PORT].admission == EMPTY
 
 
-def test_a_members_grant_admits_every_member() -> None:
+def test_a_members_grant_admits_every_member_by_key() -> None:
+    """Integration fix (2026-11-27): ``@members`` is expanded to keys, never ``allow``."""
+
     projection = _derive(
         {ORG: (_grant("m", ALL_MEMBERS),)},
-        {ORG: _roster(_row(ALICE_NODE), _row(BOB_NODE))},
+        {ORG: _roster(_row(ALICE_NODE), _row(BOB_NODE), _row(CAROL_NODE, state="tombstone"))},
     )
 
-    assert projection[PORT].admission == ALLOW
+    assert projection[PORT].admission == AdmissionSet(
+        admission="keys",
+        keys=tuple(sorted((peer_key(ALICE_NODE, ALICE_NODE), BOB_KEY))),
+    )
 
 
 def test_revoking_members_returns_to_the_remaining_device_keys() -> None:
@@ -301,13 +307,13 @@ def test_an_unreadable_roster_leaves_only_the_readable_part_and_never_widens_to_
     ]
 
 
-def test_a_readable_members_grant_widens_to_allow_while_another_org_is_unreadable() -> None:
+def test_a_readable_members_grant_admits_its_members_while_another_org_is_unreadable() -> None:
     projection = _derive(
-        {ORG: (_grant("m", ALL_MEMBERS),), BETA: (_grant("b", BOB_NODE, org=BETA),)},
+        {ORG: (_grant("m", ALL_MEMBERS),), BETA: (_grant("b", CAROL_NODE, org=BETA),)},
         {ORG: _roster(_row(BOB_NODE))},
     )
 
-    assert projection[PORT].admission == ALLOW
+    assert projection[PORT].admission == AdmissionSet(admission="keys", keys=(BOB_KEY,))
     assert [(item.org, item.reason) for item in projection[PORT].unresolved] == [
         (BETA, ROSTER_UNAVAILABLE)
     ]
@@ -456,3 +462,28 @@ def test_projection_types_carry_no_key_outside_the_set() -> None:
         "reason",
     }
     assert AdmissionProjection.__dataclass_fields__.keys() == {"admission", "unresolved"}
+
+
+def test_a_sub_org_admits_only_its_own_devices_out_of_the_inherited_roster() -> None:
+    """Integration fix (2026-11-27): a device named in the grant but outside the sub-org is not admitted."""
+
+    grants = {BETA: (_grant("m", ALL_MEMBERS, org=BETA), _grant("c", CAROL_NODE, org=BETA))}
+    roster = _roster(_row(BOB_NODE), _row(CAROL_NODE))
+
+    projection = _derive(
+        grants,
+        {BETA: roster},
+        tailnet_ids={BETA: "space-group-acme"},
+        org_devices={BETA: frozenset({(BOB_NODE.owner, BOB_NODE.device_id)})},
+    )
+    unreadable = _derive(
+        grants, {BETA: roster}, tailnet_ids={BETA: "space-group-acme"}, org_devices={BETA: None}
+    )
+
+    assert projection[PORT].admission.keys == (BOB_KEY,)
+    assert [item.reason for item in projection[PORT].unresolved] == ["not-org-member"]
+    assert unreadable[PORT].admission == EMPTY
+    assert sorted(item.reason for item in unreadable[PORT].unresolved) == [
+        "org-devices-unavailable",
+        "org-devices-unavailable",
+    ]

@@ -8,10 +8,20 @@
 # - "Effective" has one meaning, S3's is_grant_effective. This module never
 #   decides effectiveness on its own.
 # - A port's keys are the union over every org the device belongs to. An org
-#   whose roster cannot be read contributes nothing and is reported: its
-#   @members grant never widens the port to allow, and each of its grants is
-#   listed as unresolved. An @members grant in an org whose roster IS readable
-#   does widen the port, whatever the other orgs are.
+#   whose roster cannot be read contributes nothing and is reported: each of
+#   its grants is listed as unresolved.
+# - Integration fix (2026-11-27): a @members grant admits the members of its
+#   own org and nobody else, so it is expanded to keys and the result is
+#   never "allow". A port is reachable over every tailnet its device is on,
+#   which is why "allow" admitted the members of every org the grantor is in.
+#   The keys are those of every active row of the org's effective tailnet.
+#   A sub-org inherits its parent's tailnet, whose roster also lists the
+#   parent's members, so for an org in ``org_devices`` the roster is cut down
+#   to the devices of the org's own directory whose owners are its members;
+#   a recipient outside them is unresolved as NOT_ORG_MEMBER, and an org
+#   whose directory could not be read (``None``) contributes nothing, each of
+#   its grants unresolved as DEVICES_UNAVAILABLE. Over the sidecar's key
+#   limit the caller's existing limit path applies.
 # - A grant counts only when it was issued by this device for this device's
 #   port. Another grantor's grant is not this device's to push.
 # - A port this device has issued a grant for stays in the result after that
@@ -34,7 +44,17 @@ from typing import Any
 from ..models import ALL_MEMBERS, GrantRecipient, StoredServiceGrant, normalize_bare_owner
 from ..queries import is_grant_effective
 from .models import AdmissionProjection, AdmissionSet, UnresolvedGrant
-from .roster import ROSTER_UNAVAILABLE, TAILNET_UNRESOLVED, admission_keys, tailnet_rows
+from .roster import (
+    DEVICES_UNAVAILABLE,
+    NOT_ORG_MEMBER,
+    ROSTER_UNAVAILABLE,
+    TAILNET_UNRESOLVED,
+    admission_keys,
+    member_keys,
+    tailnet_rows,
+)
+
+OrgDevices = frozenset[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -84,6 +104,21 @@ def _pushable(
     return pushable, granted_ports
 
 
+def _recipient_view(recipient: GrantRecipient | None) -> dict[str, str]:
+    if recipient is None:
+        return {"recipient": ALL_MEMBERS}
+    return {"owner": recipient.owner, "deviceId": recipient.device_id}
+
+
+def _in_org(rows: list[Mapping[str, Any]], devices: OrgDevices) -> list[Mapping[str, Any]]:
+    return [
+        row
+        for row in rows
+        if isinstance(row.get("owner"), str)
+        and (normalize_bare_owner(row["owner"]), row.get("deviceId")) in devices
+    ]
+
+
 def derive_admission(
     grants_by_org: Mapping[str, Sequence[StoredServiceGrant]],
     rosters: Mapping[str, Mapping[str, Any] | None],
@@ -94,6 +129,7 @@ def derive_admission(
     server_public: str,
     now_ms: int,
     tailnets_unresolved: Sequence[str] = (),
+    org_devices: Mapping[str, OrgDevices | None] | None = None,
 ) -> dict[int, AdmissionProjection]:
     """Admission to push for each port this device has a grant for.
 
@@ -105,50 +141,64 @@ def derive_admission(
     binding could not be resolved, which therefore have no entry in
     ``tailnet_ids``; each of their effective grants is reported as
     unresolved under ``TAILNET_UNRESOLVED`` and none of them is looked up in
-    a roster. A port this device never issued a grant for is absent from the
-    result; its caller pushes an empty key set. A port whose grants are all
-    revoked or expired is present with an empty key set.
+    a roster. ``org_devices[org]``, given for an org that inherits its
+    tailnet, is the ``(bare owner, device id)`` of every device of the org's
+    own directory whose owner is a member, or ``None`` when that directory
+    could not be read. Every set is ``"keys"``: a ``@members`` grant adds the
+    key of every active member row. A port this device never issued a grant
+    for is absent from the result; its caller pushes an empty key set. A
+    port whose grants are all revoked or expired is present with an empty
+    key set.
     """
 
-    widened: set[int] = set()
+    restricted = org_devices or {}
     keys: dict[int, set[str]] = {}
     unresolved: dict[int, list[UnresolvedGrant]] = {}
 
+    def report(item: _Pushable, reason: str) -> None:
+        unresolved.setdefault(item.port, []).append(
+            UnresolvedGrant(
+                org=item.org,
+                grant_id=item.grant_id,
+                recipient=_recipient_view(item.recipient),
+                reason=reason,
+            )
+        )
+
     def members_of(org: str) -> list[Mapping[str, Any]] | None:
         tailnet_id = tailnet_ids.get(org)
-        return None if tailnet_id is None else tailnet_rows(rosters.get(org), tailnet_id)
+        rows = None if tailnet_id is None else tailnet_rows(rosters.get(org), tailnet_id)
+        devices = restricted.get(org)
+        if rows is None or org not in restricted or devices is None:
+            return rows
+        return _in_org(rows, devices)
 
     pushable, granted_ports = _pushable(
         grants_by_org, owner=owner, device_id=device_id, now_ms=now_ms
     )
     for item in pushable:
         if item.org in tailnets_unresolved:
-            unresolved.setdefault(item.port, []).append(
-                UnresolvedGrant(
-                    org=item.org,
-                    grant_id=item.grant_id,
-                    recipient=(
-                        {"recipient": ALL_MEMBERS}
-                        if item.recipient is None
-                        else {"owner": item.recipient.owner, "deviceId": item.recipient.device_id}
-                    ),
-                    reason=TAILNET_UNRESOLVED,
-                )
-            )
+            report(item, TAILNET_UNRESOLVED)
+            continue
+        if item.org in restricted and restricted[item.org] is None:
+            report(item, DEVICES_UNAVAILABLE)
             continue
         members = members_of(item.org)
         if item.recipient is None:
             if members is None:
-                unresolved.setdefault(item.port, []).append(
-                    UnresolvedGrant(
-                        org=item.org,
-                        grant_id=item.grant_id,
-                        recipient={"recipient": ALL_MEMBERS},
-                        reason=ROSTER_UNAVAILABLE,
-                    )
-                )
+                report(item, ROSTER_UNAVAILABLE)
             else:
-                widened.add(item.port)
+                keys.setdefault(item.port, set()).update(
+                    member_keys(members, server_public=server_public)
+                )
+            continue
+        devices = restricted.get(item.org)
+        if (
+            members is not None
+            and devices is not None
+            and (item.recipient.owner, item.recipient.device_id) not in devices
+        ):
+            report(item, NOT_ORG_MEMBER)
             continue
         resolved, missing = admission_keys(
             members,
@@ -157,23 +207,12 @@ def derive_admission(
         )
         keys.setdefault(item.port, set()).update(resolved)
         for _recipient, reason in missing:
-            unresolved.setdefault(item.port, []).append(
-                UnresolvedGrant(
-                    org=item.org,
-                    grant_id=item.grant_id,
-                    recipient={"owner": item.recipient.owner, "deviceId": item.recipient.device_id},
-                    reason=reason,
-                )
-            )
+            report(item, reason)
 
-    ports = widened | set(keys) | set(unresolved) | granted_ports
+    ports = set(keys) | set(unresolved) | granted_ports
     return {
         port: AdmissionProjection(
-            admission=(
-                AdmissionSet(admission="allow", keys=())
-                if port in widened
-                else AdmissionSet(admission="keys", keys=tuple(sorted(keys.get(port, ()))))
-            ),
+            admission=AdmissionSet(admission="keys", keys=tuple(sorted(keys.get(port, ())))),
             unresolved=tuple(_stable(unresolved.get(port, ()))),
         )
         for port in sorted(ports)
