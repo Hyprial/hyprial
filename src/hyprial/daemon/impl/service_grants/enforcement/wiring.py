@@ -19,13 +19,16 @@
 #   places, exactly as the service grant IPC handler reads them per call. A
 #   long-lived object that captured the OrgFS runtime or the owner at creation
 #   would keep serving the previous identity after a relogin.
-# - An unexpose takes the port off the sidecar and out of the exposure store
-#   under the enforcer's own lock, and revokes the port's grants once that
-#   succeeded. The lock is what keeps a derivation that listed the exposure a
-#   moment earlier from exposing the port again; the revocation is best
-#   effort: the enforcer reports a failure as one log event and never raises
-#   into the caller, which is already past the point where the port should
-#   stay open.
+# - An unexpose registers its port with the enforcer, takes the port off the
+#   sidecar and out of the exposure store, and revokes the port's grants once
+#   that succeeded. The registration, not a lock held across the removal, is
+#   what keeps a derivation that listed the exposure a moment earlier from
+#   exposing the port again: the derivation sees the registration and drops
+#   its push. Only a push of that same port already in flight is waited for,
+#   with a bound, so the removal is the port's last command on the wire. The
+#   revocation is best effort: the enforcer reports a failure as one log event
+#   and never raises into the caller, which is already past the point where
+#   the port should stay open.
 # - A trigger reports whether the tick it offered reached the cadence. It never
 #   raises, because the change that triggered it is already durable, but it
 #   returns what happened and the caller logs it: a grant whose re-derivation
@@ -41,6 +44,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
 from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
 from hyprial.identity import read_device_record
 from hyprial.kernel import AdmissionResult
@@ -177,22 +181,41 @@ def retire(app: Any) -> None:
 
 
 def unexpose_port(app: Any, port: int, remove: Callable[[], Any]) -> Any:
-    """Take a port off the sidecar with no derivation in flight, then revoke its grants.
+    """Take a port off the sidecar, then revoke its grants, without reopening it.
 
     ``remove`` is the caller's own step that takes the port off the sidecar
-    and out of the exposure store; it runs under the enforcer's lock and its
-    result or exception is passed through unchanged. Only after it succeeded
-    is the port forgotten, which revokes this device's grants for it and
-    never raises. A daemon without a forwarding supervisor has no enforcer
-    and no derivation, so ``remove`` runs as it is.
+    and out of the exposure store; its result or exception is passed through
+    unchanged. Only after it succeeded is the port forgotten, which revokes
+    this device's grants for it and never raises.
+
+    A derivation may be pushing this very port. The port is registered as
+    being removed first, which makes any derivation that listed it earlier
+    drop its push, and the one push in flight is waited for, so that the
+    removal is the port's last command on the wire. That wait is bounded by
+    one sidecar push (``DEFAULT_UNEXPOSE_WAIT_SECONDS``). At the bound the
+    unexpose fails with the error the exposure path already reports and
+    nothing has changed: the exposure is still desired, still on the sidecar,
+    and its grants are still effective. The caller may retry.
+
+    When ``remove`` itself fails the registration is withdrawn and the sets
+    are marked stale, so the port is derived again as the exposure it still
+    is. A daemon without a forwarding supervisor has no enforcer and no
+    derivation, so ``remove`` runs as it is.
     """
 
     enforcer = getattr(app, "_service_admission_enforcer", None)
     if enforcer is None:
         return remove()
-    with enforcer.exclusive():
+    if not enforcer.begin_removal(port):
+        raise ForwardingSidecarError(
+            f"port {port} is being pushed to the sidecar; unexpose it again"
+        )
+    try:
         result = remove()
-        enforcer.forget_port(port)
+    except BaseException:
+        enforcer.cancel_removal(port)
+        raise
+    enforcer.forget_port(port)
     return result
 
 

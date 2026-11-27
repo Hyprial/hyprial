@@ -628,16 +628,21 @@ WAIT_BOUND = 1.0
 
 
 class _Held:
-    """A step of one derivation that blocks until the test releases it."""
+    """A step of one derivation that blocks until the test releases it.
 
-    def __init__(self) -> None:
+    As a roster reader it answers with the sidecar's real roster once
+    released, so the derivation it holds is delayed and not also starved.
+    """
+
+    def __init__(self, answer: Any = None) -> None:
         self.entered = threading.Event()
         self.release = threading.Event()
+        self._answer = answer
 
-    def __call__(self) -> dict[str, Any] | None:
+    def __call__(self) -> Any:
         self.entered.set()
         assert self.release.wait(20.0)
-        return {"readiness": {}, "tailnets": []}
+        return self._answer()
 
 
 class _Derivation:
@@ -645,12 +650,13 @@ class _Derivation:
 
     def __init__(self, rig: Rig, *, step: str) -> None:
         self.rig = rig
-        self.held = _Held()
         self.worker: threading.Thread | None = None
         self._expose = rig.supervisor.expose
         if step == "roster":
+            self.held: _Held = _Held(rig.roster)
             self.reader: Any = self.held
         else:
+            self.held = _Held()
             self.reader = rig.roster
             rig.supervisor.expose = self._held_expose
 
@@ -797,22 +803,35 @@ def test_an_unexpose_that_cannot_get_its_port_within_the_bound_fails_and_nothing
     """
 
     rig = make_rig()
-    grant_id = rig.grant(BOB_NODE.slug)["grantId"]
     enforcer = rig.build(interval_seconds=0.0, unexpose_wait_seconds=0.3)
     enforcer.apply_now()
-    assert rig.connect(BOB_NODE)["admitted"] is True
+    grant_id = rig.grant(BOB_NODE.slug)["grantId"]
+    assert rig.connect(BOB_NODE)["admitted"] is False
+    before = (
+        _exposed_ports(rig),
+        _ops(rig, PORT),
+        _granted(rig),
+        rig.connect(BOB_NODE)["admitted"],
+        enforcer.last_set(PORT),
+    )
     derivation = _Derivation(rig, step="push")
     derivation.start(enforcer)
     unexposer, outcome = _unexpose(rig, enforcer, PORT)
 
     assert _done_within(unexposer, WAIT_BOUND), "the unexpose outlived its bound"
     [error] = outcome
-    derivation.finish()
+    after = (
+        _exposed_ports(rig),
+        _ops(rig, PORT),
+        _granted(rig),
+        rig.connect(BOB_NODE)["admitted"],
+        enforcer.last_set(PORT),
+    )
+    assert after == before
     assert isinstance(error, ForwardingSidecarError)
     assert error.code == "FORWARD_PROTOCOL"
-    assert PORT in _exposed_ports(rig)
-    assert _ops(rig, PORT)[-1] == "expose"
     assert _granted(rig) == [grant_id]
+    derivation.finish()
     assert rig.connect(BOB_NODE)["admitted"] is True
 
 
@@ -838,7 +857,6 @@ def test_a_derivation_that_listed_a_port_before_its_unexpose_pushes_nothing_for_
     derivation.start(enforcer)
     unexposer, outcome = _unexpose(rig, enforcer, OTHER_PORT)
     assert _done_within(unexposer, WAIT_BOUND), outcome
-    derivation.held.answer = rig.roster()
     derivation.finish()
 
     assert outcome == [None]
@@ -846,3 +864,74 @@ def test_a_derivation_that_listed_a_port_before_its_unexpose_pushes_nothing_for_
     assert len(rig.exposes(port=OTHER_PORT)) == pushes_before
     assert OTHER_PORT not in _exposed_ports(rig)
     assert enforcer.last_set(PORT) == "keys"
+
+
+def test_a_port_exposed_again_after_its_unexpose_gets_its_set_from_a_later_derivation(
+    make_rig: Any,
+) -> None:
+    """A derivation that lists a port after its unexpose is not held against that unexpose.
+
+    The unexpose advances the generation, and the derivation that follows
+    lists the re-exposed port at that same generation. It is later than the
+    unexpose and must push the port's set. Comparing the two as "at or after"
+    would refuse it forever: the port would be exposed, a grant on it would
+    be written, and no granted device would ever be admitted through it.
+
+    The unexpose revoked the port's first grant, as an unexpose does, so the
+    grant the second derivation pushes is a new one.
+    """
+
+    rig = make_rig()
+    first = rig.grant(BOB_NODE.slug)["grantId"]
+    enforcer = rig.build(interval_seconds=0.0)
+    enforcer.apply_now()
+    assert rig.exposes(port=PORT)[-1]["keys"] == [BOB_KEY]
+    unexposer, outcome = _unexpose(rig, enforcer, PORT)
+    assert _done_within(unexposer, WAIT_BOUND), outcome
+    assert outcome == [None]
+    assert PORT not in _exposed_ports(rig)
+    assert _granted(rig) == []
+
+    rig.add_exposure(PORT)
+    second = rig.grant(CAROL_NODE.slug)["grantId"]
+    enforcer.apply_now()
+
+    assert second != first
+    assert _ops(rig, PORT)[-2:] == ["unexpose", "expose"]
+    assert rig.exposes(port=PORT)[-1]["keys"] == [CAROL_KEY]
+    assert rig.connect(CAROL_NODE)["admitted"] is True
+    assert rig.connect(BOB_NODE)["admitted"] is False
+
+
+def test_the_unexpose_of_one_port_does_not_cost_another_port_its_push(make_rig: Any) -> None:
+    """Only the unexposed port's push is dropped; the others of the same derivation land.
+
+    One derivation reads two new grants, one for each of two ports, and is
+    held on its roster read. The lower port is unexposed meanwhile, so when
+    the derivation is released both of its pushes are pending and the dropped
+    one comes first: a derivation that gave up at the first stale port would
+    never reach the second. The push for the port that left is dropped; the
+    push for the port that stayed is sent by this derivation.
+    """
+
+    rig = make_rig()
+    rig.add_exposure(OTHER_PORT)
+    enforcer = rig.build(interval_seconds=0.0)
+    enforcer.apply_now()
+    rig.grant(BOB_NODE.slug)
+    kept = rig.grant(CAROL_NODE.slug, port=OTHER_PORT)["grantId"]
+    assert PORT < OTHER_PORT
+    pushes = len(rig.exposes(port=OTHER_PORT))
+    derivation = _Derivation(rig, step="roster")
+    derivation.start(enforcer)
+    unexposer, outcome = _unexpose(rig, enforcer, PORT)
+    assert _done_within(unexposer, WAIT_BOUND), outcome
+    assert len(rig.exposes(port=OTHER_PORT)) == pushes
+    derivation.finish()
+
+    assert len(rig.exposes(port=OTHER_PORT)) == pushes + 1
+    assert rig.exposes(port=OTHER_PORT)[-1]["keys"] == [CAROL_KEY]
+    assert rig.connect(CAROL_NODE, port=OTHER_PORT)["admitted"] is True
+    assert _granted(rig) == [kept]
+    assert _ops(rig, PORT)[-1] == "unexpose"
+    assert PORT not in _exposed_ports(rig)

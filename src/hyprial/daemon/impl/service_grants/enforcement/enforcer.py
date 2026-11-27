@@ -15,11 +15,32 @@
 # - Unexpose revokes this device's grants for the port through S3's
 #   revoke_all_for_port. A failure there is logged once and swallowed: the
 #   caller is already past the point where the port should stay exposed.
-# - Taking a port off the sidecar and revoking its grants runs under the same
-#   lock as a derivation. A derivation lists the exposures once and spends
-#   its roster budget before it pushes, so an unexpose inside that gap would
-#   be undone by a push from the stale list, and the port would stay exposed
-#   with nobody left to unexpose it.
+# - A derivation and an unexpose are ordered by a generation, not by a lock
+#   over the whole derivation (S4-py fix, 2026-11-27, critic finding 2). The
+#   lock covers only the exposure snapshot: which ports are exposed, and the
+#   generation they were listed under. The supervisor lookup, the roster
+#   read, the directory reads and the sidecar pushes run outside it. Under
+#   one lock a derivation spent its roster budget and one push per port with
+#   every unexpose queued behind it.
+# - The generation is compared per port. An unexpose records, against its own
+#   port, the generation it advanced to; a derivation's push for that port is
+#   dropped when its list is older than that record, and only that push. The
+#   first shape dropped the whole derivation, which cost every other port the
+#   push it had just read a grant for; its second shape compared "at or
+#   after", which refused the port for ever once it was exposed again. Both
+#   are held by a test that fails under each.
+# - The stale mark is kept by a count of triggers, apart from the generation.
+#   A derivation clears it only if no trigger arrived after the derivation
+#   read its grants, so a grant written during a roster read is not lost; and
+#   an unexpose, which advances the generation but triggers nothing, does not
+#   keep the mark owed for ever.
+# - One wait is kept on purpose. A derivation that is already pushing the
+#   very port an unexpose wants is let to finish, and the unexpose follows
+#   its push on the wire. Without it a push begun before the unexpose could
+#   land after it and reopen the port with no record left to close it. That
+#   wait is bounded by one sidecar push, and at the bound the unexpose fails
+#   and changes nothing, so the desired state, the sidecar and the grants
+#   still agree: the port is exposed under the set it already had.
 # - What was last pushed belongs to one sidecar incarnation. A relaunched
 #   sidecar replays every exposure with nobody admitted, so when the live
 #   backend is another object than the one the sets were pushed to, that
@@ -70,6 +91,9 @@ ROSTER_UNREADABLE = "service.grant.roster_unreadable"
 PUSH_REJECTED = "network.exposure.admission_rejected"
 DEFAULT_INTERVAL_SECONDS = 30.0
 DEFAULT_MEMBERSHIP_TIMEOUT = 5.0
+#: One push is bounded by the sidecar authority's wait (12 s) plus the
+#: supervisor's endpoint lookup (2 s); the unexpose waits that long and no longer.
+DEFAULT_UNEXPOSE_WAIT_SECONDS = 15.0
 
 
 def _error_code(error: BaseException) -> str:
@@ -79,6 +103,41 @@ def _error_code(error: BaseException) -> str:
     if isinstance(code, str) and code:
         return code
     return type(error).__name__
+
+
+class _Snapshot:
+    """What one derivation listed under the lock: the ports, and when.
+
+    ``generation`` is the enforcer's generation at the moment the exposures
+    were read. An unexpose advances it, which is how a derivation that listed
+    a port before the unexpose learns that its list is no longer the truth
+    for that port. ``changes`` is filled in before the roster read with the
+    number of triggers so far, which is what decides whether the derivation
+    may clear the stale mark.
+    """
+
+    def __init__(
+        self,
+        generation: int,
+        backend: Any,
+        server_public: str,
+        exposures: Sequence[Mapping[str, object]],
+    ) -> None:
+        self.generation = generation
+        self.backend = backend
+        self.server_public = server_public
+        self.changes = 0
+        self._exposures = {
+            exposure["port"]: {
+                key: exposure[key] for key in ("port", "target", "proxyProtocol")
+            }
+            for exposure in exposures
+            if isinstance(exposure.get("port"), int) and not isinstance(exposure.get("port"), bool)
+        }
+        self.ports = tuple(self._exposures)
+
+    def exposure(self, port: int) -> Mapping[str, object]:
+        return self._exposures[port]
 
 
 class ServiceAdmissionEnforcer:
@@ -104,6 +163,7 @@ class ServiceAdmissionEnforcer:
         logger: Callable[..., None] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         membership_timeout: float = DEFAULT_MEMBERSHIP_TIMEOUT,
+        unexpose_wait_seconds: float = DEFAULT_UNEXPOSE_WAIT_SECONDS,
     ) -> None:
         if inputs is None:
             fixed = EnforcementInputs(
@@ -125,11 +185,18 @@ class ServiceAdmissionEnforcer:
         self._logger = logger
         self._interval = interval_seconds
         self._membership_timeout = membership_timeout
+        self._unexpose_wait = unexpose_wait_seconds
         self._lock = threading.Lock()
+        self._settled = threading.Condition(self._lock)
         self._pushed: dict[int, AdmissionSet] = {}
         self._backend: Any = object()
         self._last_derivation = float("-inf")
         self._dirty = True
+        self._generation = 0
+        self._pushing: dict[int, int] = {}
+        self._removing: set[int] = set()
+        self._retired: dict[int, int] = {}
+        self._changes = 0
 
     def invalidate(self) -> None:
         """Mark the sets stale after a change that the caller knows about.
@@ -141,13 +208,30 @@ class ServiceAdmissionEnforcer:
 
         with self._lock:
             self._dirty = True
+            self._changes += 1
 
     def tick(self) -> None:
         """One cadence tick: derive now when stale, else at most once per interval."""
 
         with self._lock:
-            if self._dirty or self._clock() - self._last_derivation >= self._interval:
-                self._derive_and_push()
+            if not (self._dirty or self._clock() - self._last_derivation >= self._interval):
+                return
+        self._derive_and_push(self._begin())
+
+    def _supervisor_view(self) -> tuple[Any, str | None]:
+        """The live backend and its server key: one supervisor round trip, outside the lock.
+
+        Read before the lock is taken, because the lookup is a round trip to
+        the supervisor's own thread and a trigger marks the sets stale under
+        the same lock.
+        """
+
+        try:
+            backend = self._supervisor.endpoints()
+        except Exception as error:  # noqa: BLE001
+            self._log("warn", DERIVATION_FAILED, errorType=type(error).__name__)
+            return None, None
+        return backend, self._server_public(backend)
 
     def last_set(self, port: int) -> str | None:
         """The mode last pushed for ``port``: "allow", "keys", or nothing yet."""
@@ -159,8 +243,7 @@ class ServiceAdmissionEnforcer:
     def apply_now(self) -> None:
         """Derive and push now; never raises."""
 
-        with self._lock:
-            self._derive_and_push()
+        self._derive_and_push(self._begin())
 
     def reconcile(self) -> None:
         """The maintenance tick's entry: ``apply_now`` at most once per interval."""
@@ -168,35 +251,161 @@ class ServiceAdmissionEnforcer:
         with self._lock:
             if self._clock() - self._last_derivation < self._interval:
                 return
-            self._derive_and_push()
+        self._derive_and_push(self._begin())
 
-    def exclusive(self) -> Any:
-        """The lock every derivation holds, for a caller that removes an exposure.
+    def _begin(self) -> _Snapshot | None:
+        """Take the exposure snapshot; ``None`` when there is nothing to derive for.
 
-        ``network.unexpose`` takes the port off the sidecar and out of the
-        exposure store, then revokes the port's grants. Those steps have to
-        happen with no derivation in flight: a derivation lists the exposures
-        once and then spends up to its roster budget before it pushes, so an
-        unexpose that slips into that gap would be undone by a push from the
-        stale list, and nothing would ever unexpose the port again. Running
-        the three steps under this lock orders them either wholly before a
-        derivation, which then no longer sees the port, or wholly after one,
-        whose push the unexpose then removes.
+        The lock is held for the snapshot alone: which ports are exposed, and
+        the generation they were listed under. A port whose unexpose starts
+        after this point is either still listed here under a generation that
+        is no longer current, or absent from a later snapshot. The supervisor
+        lookup is made before the lock and the exposure file is read inside
+        it, so that the list and the generation describe the same moment.
         """
 
-        return self._lock
+        backend, server_public = self._supervisor_view()
+        if server_public is None:
+            return None
+        with self._lock:
+            self._last_derivation = self._clock()
+            if backend is not self._backend:
+                self._backend = backend
+                self._pushed.clear()
+            exposures = [
+                exposure
+                for exposure in self._exposure_store.list()
+                if exposure.get("port") not in self._removing
+            ]
+            if not exposures:
+                self._dirty = False
+                return None
+            return _Snapshot(self._generation, backend, server_public, exposures)
+
+    def claim_port(self, port: int, generation: int) -> bool:
+        """Reserve ``port`` for one push of the derivation listed under ``generation``.
+
+        ``False`` when the port has left since that list was taken: it is
+        being unexposed now, or its unexpose began after the list and has
+        already finished. Either way the push would reopen a port that was
+        closed, with no record left to close it again. Only this port's
+        history counts; the unexpose of another port does not stale a push
+        here. The comparison is strict: a list taken at the generation an
+        unexpose advanced to is later than that unexpose, and is what pushes
+        the port when it is exposed again. The reservation is what an
+        unexpose of the same port waits for.
+        """
+
+        with self._lock:
+            if port in self._removing or self._retired.get(port, -1) > generation:
+                return False
+            self._retired.pop(port, None)
+            self._pushing[port] = self._pushing.get(port, 0) + 1
+            return True
+
+    def release_port(self, port: int) -> None:
+        """End one reservation of ``port``; an unexpose waiting for it proceeds."""
+
+        with self._settled:
+            left = self._pushing.get(port, 0) - 1
+            if left > 0:
+                self._pushing[port] = left
+            else:
+                self._pushing.pop(port, None)
+                self._settled.notify_all()
+
+    def remember(self, port: int, admission: AdmissionSet, generation: int) -> None:
+        """Record what a derivation listed under ``generation`` pushed for ``port``.
+
+        A derivation that was made stale after the push, by an unexpose of
+        this port, does not overwrite what is remembered: the port is gone
+        and there is nothing to remember for it.
+        """
+
+        with self._lock:
+            if port not in self._removing and self._retired.get(port, -1) <= generation:
+                self._pushed[port] = admission
+
+    def _triggers(self) -> int:
+        """How many triggers have marked the sets stale so far."""
+
+        with self._lock:
+            return self._changes
+
+    def _finish(self, seen: int) -> None:
+        """A derivation read its grants after trigger ``seen``: the sets are no longer stale.
+
+        The count is taken before the roster read and the grants are read
+        after it, so a trigger that arrives in between has been seen by this
+        derivation and may be cleared. One that arrives after the grants were
+        read is a later count and keeps the mark, owed to the next tick.
+        """
+
+        with self._lock:
+            if self._changes == seen:
+                self._dirty = False
+
+    def _remember(self, port: int, admission: AdmissionSet) -> bool:
+        with self._lock:
+            return self._pushed.get(port) == admission
+
+    def begin_removal(self, port: int) -> bool:
+        """Register ``port`` as being unexposed and wait for its push to end.
+
+        The registration is what makes a later derivation leave the port out,
+        and the generation it records is what makes an earlier one drop its
+        push, also after the registration is gone. That record lives until a
+        derivation later than it claims the port again: at most one integer
+        for every port this device has ever unexposed. The wait is bounded by
+        one sidecar push (``DEFAULT_UNEXPOSE_WAIT_SECONDS``): only a
+        derivation already pushing this very port holds the port, and that
+        push has that bound.
+        Returns ``False`` at the bound, with the registration withdrawn and
+        nothing changed, so the caller fails the unexpose and the port stays
+        as it is. Must be paired with :meth:`forget_port` or
+        :meth:`cancel_removal`.
+        """
+
+        with self._settled:
+            if port in self._removing:
+                return False
+            self._generation += 1
+            self._retired[port] = self._generation
+            self._removing.add(port)
+            deadline = self._clock() + self._unexpose_wait
+            while self._pushing.get(port):
+                left = deadline - self._clock()
+                if left <= 0 or not self._settled.wait(left):
+                    if self._pushing.get(port):
+                        self._removing.discard(port)
+                        return False
+            return True
+
+    def cancel_removal(self, port: int) -> None:
+        """An unexpose that failed after its registration: the port is not going anywhere.
+
+        The port is exposed again for the next derivation and the sets are
+        marked stale, so whatever the unexpose was going to change is
+        re-derived rather than left half applied.
+        """
+
+        with self._lock:
+            self._removing.discard(port)
+            self._dirty = True
 
     def forget_port(self, port: int) -> dict[str, Any]:
         """Revoke this device's grants for ``port`` and forget what was pushed.
 
-        To be called under :meth:`exclusive`, after the port is off the
-        sidecar and out of the exposure store. Returns
+        To be called after :meth:`begin_removal` answered ``True``, the port
+        is off the sidecar and out of the exposure store. Returns
         ``{"port", "revoked", "failed"}`` in the shape of S3's
         revoke_all_for_port. A failure is one ``failed`` entry and one log
         event; it does not raise.
         """
 
-        self._pushed.pop(port, None)
+        with self._lock:
+            self._removing.discard(port)
+            self._pushed.pop(port, None)
         try:
             result = self._revoke(port)
         except Exception as error:  # noqa: BLE001
@@ -218,20 +427,11 @@ class ServiceAdmissionEnforcer:
             return self._revoke_all_for_port(port)
         return self._grants_service().revoke_all_for_port(port)
 
-    def _derive_and_push(self) -> None:
-        self._last_derivation = self._clock()
+    def _derive_and_push(self, snapshot: _Snapshot | None) -> None:
+        if snapshot is None:
+            return
+        snapshot.changes = self._triggers()
         try:
-            backend = self._supervisor.endpoints()
-            if backend is not self._backend:
-                self._backend = backend
-                self._pushed.clear()
-            server_public = self._server_public(backend)
-            if server_public is None:
-                return
-            exposures = list(self._exposure_store.list())
-            if not exposures:
-                self._dirty = False
-                return
             roster = self._read_roster()
             inputs = self._inputs()
             grants = self._read_grants(inputs)
@@ -242,23 +442,22 @@ class ServiceAdmissionEnforcer:
                 tailnet_ids,
                 owner=inputs.owner,
                 device_id=inputs.device_id,
-                server_public=server_public,
+                server_public=snapshot.server_public,
                 now_ms=self._now_ms(),
             )
         except Exception as error:  # noqa: BLE001
             self._log("warn", DERIVATION_FAILED, errorType=type(error).__name__)
             return
-        self._push(projection, exposures)
-        self._dirty = False
+        self._push(projection, snapshot)
+        self._finish(snapshot.changes)
 
-    def _push(self, projection: Mapping[int, Any], exposures: Sequence[Mapping[str, object]]) -> None:
-        for exposure in exposures:
-            port = exposure.get("port")
-            if not isinstance(port, int) or isinstance(port, bool):
-                continue
+    def _push(self, projection: Mapping[int, Any], snapshot: _Snapshot) -> None:
+        """Push each port whose set changed, unless its unexpose has begun since the list."""
+
+        for port in snapshot.ports:
             result = projection.get(port)
             if result is None:
-                self._push_one(port, exposure, NOBODY)
+                self._push_one(port, snapshot, NOBODY)
                 continue
             self._report(port, result.unresolved)
             if result.admission.admission == "keys" and len(result.admission.keys) > MAX_KEYS:
@@ -266,21 +465,32 @@ class ServiceAdmissionEnforcer:
                     "warn", LIMIT_EVENT, port=port, count=len(result.admission.keys), limit=MAX_KEYS
                 )
                 continue
-            self._push_one(port, exposure, result.admission)
+            self._push_one(port, snapshot, result.admission)
 
-    def _push_one(self, port: int, exposure: Mapping[str, object], admission: AdmissionSet) -> None:
-        if self._pushed.get(port) == admission:
-            return
+    def _push_one(self, port: int, snapshot: _Snapshot, admission: AdmissionSet) -> bool:
+        """Push one port's set unless it is unchanged or the port is being unexposed."""
+
+        if self._remember(port, admission):
+            return True
+        if not self.claim_port(port, snapshot.generation):
+            return False
         try:
             self._supervisor.expose(
-                {key: exposure[key] for key in ("port", "target", "proxyProtocol")},
+                snapshot.exposure(port),
                 admission=admission.admission,
                 keys=list(admission.keys),
             )
         except ForwardingSidecarError as error:
             self._log("error", PUSH_REJECTED, port=port, code=error.code)
-            return
-        self._pushed[port] = admission
+            return False
+        finally:
+            self.release_port(port)
+        self.remember(port, admission, snapshot.generation)
+        return True
+
+    def _pushed_matches(self, port: int, admission: AdmissionSet) -> bool:
+        with self._lock:
+            return self._pushed.get(port) == admission
 
     def _report(self, port: int, unresolved: Sequence[UnresolvedGrant]) -> None:
         for item in unresolved:
@@ -353,6 +563,7 @@ class ServiceAdmissionEnforcer:
 __all__ = [
     "DEFAULT_INTERVAL_SECONDS",
     "DEFAULT_MEMBERSHIP_TIMEOUT",
+    "DEFAULT_UNEXPOSE_WAIT_SECONDS",
     "KEY_UNAVAILABLE",
     "LIMIT_EVENT",
     "MAX_KEYS",
