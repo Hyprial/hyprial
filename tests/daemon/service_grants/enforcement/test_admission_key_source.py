@@ -1,15 +1,14 @@
-"""Where the admission key of a granted device comes from (plan v2 §3.3 [A]).
+"""Where the admission key of a granted device comes from (docs/design/service-grant-2026-11-27.md, Exposing side).
 
-Decision (service grant S4-py, 2026-11-26): plan v2 marked as an assumption
-that the peer public key the sidecar sees equals the recipient's directory
-row ``clientPublicByServer[local serverPublic]``, and the S4-py brief named
-that row as the key source. This slice's red tests were made the proof. The
-run settled it against the coordinator's ruling: the directory row carries no
-such key, the sidecar's roster does. These cases keep that settled, with
-product code on both sides. The recipient's row is written by the real
-publish path over a real OrgFS runtime, the grant by the real grant service
-and read back through the real reader, and the sidecar admits the way the Go
-engine does.
+Decision (service grant exposing side, 2026-11-26): an early design assumed
+that the peer public key the sidecar sees equals the recipient's directory row
+``clientPublicByServer[local serverPublic]`` and named that row as the key
+source. These tests were made the proof, and the run settled it: the directory
+row carries no such key, the sidecar's roster does. These cases keep that
+settled, with product code on both sides. The recipient's row is written by the
+real publish path over a real OrgFS runtime, the grant by the real grant
+service and read back through the real reader, and the sidecar admits the way
+the Go engine does.
 """
 
 from __future__ import annotations
@@ -36,9 +35,9 @@ def _publish_everyone(harness: Harness) -> None:
 
 
 def _directory_admission_key(harness: Harness, recipient, server_public: str) -> str | None:
-    """The S4-py brief, goal 1, as it read before the ruling: now withdrawn.
+    """The withdrawn assumption: the key read from the recipient's directory device row.
 
-    "接收设备的公钥取其目录设备行的 ``clientPublicByServer[本机 serverPublic]``"
+    The row's ``clientPublicByServer`` entry under this device's ``serverPublic``.
     """
 
     return harness.device_row(recipient).get("clientPublicByServer", {}).get(server_public)

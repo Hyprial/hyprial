@@ -1,6 +1,6 @@
 """Red tests for the recipient side of service grants: discovery, connect, withdrawal.
 
-Decision (service grant S5, 2026-11-26): an effective grant whose recipient
+Decision (service grant recipient side, 2026-11-26): an effective grant whose recipient
 is this device or ``@members`` becomes a second source for service-connect:
 name, port, protocol and note come from the grant document, the server public
 key and address from the grantor's device row. The result equals a hand-placed
@@ -233,7 +233,7 @@ def test_members_grant_connects_without_a_key(world: dict[str, Any]) -> None:
 
 
 def test_a_credential_readdressed_to_members_never_reaches_the_opener(world: dict[str, Any]) -> None:
-    """S3 forbids a credential on "@members"; a document edited around that is dropped whole."""
+    """service.grant forbids a credential on "@members"; a document edited around that is dropped whole."""
 
     made = alice(world).grant(
         org=ORG, port=PORT, device="bob/device-b", name="magpie", credential={"entryId": "gateway"}

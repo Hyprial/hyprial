@@ -1,9 +1,9 @@
 """What a sealed-envelope profile decides; the primitive itself lives in core.
 
-Decision (service grant S2, 2026-11-26): a profile fixes the wrap domain fed to
-HKDF, the exact header field set and its value checks, whether an owner
-signature is required (signature is None means unsigned), and which wire codes
-each failure class raises. Callers own the error vocabulary so existing
+Decision (service grant sealed envelope, 2026-11-26): a profile fixes the wrap
+domain fed to HKDF, the exact header field set and its value checks, whether an
+owner signature is required (signature is None means unsigned), and which wire
+codes each failure class raises. Callers own the error vocabulary so existing
 provider-key refusals keep their codes.
 """
 from __future__ import annotations

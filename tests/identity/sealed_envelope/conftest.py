@@ -1,8 +1,8 @@
 """Public synthetic materials for the sealed-envelope primitive; never operator keys.
 
-Decision (service grant S2, 2026-11-26): randomness is injected only here, by
-replacing secrets.token_bytes for one test, so byte-for-byte comparisons do
-not change how production code draws entropy.
+Decision (service grant sealed envelope, 2026-11-26): randomness is injected
+only here, by replacing secrets.token_bytes for one test, so byte-for-byte
+comparisons do not change how production code draws entropy.
 """
 import base64
 import importlib

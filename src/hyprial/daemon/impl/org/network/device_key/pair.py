@@ -1,17 +1,18 @@
-# Decision record (service grant S1, 2026-11-26):
+# Decision record (service grant device encryption key, 2026-11-26):
 # - A device publishes the public half of its encryption key in its own
 #   directory row and in nothing else.  The private half never leaves the key
 #   store; this module only shapes what the store already published as public.
 # - The reader is injected, exactly like ``read_own_address``: the service
 #   stays testable over a recording file system and the production reader is
 #   ``encryption_key_reader``.
-# - Tri-state outcome (S1 fix, 2026-11-26): distinguish "definitely no key"
-#   (``None``) from "temporarily unavailable" (``KEY_UNAVAILABLE`` or a raising
-#   reader).  When temporarily unavailable, ``published_pair`` retains the pair
-#   already on the device's current directory row so a busy lock or transient
-#   I/O error never erases a published public key; on a row without an existing
-#   pair it returns ``{}`` and never fails the publish.  Only ``None`` produces
-#   a row without the pair when a pair was previously published.
+# - Tri-state outcome (device encryption key fix, 2026-11-26): distinguish
+#   "definitely no key" (``None``) from "temporarily unavailable"
+#   (``KEY_UNAVAILABLE`` or a raising reader).  When temporarily unavailable,
+#   ``published_pair`` retains the pair already on the device's current
+#   directory row so a busy lock or transient I/O error never erases a
+#   published public key; on a row without an existing pair it returns ``{}``
+#   and never fails the publish.  Only ``None`` produces a row without the pair
+#   when a pair was previously published.
 # - The answer is shaped into the keyword arguments of ``DirectoryDevice`` so
 #   that a row without a key is built exactly as before, with no new key.
 # - The service settles whether this device may write its row in the org

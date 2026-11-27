@@ -1,1 +1,1 @@
-"""Regression tests for the critic findings on service grant slice S3."""
+"""Regression tests for the grant documents: inputs, IPC, reader, replicas and revocation."""

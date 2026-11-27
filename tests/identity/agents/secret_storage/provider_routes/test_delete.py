@@ -1,6 +1,6 @@
 """Deleting one user-provider entry: the public identity operation.
 
-Decision (service grant S5, 2026-11-26): the recipient side of a service
+Decision (service grant recipient side, 2026-11-26): the recipient side of a service
 grant writes the opened Key as a user-provider entry and must remove it
 again when the grant is withdrawn. Identity exposes removal as one public
 function next to ``read_user_provider_value``: it deletes exactly one entry

@@ -1,1 +1,1 @@
-"""Service grant S3 test suite."""
+"""Service grant test suite."""

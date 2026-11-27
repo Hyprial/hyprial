@@ -1,5 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26, coordinator ruling on the
-# design-mismatch evidence):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - An admission set is derived, never stored on disk: the sidecar holds the
 #   gate, and this object is what one derivation produced.
 # - UnresolvedGrant is the operator's answer to "granted, but no key yet". It

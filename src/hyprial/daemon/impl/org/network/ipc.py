@@ -6,7 +6,7 @@ The handlers are module-level functions over the application object
 — ``map_peer(peer, address)``, redial, the sidecar status — are injected
 here as callbacks, never imported.
 
-Decision record (service grant S1, 2026-11-26: the published encryption key):
+Decision record (service grant device encryption key, 2026-11-26: the published key):
 - ``_build_service`` injects this device's encryption key reader.  It is the
   one construction point of the network service, so the ``org.*`` handlers,
   ``publish_self_for_app`` and the per-org actor all publish the pair and no

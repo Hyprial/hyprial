@@ -1,4 +1,4 @@
-"""Service grant S1: the production wiring of the published encryption key.
+"""Service grant device encryption key: the production wiring of the published encryption key.
 
 ``_build_service`` is the one place every publish path constructs the network
 service: the CLI ``org.*`` handlers, ``publish_self_for_app`` and the per-org

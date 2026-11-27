@@ -1,6 +1,6 @@
 """Red tests for the Key half of a received service grant.
 
-Decision (service grant S5, 2026-11-26): the credential is opened only when
+Decision (service grant recipient side, 2026-11-26): the credential is opened only when
 ``can_open_grant_credential`` holds, through identity's ``open_service_grant``
 with structured fields and the grantor taken from the document path. The
 plaintext becomes one user-provider entry whose id is fixed by the grant id.

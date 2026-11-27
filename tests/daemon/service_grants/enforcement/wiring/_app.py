@@ -1,6 +1,6 @@
 """A real daemon application whose only stand-in is the sidecar process.
 
-Decision (service grant S4-py, 2026-11-26): the wiring tests drive
+Decision (service grant exposing side, 2026-11-26): the wiring tests drive
 ``DaemonApplication`` through its public ``handle`` path, with the real
 supervisor start, the real IPC router, the real service grant handler and a
 real OrgFS runtime. The sidecar is the stdio fixture with a roster, started

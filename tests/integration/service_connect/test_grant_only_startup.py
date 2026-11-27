@@ -1,6 +1,6 @@
 """A recipient that relies only on service grants still gets service-connect.
 
-Decision (service grant S5, 2026-11-26, coordinator ruling a): the daemon
+Decision (service grant recipient side, 2026-11-26): the daemon
 starts its service manager when the home has a protected access record, has
 persisted connections, or this device holds an effective grant in any of its
 orgs. The third check runs at startup, so it is cheap, answers "no" on any
@@ -271,7 +271,7 @@ def test_the_cadence_follows_a_withdrawal_without_any_service_request(
 
 
 def _revoke(app: DaemonApplication, grant_id: str) -> None:
-    """Write the tombstone S3's revoke would leave, as the grantor."""
+    """Write the tombstone the grant documents module's revoke would leave, as the grantor."""
 
     store = OrgFsDirectoryStore(app._require_orgfs_runtime().facade)
     record = store.read_service_grant(ORG, GRANTOR, grant_id)

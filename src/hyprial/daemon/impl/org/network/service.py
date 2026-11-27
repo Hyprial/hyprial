@@ -8,9 +8,10 @@
 # - A member writes only its own device row (the owner check is the caller's
 #   half of "member 只能写自己的设备记录"); anything beyond that needs the
 #   directory-wide write grant.
-# - Service grant S1 (2026-11-26): the row also carries this device's published
-#   encryption key; the decisions live in ``network/device_key``.  Whether the
-#   device may write its row in an org is settled before the key is read.
+# - Service grant device encryption key (2026-11-26): the row also carries this
+#   device's published encryption key; the decisions live in
+#   ``network/device_key``.  Whether the device may write its row in an org is
+#   settled before the key is read.
 """Org lifecycle and network views over OrgFS with injected transport hooks."""
 
 from __future__ import annotations

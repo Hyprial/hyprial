@@ -1,10 +1,10 @@
-"""The service-grants author rule on real replicas, adapted from the critic's probe.
+"""The service-grants author rule on real replicas, adapted from a review probe.
 
-Decision (service grant S3 fix, 2026-11-26, critic S7 items 1, 2 and 3, and
-B1): forged tree nodes and content from another member or from the org owner
-are rejected by every other replica's admission, the org owner cannot write in
-a member's path, and documents a member may legitimately write in their own
-path (malformed, deeply nested, oversized) never fail another replica's load.
+Decision (service grant documents fix, 2026-11-26): forged tree nodes and
+content from another member or from the org owner are rejected by every other
+replica's admission, the org owner cannot write in a member's path, and
+documents a member may legitimately write in their own path (malformed, deeply
+nested, oversized) never fail another replica's load.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ def seeded(rooted):
 
 
 def test_forged_owner_directories_are_rejected_by_every_other_replica(rooted) -> None:
-    """S7 item 1: neither another member nor the org owner creates alice's directory."""
+    """Neither another member nor the org owner creates alice's directory."""
 
     _tmp, space_id, owner, alice, bob, carol = rooted
     parent = owner.facade.stat(space_id, "directory/service-grants")
@@ -147,7 +147,7 @@ def test_forged_owner_directories_are_rejected_by_every_other_replica(rooted) ->
 
 
 def test_local_writes_in_another_members_path_are_refused(seeded) -> None:
-    """S7 item 2: neither another member nor the org owner writes in alice's path."""
+    """Neither another member nor the org owner writes in alice's path."""
 
     _tmp, space_id, owner, _alice, bob, _carol = seeded
     alice_dir = f"directory/service-grants/{ALICE}"
@@ -168,7 +168,7 @@ def test_local_writes_in_another_members_path_are_refused(seeded) -> None:
 
 
 def test_forged_nodes_and_content_are_rejected_by_every_other_replica(seeded) -> None:
-    """S7 item 1: remote admission, not only the local write path, enforces the author rule."""
+    """Remote admission, not only the local write path, enforces the author rule."""
 
     _tmp, space_id, owner, alice, bob, carol = seeded
     space_owner = f"user:{OWNER}"
@@ -208,12 +208,12 @@ def test_forged_nodes_and_content_are_rejected_by_every_other_replica(seeded) ->
         pytest.param("not json", id="not-json"),
         pytest.param(json.dumps({**_record(GID_E), "owner": ALICE}), id="extra-owner-key"),
         pytest.param(json.dumps(_record(GID_A)), id="grant-id-mismatch"),
-        pytest.param("[" * 100000 + "]" * 100000, id="critic-deep-array-200k"),
+        pytest.param("[" * 100000 + "]" * 100000, id="deep-array-200k"),
         pytest.param("[" * 30000 + "]" * 30000, id="deep-array-under-64k"),
     ],
 )
 def test_member_documents_in_own_path_never_fail_another_replicas_load(seeded, body: str) -> None:
-    """S7 item 3 and B1 on replicas: bob's admitted bad document is skipped by alice's load."""
+    """On replicas: bob's admitted bad document is skipped by alice's load."""
 
     _tmp, space_id, owner, alice, bob, carol = seeded
     before = _position(bob, space_id)
@@ -228,7 +228,7 @@ def test_member_documents_in_own_path_never_fail_another_replicas_load(seeded, b
 
 
 def test_nested_credential_on_replicas_is_skipped(seeded) -> None:
-    """B1 critic case 2 on replicas: a 700-level credential does not raise ``RecursionError``."""
+    """On replicas: a 700-level credential does not raise ``RecursionError``."""
 
     _tmp, space_id, owner, alice, bob, carol = seeded
     nested: object = {"x": 1}

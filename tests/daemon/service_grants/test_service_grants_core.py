@@ -1,9 +1,10 @@
 """Red tests for service-grant domain operations, crypto round-trip, leaks, and pure queries.
 
-Decision (service grant S3, 2026-11-26): covers every business rule in plan v2
-sections 3.1, 3.4, 3.6 and the S3 brief, including real OrgFS storage, real
-X25519 key custody via ``EncryptionKey.Store``, and pure read helpers shared
-with S4-py and S5.
+Decision (service grant documents, 2026-11-26): covers every business rule of
+the grant documents (docs/design/service-grant-2026-11-27.md, Data and
+Sealing), including real OrgFS storage, real X25519 key custody via
+``EncryptionKey.Store``, and pure read helpers shared with the exposing and
+recipient sides.
 """
 
 from __future__ import annotations
@@ -179,7 +180,7 @@ def test_identity_facade_exports_only_expected_sealed_envelope_surface() -> None
 def test_grant_refuses_unexposed_port_unknown_recipient_members_with_credential_and_missing_key(
     harness: dict[str, Any],
 ) -> None:
-    """All four S3 refusal preconditions fail before writing any grant document."""
+    """All four service.grant refusal preconditions fail before writing any grant document."""
 
     service: ServiceGrantService = harness["service"]
     store: OrgFsDirectoryStore = harness["store"]
@@ -417,7 +418,7 @@ def test_grants_lists_granted_and_received_readonly_without_decrypting(
 def test_pure_query_helpers_handle_revoked_expired_mismatch_and_members(
     harness: dict[str, Any],
 ) -> None:
-    """Single effectiveness helper and pure S4/S5 query helpers enforce all predicates."""
+    """Single effectiveness helper and pure exposing- and recipient-side query helpers enforce all predicates."""
 
     now = 1_700_000_010_000
     endpoint = ServiceEndpoint(device_id="device-a", port=8447, name="svc", protocol="http")

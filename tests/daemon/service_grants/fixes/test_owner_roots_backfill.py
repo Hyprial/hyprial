@@ -1,6 +1,6 @@
 """An existing org gains ``directory/service-grants`` once its owner's daemon runs.
 
-Decision (service grant S3 fix, 2026-11-26, critic S5 and S7 item 13): the
+Decision (service grant documents fix, 2026-11-26): the
 periodic ``publish_self_for_app`` path creates missing owner directories for
 every org whose space this daemon owns. An org is not checked again after one
 success in the process; a failure is retried on the next tick and never stops
@@ -119,7 +119,7 @@ def test_orgs_owned_by_someone_else_are_not_backfilled(
 def test_rerunning_org_create_on_an_existing_org_adds_the_directory(
     app: _FakeApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """S7 item 13: the documented alternative, ``org create`` itself, not only the store call."""
+    """The documented alternative, ``org create`` itself, not only the store call."""
 
     _create_pre_s3_org(app, monkeypatch)
     space_id = _space_id(app, ORG)

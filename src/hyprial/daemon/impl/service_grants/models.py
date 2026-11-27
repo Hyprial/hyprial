@@ -1,20 +1,21 @@
-# Decision notes (service grant S3, 2026-11-26):
+# Decision notes (service grant documents, 2026-11-26):
 # - Document schema is closed at every object level (top-level, service,
-#   structured recipient) per plan-v2 section 3.1.
+#   structured recipient) (docs/design/service-grant-2026-11-27.md, Data).
 # - Owners inside GrantRecipient and StoredServiceGrant are always bare values
-#   (never "user:<owner>") so they match the OrgFS path segment and S2's
-#   service_grant_header contract directly. Boundary helpers normalize incoming
-#   "user:<owner>" values at entry.
+#   (never "user:<owner>") so they match the OrgFS path segment and the sealed
+#   envelope's service_grant_header contract directly. Boundary helpers
+#   normalize incoming "user:<owner>" values at entry.
 # - Grant ids use "sg." + 26 lowercase RFC 4648 base32 characters (130 random
-#   bits), matching S2's sealed-envelope grantId validator.
-# - S3 fix (2026-11-26, critic B1, S1, S6, N4, N5): owner and device identifiers
-#   must be trimmed and pass identity's grant path segment rule
+#   bits), matching the sealed envelope's grantId validator.
+# - Grant documents fix (2026-11-26): owner and device identifiers must be
+#   trimmed and pass identity's grant path segment rule
 #   (SealedEnvelope.service_grant_path_segment, the sealed header's owner
 #   rule), called and not copied (integration fix, 2026-11-27); the grant id
-#   pattern is identity's too. service.name reuses service-connect's service-name pattern
-#   by import, not by copy. service.note is at most 512 characters with no
-#   control or surrogate characters. The reader applies the same rules.
-# - credential is validated against the S2 envelope's fixed key sets and scalar
+#   pattern is identity's too. service.name reuses service-connect's
+#   service-name pattern by import, not by copy. service.note is at most 512
+#   characters with no control or surrogate characters. The reader applies the
+#   same rules.
+# - credential is validated against the sealed envelope's fixed key sets and scalar
 #   types and copied by that shape, never with deepcopy, so a hostile nesting
 #   depth cannot raise RecursionError. Values (base64, key ids) are the
 #   opener's job.
@@ -120,7 +121,7 @@ def _typed_object(value: object, types: Mapping[str, type], label: str) -> dict[
 
 
 def sealed_credential(value: object) -> dict[str, Any]:
-    """Validate the S2 envelope shape and return a fresh copy built from that shape."""
+    """Validate the sealed envelope shape and return a fresh copy built from that shape."""
 
     if type(value) is not dict or value.keys() != {"header", "recipients", "payload"}:
         raise ValueError("credential keys do not match the sealed envelope")

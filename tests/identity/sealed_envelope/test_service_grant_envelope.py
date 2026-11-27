@@ -1,8 +1,9 @@
 """Service-grant profile: unsigned, bound to one grant, one recipient device key.
 
-Decision (service grant S2, 2026-11-26): the fixed vector below is built from
-raw cryptography calls, not product code, so it pins the wrap domain, the HKDF
-inputs and the header encoding independently of the implementation.
+Decision (service grant sealed envelope, 2026-11-26): the fixed vector below is
+built from raw cryptography calls, not product code, so it pins the wrap
+domain, the HKDF inputs and the header encoding independently of the
+implementation.
 """
 import base64
 import copy

@@ -1,11 +1,11 @@
 """The granted Key entry under a race and under a replaced credential.
 
-Decision (service grant S5 fix, 2026-11-27):
+Decision (service grant recipient side fix, 2026-11-27):
 
-- critic 1: the recipient writes its Key through identity's create-only
+- The recipient writes its Key through identity's create-only
   entry, so a user entry that appears after the consumer looked and before it
   wrote is refused (``entry-exists``), never merged over.
-- critic 5: the ledger records a digest of the credential ciphertext, never of
+- The ledger records a digest of the credential ciphertext, never of
   the plaintext. When the ciphertext of the same ``(org, grantId)`` is
   replaced, the credential is opened again and the entry this slice wrote is
   replaced; an entry the user changed is left alone, as before.
@@ -75,7 +75,7 @@ def user_writes_after_the_look(monkeypatch: pytest.MonkeyPatch, home: Path) -> N
 def test_a_user_entry_created_after_the_look_is_never_overwritten(
     world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The race the critic described: the entry appears between the check and the write."""
+    """The race: the entry appears between the check and the write."""
 
     grant_id = grant_key(world)
     entry_id = keys_module.entry_id_for_grant(grant_id)

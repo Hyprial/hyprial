@@ -1,6 +1,6 @@
 """Red tests for when the recipient side derives: restart, periodic maintenance, cost.
 
-Decision (service grant S5, 2026-11-26): derivation is re-run from the
+Decision (service grant recipient side, 2026-11-26): derivation is re-run from the
 documents on every maintenance tick of service-connect and again after a
 daemon restart. A tick compares a cheap directory fingerprint first; when
 nothing changed it reads no document, writes nothing and opens no credential.

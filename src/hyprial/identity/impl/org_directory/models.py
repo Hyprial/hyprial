@@ -24,7 +24,7 @@ port lives in ``ports.py``; the daemon's OrgFS-backed implementation is
 injected at the composition root (tailnet cutover §1: identity defines the
 directory model, daemon provides the storage).
 
-Service grant S1 (2026-11-26): a device row may carry the device's X25519
+Service grant device encryption key (2026-11-26): a device row may carry the device's X25519
 public key as the paired optional keys ``encryptionKeyId`` and
 ``encryptionPublicKey``.  The pair is either both present or both absent and
 the key set stays closed.  The public key is the encoding the local encryption

@@ -1,11 +1,10 @@
 """IPC wiring: translated errors, the local device id, and the published device row.
 
-Decision (service grant S3 fix, 2026-11-26, critic N1, N2, N3 and S7 items 9
-and 12): every failure leaves the handler as a ``DaemonRequestError`` without a
-local path; an unreadable device record is refused instead of falling back to
-``node_id``; a grant is refused while this device has no row in that org's
-directory. The ``updated`` flag of an in-place rewrite travels through the
-real router.
+Decision (service grant documents fix, 2026-11-26): every failure leaves the
+handler as a ``DaemonRequestError`` without a local path; an unreadable device
+record is refused instead of falling back to ``node_id``; a grant is refused
+while this device has no row in that org's directory. The ``updated`` flag of
+an in-place rewrite travels through the real router.
 """
 
 from __future__ import annotations
@@ -71,7 +70,7 @@ def _routed_error(app: _RouterApp, params: dict[str, Any]) -> DaemonRequestError
 
 
 def test_corrupt_exposure_state_is_a_request_error_without_a_path(routed: dict[str, Any]) -> None:
-    """N1 and S7 item 12: no ``ForwardingSidecarError`` and no absolute path reach the caller."""
+    """No ``ForwardingSidecarError`` and no absolute path reach the caller."""
 
     _publish_local_device(routed)
     routed["exposures_path"].write_text("broken", encoding="utf-8")
@@ -83,7 +82,7 @@ def test_corrupt_exposure_state_is_a_request_error_without_a_path(routed: dict[s
 
 
 def test_unreadable_device_record_is_refused_without_node_id_fallback(routed: dict[str, Any]) -> None:
-    """N2: ``service.deviceId`` is never taken from ``node_id``."""
+    """``service.deviceId`` is never taken from ``node_id``."""
 
     _publish_local_device(routed)
     app: _RouterApp = routed["app"]
@@ -97,7 +96,7 @@ def test_unreadable_device_record_is_refused_without_node_id_fallback(routed: di
 
 
 def test_grant_is_refused_while_this_device_is_not_in_the_org_directory(routed: dict[str, Any]) -> None:
-    """N3 through the router: no row under the caller for this device, no grant."""
+    """Through the router: no row under the caller for this device, no grant."""
 
     error = _routed_error(routed["app"], {"org": ORG, "port": 8447, "device": "@members"})
     assert error.code == ipc_errors.SERVICE_DEVICE_UNAVAILABLE
@@ -105,7 +104,7 @@ def test_grant_is_refused_while_this_device_is_not_in_the_org_directory(routed: 
 
 
 def test_grant_is_refused_when_the_row_belongs_to_another_owner(harness: dict[str, Any]) -> None:
-    """N3 at the service: a ``device-c`` row under carol is not this device under alice."""
+    """At the service: a ``device-c`` row under carol is not this device under alice."""
 
     service = ServiceGrantService(
         store=harness["store"],
@@ -131,7 +130,7 @@ def test_grant_is_refused_when_the_row_belongs_to_another_owner(harness: dict[st
 def test_secret_errors_through_the_router_carry_no_entry_content(
     routed: dict[str, Any], credential: dict[str, str]
 ) -> None:
-    """S7 item 9: the routed error names the entry, never a value or a path."""
+    """The routed error names the entry, never a value or a path."""
 
     _publish_local_device(routed)
     app: _RouterApp = routed["app"]

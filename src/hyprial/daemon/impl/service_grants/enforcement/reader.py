@@ -1,19 +1,19 @@
-# Decision notes (service grant S4-py, 2026-11-26):
-# - Only this device's own grant documents are read: the owner-scoped
-#   directory under directory/service-grants/<owner>/. That is one listing
-#   plus one read per document, and it is the same set S3's grant and revoke
-#   write, so a grant starts being pushed as soon as the immediate path runs.
+# Decision notes (service grant exposing side, 2026-11-26):
+# - Only this device's own grant documents are read: the owner-scoped directory
+#   under directory/service-grants/<owner>/. That is one listing plus one read
+#   per document, and it is the same set the grant documents module's grant and
+#   revoke write, so a grant starts being pushed as soon as the immediate path
+#   runs.
 # - An org whose documents cannot be read is absent from the result, so it
 #   contributes no key and never widens a port: the safe direction.
-# - A read that fails is reported, not only survived (S4-py fix, 2026-11-27,
-#   coordinator ruling). It used to be silent, so a port that had just
-#   tightened to nobody looked exactly like a port nobody was granted to. The
-#   reader names the org and the read to its caller through ``unreadable``:
-#   orgs that cannot be listed have no org to name and are reported with an
-#   empty one. Nothing of the failure itself is passed on, no message and no
-#   path. The caller decides when it is logged. Nothing can be reported per
-#   grant for such an org, because its grants are exactly what could not be
-#   read.
+# - A read that fails is reported, not only survived (exposing side fix,
+#   2026-11-27). It used to be silent, so a port that had just tightened to
+#   nobody looked exactly like a port nobody was granted to. The reader names
+#   the org and the read to its caller through ``unreadable``: orgs that cannot
+#   be listed have no org to name and are reported with an empty one. Nothing
+#   of the failure itself is passed on, no message and no path. The caller
+#   decides when it is logged. Nothing can be reported per grant for such an
+#   org, because its grants are exactly what could not be read.
 # - One document that fails to parse never hides the others.
 # - Integration fix (2026-11-27): this device's own directory is read with the
 #   same bounded scan the recipients use (scan_org_service_grants with its

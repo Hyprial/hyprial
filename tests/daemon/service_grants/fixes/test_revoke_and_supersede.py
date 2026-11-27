@@ -1,13 +1,12 @@
 """Revocation that does not depend on parsing, port-wide revocation, and supersession.
 
-Decision (service grant S3 fix, 2026-11-26, critic S1, S2, S3 and S7 items 6,
-7 and 8): a document under the caller's own path is revoked even when it no
-longer parses, by writing a minimal revoked document that the reader lists as
-revoked. ``revoke_all_for_port`` revokes this device's effective grants for one
-port in every org. A grant for a ``(device, port, recipient)`` that already
-has an effective grant rewrites that grant in place (integration fix,
-2026-11-27): the same grantId, ``updated: true``, and still one effective
-grant per target.
+Decision (service grant documents fix, 2026-11-26): a document under the
+caller's own path is revoked even when it no longer parses, by writing a
+minimal revoked document that the reader lists as revoked.
+``revoke_all_for_port`` revokes this device's effective grants for one port in
+every org. A grant for a ``(device, port, recipient)`` that already has an
+effective grant rewrites that grant in place (integration fix, 2026-11-27): the
+same grantId, ``updated: true``, and still one effective grant per target.
 """
 
 from __future__ import annotations
@@ -64,7 +63,7 @@ def _granted_view(service: ServiceGrantService, grant_id: str) -> dict[str, Any]
 def test_revoke_own_document_with_broken_json_writes_a_listed_tombstone(
     harness: dict[str, Any],
 ) -> None:
-    """S1 case 1: an unparseable own document is revoked, not reported as absent."""
+    """An unparseable own document is revoked, not reported as absent."""
 
     service: ServiceGrantService = harness["service"]
     store: OrgFsDirectoryStore = harness["store"]
@@ -88,7 +87,7 @@ def test_revoke_own_document_with_broken_json_writes_a_listed_tombstone(
 def test_revoke_own_document_with_extra_key_clears_credential_and_keeps_known_fields(
     harness: dict[str, Any],
 ) -> None:
-    """S1 case 2: a schema-invalid own document loses its ciphertext and keeps what still validates."""
+    """A schema-invalid own document loses its ciphertext and keeps what still validates."""
 
     service: ServiceGrantService = harness["service"]
     store: OrgFsDirectoryStore = harness["store"]
@@ -118,7 +117,7 @@ def test_revoke_absent_document_is_not_revoked(harness: dict[str, Any]) -> None:
 def test_revoke_unreadable_and_unwritable_document_is_an_explicit_error(
     harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """S1: when the tombstone cannot be written the caller gets an error, not ``revoked: false``."""
+    """When the tombstone cannot be written the caller gets an error, not ``revoked: false``."""
 
     service: ServiceGrantService = harness["service"]
     store: OrgFsDirectoryStore = harness["store"]
@@ -137,7 +136,7 @@ def test_revoke_unreadable_and_unwritable_document_is_an_explicit_error(
 def test_revoke_all_for_port_revokes_this_devices_effective_grants_in_every_org(
     harness: dict[str, Any],
 ) -> None:
-    """S2: only this device's grants for the port, across orgs, are revoked."""
+    """Only this device's grants for the port, across orgs, are revoked."""
 
     service: ServiceGrantService = harness["service"]
     store: OrgFsDirectoryStore = harness["store"]
@@ -181,7 +180,7 @@ def test_revoke_all_for_port_revokes_this_devices_effective_grants_in_every_org(
 def test_new_grant_supersedes_effective_grants_for_the_same_recipient(
     harness: dict[str, Any],
 ) -> None:
-    """S3 and S7 item 7: at most one effective grant per (device, port, recipient)."""
+    """At most one effective grant per (device, port, recipient)."""
 
     service: ServiceGrantService = harness["service"]
     first = service.grant(org=ORG, port=8447, device="bob/device-b")
@@ -202,7 +201,7 @@ def test_new_grant_supersedes_effective_grants_for_the_same_recipient(
 
 
 def test_expiry_boundary_and_expired_grants_are_not_superseded(harness: dict[str, Any]) -> None:
-    """S7 item 6: ``expiresAtMs == now`` is refused; a grant expires once the clock reaches it."""
+    """``expiresAtMs == now`` is refused; a grant expires once the clock reaches it."""
 
     service: ServiceGrantService = harness["service"]
     clock = harness["clock"]

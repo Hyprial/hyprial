@@ -1,30 +1,31 @@
-# Decision notes (service grant S3, 2026-11-26):
+# Decision notes (service grant documents, 2026-11-26):
 # - Effectiveness has exactly one implementation (is_grant_effective) shared by
-#   service.grants, S4-py admission projection, and S5 recipient consumption.
-# - Security invariants for S5 consumers are enforced and documented here:
+#   service.grants, the exposing side's admission projection, and the
+#   recipient side.
+# - Security invariants for the recipient side are enforced and documented here:
 #   grantor is taken solely from the OrgFS path (never from document body or
 #   envelope header), and credential opening requires an exact (owner, deviceId)
 #   recipient match on an effective grant (never "@members").
-# - S3 fix (2026-11-26, critic B1 and S1): a document that fails to parse or
+# - Grant documents fix (2026-11-26): a document that fails to parse or
 #   validate for any reason, RecursionError included, is skipped alone. A revoked
 #   tombstone may have null service or recipient; it is never effective, so the
 #   effective-only helpers never see those nulls.
-# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
-#   load_org_service_grants is unchanged (S4-py's call and every existing
-#   caller). The bounded path is a separate function, scan_org_service_grants,
-#   so no caller can get a bounded answer without seeing what it left out. One
-#   recursive listing of the org's grants tree gives every document and its
-#   listed size before anything is read. The document and byte limits apply to
-#   each grantor directory on its own: a grantor over either one is left
-#   unread and named in GrantScan.limited, and every other grantor is read, so
-#   one member's junk only makes that member's grants unknown. More grantor
-#   directories than max_grantors, or a spent deadline, still stops the whole
-#   org with GrantScanLimited. Documents are read one at a time through the
-#   store's own verified reader, and the deadline is checked before the
-#   listing, after it and before every read. One OrgFS call is not
-#   interrupted: the deadline bounds the scan, not a single call. "Limited" is
-#   never "no grant": callers decide what an unknown answer means.
-"""Pure service-grant query and OrgFS loading helpers shared with S4-py and S5."""
+# - Recipient side fix (2026-11-27, bounded scan): load_org_service_grants is
+#   unchanged (the exposing side's call and every existing caller). The bounded
+#   path is a separate function, scan_org_service_grants, so no caller can get
+#   a bounded answer without seeing what it left out. One recursive listing of
+#   the org's grants tree gives every document and its listed size before
+#   anything is read. The document and byte limits apply to each grantor
+#   directory on its own: a grantor over either one is left unread and named in
+#   GrantScan.limited, and every other grantor is read, so one member's junk
+#   only makes that member's grants unknown. More grantor directories than
+#   max_grantors, or a spent deadline, still stops the whole org with
+#   GrantScanLimited. Documents are read one at a time through the store's own
+#   verified reader, and the deadline is checked before the listing, after it
+#   and before every read. One OrgFS call is not interrupted: the deadline
+#   bounds the scan, not a single call. "Limited" is never "no grant": callers
+#   decide what an unknown answer means.
+"""Pure service-grant query and OrgFS loading helpers shared with the exposing and recipient sides."""
 
 from __future__ import annotations
 
@@ -93,8 +94,8 @@ class GrantScan:
 def is_grant_effective(grant: ServiceGrant, *, now_ms: int) -> bool:
     """Return whether ``grant`` is neither revoked nor expired at ``now_ms``.
 
-    This is the sole effectiveness check across S3 ``service.grants``,
-    S4-py exposure admission projection, and S5 recipient consumption.
+    This is the sole effectiveness check across ``service.grants``, the
+    exposing side's admission projection, and the recipient side.
     A grant is expired once ``expires_at_ms <= now_ms``.
     """
 
@@ -118,7 +119,7 @@ def effective_grants_for_service(
     """Return effective grants authored by ``owner`` for ``(device_id, port)``.
 
     ``owner`` may be bare or ``user:<owner>`` and is matched against each
-    grant's OrgFS path-derived ``grantor``. Intended for S4-py admission
+    grant's OrgFS path-derived ``grantor``. Intended for the exposing side's admission
     projection so grantor-side policy never parses raw OrgFS JSON again.
     """
 
@@ -160,7 +161,7 @@ def effective_grants_for_recipient(
     Each returned :class:`StoredServiceGrant` carries ``grantor`` taken strictly
     from the OrgFS document path (``directory/service-grants/<grantor>/<grantId>.json``).
 
-    Recipient security invariants (for S5 consumers):
+    Recipient security invariants (for the recipient side):
     - Always trust ``stored.grantor`` (from the OrgFS path) as the grantor and
       never read grantor identity from the document body or sealed envelope header.
     - Before surfacing a service endpoint, verify that ``grant.service.device_id``

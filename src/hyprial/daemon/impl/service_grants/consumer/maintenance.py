@@ -1,4 +1,4 @@
-# Decision notes (service grant S5, 2026-11-26):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - The consumer is the derived source service-connect talks to. It keeps one
 #   immutable snapshot in memory (entries + protected devices) and replaces
 #   it atomically; nothing it derives is ever written under service-connect.
@@ -11,18 +11,19 @@
 #   member. Membership is re-checked every tick (one members() call), so a
 #   removed member stops deriving at once. An org marked deleted derives
 #   nothing; that is read when its fingerprint changes, not every tick.
-# - Cost per unchanged tick, per org: one recursive listdir of the grants
-#   tree, one of the devices tree, one stat of the org meta document and one
+# - Cost per unchanged tick, per org: one recursive listdir of the grants tree,
+#   one of the devices tree, one stat of the org meta document and one
 #   members() call; plus one lstat per stored Key entry and one local read of
-#   the left-org list. No document is read, nothing is written or opened.
-#   A changed fingerprint reloads that org whole: all its grants through S3's
-#   loader and all its device rows through the store. Expiry changes no
-#   bytes, so an answer also carries the earliest expiry of the grants it
-#   derives from and is re-read when that moment has passed.
-# - The credential is opened only behind can_open_grant_credential, as the
-#   brief requires. For a grant that carries a credential and is effective
-#   for this device the only way it answers no is "@members", which S3
-#   already refuses to write; such a grant is treated as having no Key.
+#   the left-org list. No document is read, nothing is written or opened. A
+#   changed fingerprint reloads that org whole: all its grants through the
+#   grant documents loader and all its device rows through the store. Expiry
+#   changes no bytes, so an answer also carries the earliest expiry of the
+#   grants it derives from and is re-read when that moment has passed.
+# - The credential is opened only behind can_open_grant_credential
+#   (docs/design/service-grant-2026-11-27.md, Recipient side). For a grant that
+#   carries a credential and is effective for this device the only way it
+#   answers no is "@members", which service.grant already refuses to write;
+#   such a grant is treated as having no Key.
 # - "Could not read" is not "no grant". A Key entry is withdrawn only when
 #   every live org answered; while any org is unreadable and has no earlier
 #   answer to fall back on, nothing is withdrawn.
@@ -38,14 +39,14 @@
 # - Only the directory store's and the OrgFS facade's public surface is used.
 #   GRANTS_DIR is the one path this package has to spell itself; a guard test
 #   pins it to the store's own constant.
-# - S5 fix (2026-11-27, critic 2): service-connect's seam tells the consumer
+# - Recipient side fix (2026-11-27): service-connect's seam tells the consumer
 #   which device ids a hand-placed record disagrees about (contested). Every
 #   grant on such a device is left out of the snapshot and rejected with
 #   device-conflict, exactly like two disagreeing derived devices; its Key
 #   entry is withdrawn like any grant that yields nothing. A changed set
 #   re-derives at once, so the seam's own read already sees the result. The
 #   device list keeps every candidate: the seam alone decides what conflicts.
-# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
+# - Recipient side fix (2026-11-27, bounded scan):
 #   an org's grants are scanned with bounds. Each grantor directory may hold
 #   MAX_GRANTOR_GRANT_DOCUMENTS documents and GRANTOR_READ_BYTES_LIMIT listed
 #   bytes; a grantor over either is "unknown" on its own: that grantor's part

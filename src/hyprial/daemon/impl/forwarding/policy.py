@@ -1,4 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - An exposure's admission is explicit on protocol v7: "allow" admits every
 #   member of the tailnet, "keys" admits exactly the listed peer public keys
 #   and an empty list admits nobody. The daemon states which one it means on

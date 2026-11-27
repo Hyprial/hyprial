@@ -1,6 +1,6 @@
 """Red tests for the ``service-grants`` protected org-directory section on real OrgFS.
 
-Decision (service grant S3, 2026-11-26): every assertion runs against the real
+Decision (service grant documents, 2026-11-26): every assertion runs against the real
 ``OrgFsRuntime`` + ``LocalSpaceStore`` admission boundary and ``OrgFsDirectoryStore``
 so author-rule enforcement is verified on real storage rather than only in unit
 helpers.

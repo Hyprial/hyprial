@@ -1,6 +1,6 @@
-"""Shared setup for the S4-py enforcement tests.
+"""Shared setup for the exposing-side enforcement tests.
 
-Decision (service grant S4-py, 2026-11-26): everything the admission set is
+Decision (service grant exposing side, 2026-11-26): everything the admission set is
 derived from is produced by product code over a real OrgFS runtime, so grant
 documents verify against their real author. Device rows come from the real
 ``OrgNetworkService`` publish path and grants from the real

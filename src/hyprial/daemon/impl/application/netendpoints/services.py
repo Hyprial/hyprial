@@ -1,4 +1,4 @@
-# Decision notes (service grant S5, 2026-11-26, coordinator ruling a):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - The worker also starts for a home that has neither a protected record nor
 #   persisted connections when any org holds an effective grant addressed to
 #   this device. Service grants are then its second source (derived_source):

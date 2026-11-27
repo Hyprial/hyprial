@@ -1,4 +1,4 @@
-"""Service grant S1: ``org.network`` accepts a directory row carrying the key pair.
+"""Service grant device encryption key: ``org.network`` accepts a directory row carrying the key pair.
 
 The result of ``org.network`` is validated against a closed schema at request
 time.  A directory row that publishes ``encryptionKeyId`` /

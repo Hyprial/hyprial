@@ -1,15 +1,15 @@
-# Decision notes (service grant S3, 2026-11-26):
+# Decision notes (service grant documents, 2026-11-26):
 # - IPC handler constructs ServiceGrantService per call from the daemon's
 #   current OrgFS facade, home, committed owner, local device record, and
 #   ExposureStore so relogin or exposure updates take effect immediately.
 # - Parameter validation is performed by METHOD_REGISTRY schema enforcement
 #   (ipc_param_validation="schema") before reaching this handler; domain
 #   invariants are re-checked inside ServiceGrantService.
-# - S3 fix (2026-11-26, critic N1, N2): every failure leaves the handler as a
+# - Grant documents fix (2026-11-26): every failure leaves the handler as a
 #   DaemonRequestError whose text never names a local path; an unexpected
 #   exception is reported by type name only. The service device id comes only
 #   from the local device record; there is no node_id fallback.
-# - S4-py (2026-11-26): a grant or a revoke that succeeded is a trigger. The
+# - Exposing side (2026-11-26): a grant or a revoke that succeeded is a trigger. The
 #   handler marks the admission sets stale and offers the enforcement cadence
 #   a tick, through the application's own method when it has one; it never
 #   derives on the IPC thread and the reply never waits for the push. A

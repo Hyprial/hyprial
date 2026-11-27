@@ -1,11 +1,11 @@
 """Grant inputs: secret reading through identity, names, notes and identifiers.
 
-Decision (service grant S3 fix, 2026-11-26, critic S4, S6, N4 and S7 items 9
-and 10): the daemon reads a user-provider value only through identity's public
+Decision (service grant documents fix, 2026-11-26): the daemon reads a
+user-provider value only through identity's public
 ``read_user_provider_value`` and keeps no record parser of its own. ``name``
 follows the service-connect service-name rule, ``note`` is at most 512
 characters without control characters, and owner and device identifiers follow
-the S2 rule before any secret is read.
+the sealed envelope's rule before any secret is read.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _refused(service: ServiceGrantService, **kwargs: Any) -> DaemonRequestError:
 
 
 def test_identity_exports_one_user_provider_reader_and_daemon_has_no_parser() -> None:
-    """S4: the reader is identity's public function; the daemon copy is gone."""
+    """The reader is identity's public function; the daemon copy is gone."""
 
     assert callable(identity.read_user_provider_value)
     assert "read_user_provider_value" in identity.__all__
@@ -73,7 +73,7 @@ def test_identity_reader_selects_one_field_with_identity_rules(tmp_path: Path) -
 def test_configured_record_with_invalid_routes_is_refused(
     harness: dict[str, Any], field_name: str | None
 ) -> None:
-    """S4 divergence 1 and S7 item 10: identity's record validation applies."""
+    """Identity's record validation applies."""
 
     _write_raw_provider(
         harness["home"],
@@ -87,7 +87,7 @@ def test_configured_record_with_invalid_routes_is_refused(
 
 
 def test_configured_record_without_field_name_requires_one(harness: dict[str, Any]) -> None:
-    """S7 item 10: a configured record is ambiguous without ``fieldName``."""
+    """A configured record is ambiguous without ``fieldName``."""
 
     _write_raw_provider(
         harness["home"],
@@ -105,7 +105,7 @@ def test_configured_record_without_field_name_requires_one(harness: dict[str, An
 
 
 def test_value_with_lone_surrogate_is_a_request_error(harness: dict[str, Any]) -> None:
-    """S4 divergence 2: no ``UnicodeEncodeError`` escapes and no value is echoed."""
+    """No ``UnicodeEncodeError`` escapes and no value is echoed."""
 
     _write_raw_provider(harness["home"], "surrogate", {"K": "\ud800" + SYNTHETIC_SECRET})
     error = _refused(harness["service"], device="bob/device-b", credential={"entryId": "surrogate", "fieldName": "K"})
@@ -114,7 +114,7 @@ def test_value_with_lone_surrogate_is_a_request_error(harness: dict[str, Any]) -
 
 
 def test_service_name_reuses_the_service_connect_rule(harness: dict[str, Any]) -> None:
-    """S6: one service-name rule, shared with service-connect."""
+    """One service-name rule, shared with service-connect."""
 
     assert grant_models.SERVICE_NAME_PATTERN is connect_models.SERVICE_NAME_PATTERN
     service: ServiceGrantService = harness["service"]
@@ -143,7 +143,7 @@ def test_note_is_capped_at_512_characters_without_control_characters(harness: di
 def test_identifiers_follow_the_s2_rule_before_any_secret_is_read(
     harness: dict[str, Any], monkeypatch: pytest.MonkeyPatch, device: str
 ) -> None:
-    """N4: an identifier S2 would refuse fails as INVALID_ARGUMENT before the secret is read."""
+    """An identifier the sealed envelope would refuse fails as INVALID_ARGUMENT before the secret is read."""
 
     def forbidden(*_args: object, **_kwargs: object) -> str:
         raise AssertionError("secret read before identifier validation")

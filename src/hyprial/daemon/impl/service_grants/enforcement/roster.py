@@ -1,5 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26, coordinator ruling on the
-# design-mismatch evidence):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - The admission key of a device is the entry under THIS device's server
 #   public key in that device's row of the sidecar's own roster, as returned by
 #   membership-status. It is never read from the directory device row.
@@ -11,12 +10,11 @@
 #   is not what the contract says, and it is not pushed to the sidecar. The
 #   pattern and the zero key are the forwarding policy's, which checks the
 #   same shape before an expose.
-# - A reason is a fixed value, never text from what failed (S4-py fix,
-#   2026-11-27, coordinator ruling). The org's tailnet binding that cannot
-#   be resolved has its own, TAILNET_UNRESOLVED, because it used to be
-#   reported as ROSTER_UNAVAILABLE, which sends the operator to a sidecar
-#   that is answering: the roster was read, and it is the binding that is
-#   not known.
+# - A reason is a fixed value, never text from what failed (exposing side fix,
+#   2026-11-27). The org's tailnet binding that cannot be resolved has its own,
+#   TAILNET_UNRESOLVED, because it used to be reported as ROSTER_UNAVAILABLE,
+#   which sends the operator to a sidecar that is answering: the roster was
+#   read, and it is the binding that is not known.
 # - Integration fix (2026-11-27): a @members grant is expanded to the keys of
 #   every active row with a canonical key (member_keys); it never becomes
 #   "allow". A row without this device's entry, or with a key that is not

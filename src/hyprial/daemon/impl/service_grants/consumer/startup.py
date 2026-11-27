@@ -1,4 +1,4 @@
-# Decision notes (service grant S5, 2026-11-26, coordinator ruling a):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - The daemon must still start service-connect for a recipient that has
 #   neither a protected record nor persisted connections, when this device
 #   holds an effective grant in any org it belongs to. That question is asked
@@ -7,13 +7,13 @@
 #   at the first org that answers yes, gives up after a short time budget, and
 #   answers "no" on any failure. A wrong "no" only means the worker starts at
 #   the next service request instead of at startup.
-# - "Effective and addressed to this device" is S3's own rule
+# - "Effective and addressed to this device" is the grant documents module's own rule
 #   (effective_grants_for_recipient) and nothing is re-implemented here. An
 #   org this home left, or that no longer counts this owner as a member, is
 #   skipped: "@members" is a membership claim, so it is checked the same way
 #   the periodic consumer checks it.
 # - Nothing here writes, opens a credential, or creates a key store.
-# - S5 fix (2026-11-27, critic 3, as revised by the coordinator the same day):
+# - Recipient side fix (2026-11-27, bounded scan):
 #   the time budget is no longer read only between orgs. The deadline goes
 #   into the bounded scan, which leaves unread any grantor directory with
 #   more than MAX_GRANTOR_GRANT_DOCUMENTS documents or GRANTOR_READ_BYTES_LIMIT

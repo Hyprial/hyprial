@@ -1,7 +1,6 @@
-"""Admission enforcement on the exposing device (service grant slice S4-py).
+"""Admission enforcement on the exposing device (service grant exposing side).
 
-Decision notes (service grant S4-py, 2026-11-26, coordinator ruling on the
-design-mismatch evidence):
+Decision notes (service grant exposing side, 2026-11-26):
 - This package derives, for each user exposure, the admission set the sidecar
   is to enforce, and pushes it. The set is never stored; every push is a new
   derivation, so a restart or a later maintenance tick reaches the same set.

@@ -1,10 +1,10 @@
-"""Test support for the recipient side of service grants (S5).
+"""Test support for the recipient side of service grants.
 
-Decision (service grant S5, 2026-11-26): one org directory as the recipient
+Decision (service grant recipient side, 2026-11-26): one org directory as the recipient
 device sees it. Alice owns the org, exposes port 8447 on ``device-a`` and
 grants it to ``bob/device-b`` or ``@members``. Grants come from the real
 grantor service over the real sealed-envelope profile, so the recipient opens
-exactly what S3 writes. Device rows carry the shape service-connect validates
+exactly what service.grant writes. Device rows carry the shape service-connect validates
 (``nodekey:`` + 64 hex, a ``tc`` address). The recipient home has a complete
 committed account and a real key store bound to this machine's fingerprint,
 because the opener reads its private half through the production rules.
@@ -178,7 +178,7 @@ def grantor(
     directory: dict[str, Any], clock: Clock, *, ports: tuple[int, ...] = (PORT,)
 ) -> ServiceGrantService:
     """Alice's grantor side. A grant supersedes her earlier grant of the same port
-    to the same recipient (that is S3's rule), so tests that need several grants
+    to the same recipient (that is service.grant's rule), so tests that need several grants
     at once pass distinct ports here."""
 
     return ServiceGrantService(

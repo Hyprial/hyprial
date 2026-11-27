@@ -1,7 +1,6 @@
 """End to end: grants become the admission set the sidecar enforces.
 
-Decision (service grant S4-py, 2026-11-26, coordinator ruling on
-s4py-design-mismatch-evidence.md): these cases drive the real
+Decision (service grant exposing side, 2026-11-26): these cases drive the real
 ``ForwardingSidecarSupervisor`` and the real controller wire against the
 stdio fixture with a roster, so what is asserted is what left the daemon on
 the ``expose`` command and whether a roster member's connection is admitted.
@@ -12,8 +11,8 @@ through the fixture's reload probe, which stands in for the sidecar's own
 roster refresh. Every dependency of the enforcer is injected at construction,
 so a failing dependency is a different enforcer, never a mutated one.
 
-The derivation-lock and unexpose-wait cases (S4-py fix, 2026-11-27, critic
-finding 2) share one enforcer object between the slow derivation and the
+The derivation-lock and unexpose-wait cases (exposing side fix, 2026-11-27)
+share one enforcer object between the slow derivation and the
 unexpose in every case, because what orders the two is that object's own
 state; a second enforcer has a second lock and would prove nothing. A
 derivation is held on one step through an injected reader or a wrapped
@@ -532,7 +531,7 @@ def test_an_unresolvable_grant_is_logged_with_its_identity_and_reason_but_no_key
 def test_a_broken_grant_document_contributes_nothing_and_hides_no_other_grant(
     make_rig: Any,
 ) -> None:
-    """S3's reader skips one bad document; the other grant on the port still pushes."""
+    """The grant reader skips one bad document; the other grant on the port still pushes."""
 
     rig = make_rig()
     broken = rig.grant(BOB_NODE.slug)["grantId"]

@@ -1,6 +1,6 @@
 """The granted Key is written into a user-provider entry only when none is there.
 
-Decision (service grant S5 fix, 2026-11-27, critic 1): "does an entry with
+Decision (service grant recipient side fix, 2026-11-27): "does an entry with
 this name exist?" and "write the entry" were two steps, and a user entry that
 appeared between them was merged over and replaced. Identity now answers the
 question and the write under one lock: ``create_user_provider`` creates the

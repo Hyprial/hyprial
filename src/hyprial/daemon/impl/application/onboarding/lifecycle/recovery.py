@@ -109,7 +109,7 @@
 #   made by the next login or recovery, never by a loop here.  The owner is read
 #   again under the lock, so a change of account aborts the step.  The state
 #   directory is the parent of the journal root the pass already owns.
-# Decision record (service grant S1, 2026-11-26: the device encryption key):
+# Decision record (service grant device encryption key, 2026-11-26: the device encryption key):
 # - This pass is where serving start ensures the device's encryption key, the
 #   one other member devices seal a service credential to.  It runs on every
 #   serving start and on every relogin, ahead of the early ``already-complete``

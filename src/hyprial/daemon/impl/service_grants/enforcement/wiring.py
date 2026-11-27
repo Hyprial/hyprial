@@ -1,4 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - The daemon owns one enforcer for the lifetime of its forwarding supervisor
 #   and one bounded cadence that runs it. A trigger never derives: it marks the
 #   inputs stale and offers the cadence a tick. The derivation, with its
@@ -25,7 +25,7 @@
 #   what keeps a derivation that listed the exposure a moment earlier from
 #   exposing the port again: the derivation sees the registration and drops
 #   its push. Only a push of that same port already in flight is waited for,
-#   with a bound (S4-py fix, 2026-11-27, critic finding 2), so the removal is
+#   with a bound (exposing side fix, 2026-11-27), so the removal is
 #   the port's last command on the wire; at the bound the unexpose fails
 #   before the removal is asked for, and nothing has changed. The removal is
 #   a second wait, behind whatever command the forwarding authority is

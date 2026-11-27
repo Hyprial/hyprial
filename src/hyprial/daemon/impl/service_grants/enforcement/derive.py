@@ -1,12 +1,11 @@
-# Decision notes (service grant S4-py, 2026-11-26, coordinator ruling on the
-# design-mismatch evidence):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - Deriving a port's admission set is a pure function of this device's
 #   grants, one roster observation per org, the org's effective tailnet id and
 #   the clock. Nothing is stored: every push is a fresh derivation, which is
 #   what lets a later maintenance tick add a device whose roster row was
 #   completed after the grant was written.
-# - "Effective" has one meaning, S3's is_grant_effective. This module never
-#   decides effectiveness on its own.
+# - "Effective" has one meaning, the grant documents module's
+#   is_grant_effective. This module never decides effectiveness on its own.
 # - A port's keys are the union over every org the device belongs to. An org
 #   whose roster cannot be read contributes nothing and is reported: each of
 #   its grants is listed as unresolved.
@@ -27,9 +26,9 @@
 # - A port this device has issued a grant for stays in the result after that
 #   grant is revoked or expires, with an empty set. Only a port with no grant
 #   document at all is absent; the caller pushes nobody for both.
-# - An org whose tailnet binding could not be resolved (S4-py fix, 2026-11-27,
-#   coordinator ruling) contributes nothing, as an org whose roster cannot be
-#   read does not, and each of its grants is listed under its own reason. It
+# - An org whose tailnet binding could not be resolved (exposing side fix,
+#   2026-11-27) contributes nothing, as an org whose roster cannot be read
+#   does not, and each of its grants is listed under its own reason. It
 #   has no tailnet id to read rows by, which is why it is named apart: to the
 #   derivation it looks like an unreadable roster, and to the operator it is
 #   not one.
@@ -76,7 +75,7 @@ def _pushable(
 ) -> tuple[list[_Pushable], set[int]]:
     """This device's effective grants, and every port it has issued a grant for.
 
-    ``owner`` may be bare or ``user:<owner>``, matched the way S3 matches it.
+    ``owner`` may be bare or ``user:<owner>``, matched the way the grant documents match it.
     """
 
     bare_owner = normalize_bare_owner(owner)

@@ -46,7 +46,7 @@ def test_desired_exposures_persist_and_are_reissued_after_restart(
 ) -> None:
     """A persisted exposure is replayed on every sidecar start, admitting nobody.
 
-    Service grant S4-py: the replay is what closes the gap between a sidecar
+    Service grant exposing side: the replay is what closes the gap between a sidecar
     coming up and the admission set being derived, so it must never be the
     thing that opens the port.
     """
@@ -532,7 +532,7 @@ def test_controller_expose_sends_the_callers_admission(
 ) -> None:
     """Protocol v7 requires an explicit admission on every expose; there is no default.
 
-    Service grant S4-py: the controller used to send "allow" when the caller
+    Service grant exposing side: the controller used to send "allow" when the caller
     said nothing. It now refuses a call without a mode, and puts exactly the
     caller's mode and key list on the wire.
     """

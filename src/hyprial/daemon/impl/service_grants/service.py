@@ -1,13 +1,13 @@
-# Decision notes (service grant S3, 2026-11-26):
+# Decision notes (service grant documents, 2026-11-26):
 # - Credential sealing reads the value only through identity's public
 #   read_user_provider_value, so record decoding, route consistency, privacy
-#   checks and field selection are identity's rules (S3 fix, critic S4). Without
+#   checks and field selection are identity's rules (grant documents fix). Without
 #   fieldName an unconfigured entry yields its whole file text and a configured
 #   record is refused as field-required. Plaintext bytes never enter logs,
 #   events, return payloads, or exception messages.
 # - No new error codes are introduced; every refusal uses existing frozen codes
 #   in hyprial.kernel.ipc_errors.
-# - S3 fix (2026-11-26, critic S1, S2, S3, N3, N4): a grant is refused unless
+# - Grant documents fix (2026-11-26): a grant is refused unless
 #   this device has a row under the caller in that org's directory; identifiers
 #   are validated before any secret is read. Revocation never depends on
 #   parsing the old document: an unreadable own document is replaced by a

@@ -1,13 +1,13 @@
-# Decision notes (service grant S5, 2026-11-26):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - The opened Key becomes one user-provider entry, under a name derived from
 #   the grant id alone. A user entry that already owns that name is never
 #   overwritten.
-# - S5 fix (2026-11-27, critic 1): the first write goes through identity's
+# - Recipient side fix (2026-11-27): the first write goes through identity's
 #   create-only entry, which checks and writes under the record's own write
 #   lock. The lstat beforehand only saves opening a credential for nothing;
 #   an entry that appears after it is refused by identity ("entry-exists"),
 #   never merged over.
-# - S5 fix (2026-11-27, critic 5): each ledger row also records a digest of
+# - Recipient side fix (2026-11-27): each ledger row also records a digest of
 #   the credential ciphertext (never of the plaintext). When the grantor
 #   replaces the ciphertext under the same (org, grant id), the credential is
 #   opened again and, while the entry still holds the Key this slice wrote,

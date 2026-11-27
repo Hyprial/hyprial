@@ -1,4 +1,4 @@
-# Decision record (service grant S1, 2026-11-26: a bounded lock wait):
+# Decision record (service grant device encryption key, 2026-11-26: a bounded lock wait):
 # - ``locked()`` and ``ensure()`` take an optional timeout for this store's
 #   own file lock.  The default is the 15 s every existing caller waited
 #   before, so none of them changes behaviour.

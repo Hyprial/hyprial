@@ -1,7 +1,7 @@
 """The triggers: where the daemon re-derives a port's admission set.
 
-Decision (service grant S4-py, 2026-11-26): brief goal 3 names four moments
-at which the exposing device must push again, and goal 4 one more. Each test
+Decision (service grant exposing side, 2026-11-26): there are four moments
+at which the exposing device must push again, and one more on unexpose. Each test
 here fakes nothing: it performs the operator action through the public
 ``handle`` path of a real ``DaemonApplication`` and reads what reached the
 sidecar's wire. The first test pins the wiring itself, so that the others

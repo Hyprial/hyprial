@@ -1,6 +1,6 @@
 """What the wired daemon does when a step of the admission path fails.
 
-Decision (S4-py fix, 2026-11-27, coordinator ruling, added tests): every
+Decision (exposing side fix, 2026-11-27): every
 case here drives a real ``DaemonApplication`` whose sidecar is the stdio
 fixture, and the failure is made on the sidecar's wire or in the org
 directory, never above it. Nothing is faked in the enforcer or the service.
@@ -34,7 +34,7 @@ itself, so it is reported as the grant read and not as the tailnet binding.
 The tailnet binding's own failure, with the grants read, is reached in one
 case by replacing the resolver and not by a damaged directory: on a real
 directory every read inside that resolver fails silently, so the state
-cannot be made there (the probe is s4py-fix-probe-tailnet-steps.txt).
+cannot be made there (measured by a probe that walked each read).
 
 A failed push does not mark the sets stale, so the retry is the next
 throttled derivation, thirty seconds on a serving daemon. The push cases

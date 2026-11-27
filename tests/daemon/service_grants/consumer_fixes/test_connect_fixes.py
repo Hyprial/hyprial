@@ -1,13 +1,13 @@
 """Two cross-source rules at the seam between hand-placed records and derived grants.
 
-Decision (service grant S5 fix, 2026-11-27, critic 2): a hand-placed protected
+Decision (service grant recipient side fix, 2026-11-27): a hand-placed protected
 record and a grantor's device row may share a ``deviceId``. When they agree
 about server public key, address and generation they are one device and are
 merged as before. When they differ, neither may silently win: every grant that
 depends on that device is rejected with ``device-conflict``, nothing of the
 derived device is used, and the hand-placed record keeps working alone.
 
-Decision (service grant S5 fix, 2026-11-27, critic 4): the alternative name of
+Decision (service grant recipient side fix, 2026-11-27): the alternative name of
 a derived entry must differ from its own name and be a valid service name,
 whatever the service name and the grantor are: at the 63-character limit the
 name is shortened to make room, and a grantor with no slug character (the

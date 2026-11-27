@@ -1,6 +1,6 @@
 """A crowd of granted devices, for the sidecar's key-set limit.
 
-Decision (service grant S4-py, 2026-11-26): the limit is a property of the
+Decision (service grant exposing side, 2026-11-26): the limit is a property of the
 derived set's size, not of how grants or roster rows are stored, so these are
 in-memory inputs handed to the enforcer as its readers. Keys are canonical
 nodekeys so the wire validation the controller performs is the real one.

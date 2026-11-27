@@ -1,5 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26, coordinator ruling on the
-# design-mismatch evidence):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - One object owns the admission sets of this device's user exposures. It
 #   derives them, compares with what it last pushed, pushes what changed, and
 #   remembers only that. The sidecar holds the gate; nothing is persisted.
@@ -12,11 +11,12 @@
 # - Over the sidecar's key limit nothing is pushed for that port. The last
 #   set stays in force rather than being replaced by a wider or empty one,
 #   because a half pushed set would admit the wrong devices.
-# - Unexpose revokes this device's grants for the port through S3's
-#   revoke_all_for_port. A failure there is logged once and swallowed: the
-#   caller is already past the point where the port should stay exposed.
+# - Unexpose revokes this device's grants for the port through the grant
+#   documents module's revoke_all_for_port. A failure there is logged once and
+#   swallowed: the caller is already past the point where the port should stay
+#   exposed.
 # - A derivation and an unexpose are ordered by a generation, not by a lock
-#   over the whole derivation (S4-py fix, 2026-11-27, critic finding 2). The
+#   over the whole derivation (exposing side fix, 2026-11-27). The
 #   lock covers only the exposure snapshot: which ports are exposed, and the
 #   generation they were listed under. The supervisor lookup, the roster
 #   read, the directory reads and the sidecar pushes run outside it. Under
@@ -75,7 +75,7 @@
 #   devices expose nothing, so without this every device would put a
 #   membership-status read on its wire for a set it has nowhere to push.
 # - A directory read that fails is one event per org and read, not one per
-#   derivation (S4-py fix, 2026-11-27, coordinator ruling). The port tightens
+#   derivation (exposing side fix, 2026-11-27). The port tightens
 #   to nobody either way; what was missing was the line that said so. It
 #   carries the org and the read and nothing of the failure: no grant, whose
 #   documents are what could not be read, no message and no path. The same
@@ -459,7 +459,7 @@ class ServiceAdmissionEnforcer:
 
         To be called after :meth:`begin_removal` answered ``True``, the port
         is off the sidecar and out of the exposure store. Returns
-        ``{"port", "revoked", "failed"}`` in the shape of S3's
+        ``{"port", "revoked", "failed"}`` in the shape of the grant documents module's
         revoke_all_for_port. A failure is one ``failed`` entry and one log
         event; it does not raise.
         """

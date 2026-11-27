@@ -1,6 +1,6 @@
 """Red tests for ``service.grant/revoke/grants`` IPC routing and CLI surface.
 
-Decision (service grant S3, 2026-11-26): exercises the real ``METHOD_REGISTRY``
+Decision (service grant documents, 2026-11-26): exercises the real ``METHOD_REGISTRY``
 and ``_IpcDispatchMixin.handle`` dispatch path (unknown fields -> ``INVALID_ARGUMENT``,
 audience/http_exposed contract) plus ``hyprial org service grant|revoke|grants`` CLI.
 """

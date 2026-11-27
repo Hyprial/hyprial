@@ -1,4 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - A desired exposure replayed after a (re)spawn admits nobody: the replay
 #   exposes with an empty key set, never "allow". The admission owner derives
 #   the real set from the grants and the roster and pushes it once the sidecar

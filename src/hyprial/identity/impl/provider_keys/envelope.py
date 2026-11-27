@@ -1,6 +1,6 @@
 """R1 v1: independent random DEK, per-recipient ephemeral X25519, owner signature.
 
-Decision (service grant S2, 2026-11-26): the construction moved to the
+Decision (service grant sealed envelope, 2026-11-26): the construction moved to the
 sealed_envelope primitive; this module is the provider-key profile binding.
 Wire bytes, check order and refusal codes are unchanged: unusable seal input
 and crypto failures stay PROVIDER_KEY_UNSEAL_FAILED, structure and signature

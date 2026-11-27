@@ -1,6 +1,6 @@
 """Profile-parameterized sealed envelope: random DEK, per-recipient ephemeral X25519.
 
-Decision (service grant S2, 2026-11-26): extracted unchanged from the R1 v1
+Decision (service grant sealed envelope, 2026-11-26): extracted unchanged from the R1 v1
 provider-key envelope. HKDF-SHA256 derives each wrapping key from the X25519
 shared secret with salt epk || recipient public key and info
 wrap_domain || 0 || canonical header || 0 || recipient key id. AES-256-GCM

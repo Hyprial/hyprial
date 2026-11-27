@@ -1,9 +1,10 @@
 """Provider-key bytes and behaviour survive the move onto the sealed-envelope primitive.
 
-Decision (service grant S2, 2026-11-26): provider_key_baseline.json was written
-by the provider-key code at ef4f983a24, before the refactor, with fixed
-randomness. The contract vector is built independently by the provider-key
-tests. Both must still verify, open and reproduce byte for byte.
+Decision (service grant sealed envelope, 2026-11-26):
+provider_key_baseline.json was written by the provider-key code at ef4f983a24,
+before the refactor, with fixed randomness. The contract vector is built
+independently by the provider-key tests. Both must still verify, open and
+reproduce byte for byte.
 """
 import base64
 

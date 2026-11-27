@@ -1,4 +1,4 @@
-# Decision notes (service grant S5, 2026-11-26):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - A derived source contributes catalog entries and protected devices the way
 #   a hand-placed catalog entry plus a protected record would, without either
 #   being written: the source re-derives them from the org directory and keeps
@@ -11,7 +11,7 @@
 # - Two derived devices that disagree about one device id would be a
 #   conflict with no fair winner: the source never contributes both (it
 #   rejects every grant that depends on such a device instead).
-# - S5 fix (2026-11-27, critic 2): a hand-placed protected device and a
+# - Recipient side fix (2026-11-27): a hand-placed protected device and a
 #   derived device with the same device id are one device only when they
 #   agree about server public key, address and generation; then the
 #   hand-placed one is used, as before. When they disagree, neither silently
@@ -37,7 +37,7 @@
 # - Without a source nothing changes: every function takes the source as an
 #   argument and answers "nothing to do" for None, so a manager constructed
 #   the old way behaves exactly as before.
-# - S5 fix (2026-11-27, critic 4): the alternative name always differs from
+# - Recipient side fix (2026-11-27): the alternative name always differs from
 #   the name and is a valid service name. ``<name>-<grantor slug>`` is kept
 #   when it fits; otherwise the name is shortened to make room for a suffix
 #   of at most 16 characters. A grantor with no slug character gets an

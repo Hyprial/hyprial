@@ -1,1 +1,1 @@
-"""Recipient side of service grants (S5): derivation, connect, Key custody, withdrawal."""
+"""Recipient side of service grants: derivation, connect, Key custody, withdrawal."""

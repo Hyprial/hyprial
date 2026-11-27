@@ -1,14 +1,13 @@
 """Deriving each port's admission set from grants and the sidecar roster.
 
-Decision (service grant S4-py, 2026-11-26, coordinator ruling on
-s4py-design-mismatch-evidence.md): the admission key of a granted device is
-the entry under THIS device's server public key in the recipient's row of the
-sidecar's own membership roster, read through ``membership-status``. It is
-never taken from the directory device row, which carries none. The
-derivation is a pure function of grants, one roster observation per org and
-the clock; it is re-derived, never stored. A port's set is the union over
-every org, and anything that cannot be resolved tightens the set and is
-reported as an unresolved grant that carries no key.
+Decision (service grant exposing side, 2026-11-26): the admission key of a
+granted device is the entry under THIS device's server public key in the
+recipient's row of the sidecar's own membership roster, read through
+``membership-status``. It is never taken from the directory device row, which
+carries none. The derivation is a pure function of grants, one roster
+observation per org and the clock; it is re-derived, never stored. A port's set
+is the union over every org, and anything that cannot be resolved tightens the
+set and is reported as an unresolved grant that carries no key.
 """
 
 from __future__ import annotations
@@ -398,7 +397,7 @@ def test_a_grant_by_another_grantor_is_not_this_devices_to_push() -> None:
 
 
 def test_this_devices_owner_may_be_given_bare_or_as_a_user_uri() -> None:
-    """The daemon's owner is a bare name; S3 stores the bare name on the path."""
+    """The daemon's owner is a bare name; service.grant stores the bare name on the path."""
 
     grants = {ORG: (_grant("a", BOB_NODE),)}
     roster = {ORG: _roster(_row(BOB_NODE))}

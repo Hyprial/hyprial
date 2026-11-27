@@ -1,12 +1,12 @@
 """The startup answer and the periodic load are bounded per grantor, per org and by a deadline.
 
-Decision (service grant S5 fix, 2026-11-27, critic 3): a grant scan never
+Decision (service grant recipient side fix, 2026-11-27): a grant scan never
 reads without bound. Over a limit or out of time is "unknown", never "no
 grant": the startup answer is "do not start" unless another grant already
 answers yes, and the periodic path keeps its previous result. Each emits one
 fixed diagnostic event, ``service.grant.scan_limited``.
 
-Decision (coordinator ruling, 2026-11-27, revising the first fix): the
+Decision (2026-11-27, revising the first fix): the
 document and byte limits apply to each grantor's directory on its own (256
 documents, 512 KiB), so one member writing junk documents only makes their
 own grants unknown. Such a grantor keeps their previous result and the event
@@ -203,7 +203,7 @@ def test_the_deadline_reaches_the_document_reads(world: dict[str, Any], monkeypa
 
 
 def test_the_default_load_reads_no_clock_and_has_no_limit(world: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
-    """S4-py calls the loader without limits; that call keeps today's behaviour."""
+    """The exposing side calls the loader without limits; that call keeps today's behaviour."""
 
     three_grants(world)
     monkeypatch.setattr(queries, "MAX_GRANTOR_GRANT_DOCUMENTS", 1)

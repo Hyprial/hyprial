@@ -1,4 +1,4 @@
-"""Service grant S1: the paired optional ``encryptionKeyId`` / ``encryptionPublicKey``.
+"""Service grant device encryption key: the paired optional ``encryptionKeyId`` / ``encryptionPublicKey``.
 
 A directory device row may carry the device's X25519 public key so another
 member can seal a service credential to this device.  The key set stays

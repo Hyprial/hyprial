@@ -1,8 +1,8 @@
-# Decision notes (service grant S5, 2026-11-26):
+# Decision notes (service grant recipient side, 2026-11-26):
 # - Derivation is a pure function of (verified grants, device rows, this
 #   device, now): nothing here reads a file, a clock or a key, so every rule
 #   below is testable and the periodic path can call it without side effects.
-# - Which grants count is S3's one implementation
+# - Which grants count is the grant documents module's one implementation
 #   (effective_grants_for_recipient): the recipient is this exact
 #   (owner, deviceId) or "@members". The grantor is taken from the document
 #   path only (stored.grantor), never from the document body.

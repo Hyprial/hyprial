@@ -74,7 +74,7 @@ def test_expose_unexpose_and_peer_key_keep_side_effects(tmp_path):
 
 
 def test_a_new_exposure_starts_admitting_nobody(tmp_path):
-    """Service grant S4-py: network.expose states its admission, and states nobody.
+    """Service grant exposing side: network.expose states its admission, and states nobody.
 
     The set is derived from the grants afterwards; until then the port must
     not admit anyone, so the expose the daemon sends is an empty key set and

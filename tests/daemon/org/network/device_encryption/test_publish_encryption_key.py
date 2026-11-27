@@ -1,4 +1,4 @@
-"""Service grant S1: the daemon ensures this device's encryption key and publishes it.
+"""Service grant device encryption key: the daemon ensures this device's encryption key and publishes it.
 
 ``publish_self`` carries ``encryptionKeyId`` / ``encryptionPublicKey`` on this
 device's own directory row only when the local key store holds a key for the

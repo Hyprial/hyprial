@@ -1,4 +1,4 @@
-# Decision record (service grant S1 fix, 2026-11-26):
+# Decision record (service grant device encryption key fix, 2026-11-26):
 # - Periodic directory refreshes run every 10 s on the daemon-runtime lane.
 #   Caching ``{keyId, publicKey}`` in memory by ``(user_id, device_uid)`` keeps
 #   steady-state refreshes off the key store's 15 s file lock, while invalidating

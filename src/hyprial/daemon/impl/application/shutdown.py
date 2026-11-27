@@ -1,4 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - The service admission cadence is closed right after the forwarding
 #   reconcile cadence and before the sidecar: it pushes to that sidecar, so
 #   it must be drained while the sidecar is still up, and it must not outlive

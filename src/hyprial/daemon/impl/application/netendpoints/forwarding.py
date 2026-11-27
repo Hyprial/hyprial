@@ -1,4 +1,4 @@
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - The daemon owns one admission enforcer for the lifetime of its forwarding
 #   supervisor. It is created with the supervisor, because the supervisor's
 #   on_installed hook is what re-pushes the admission sets after a (re)spawn.

@@ -1,4 +1,4 @@
-"""Service grant S1: the production key reader behind the published pair.
+"""Service grant device encryption key: the production key reader behind the published pair.
 
 ``encryption_key_reader`` is the one place the daemon asks for this device's
 encryption key.  It answers ``None`` whenever the key store's prerequisites

@@ -1,11 +1,11 @@
 """One member's malformed grant document never hides anyone else's grants.
 
-Decision (service grant S3 fix, 2026-11-26, critic B1, N5, S6 and S7 items 3,
-4, 5 and 11): every parse or validation failure of a single document,
-including ``RecursionError``, skips only that document. Bodies over 64 KiB are
-refused by byte count before parsing, and ``credential`` must have the fixed
-key set and scalar types of the S2 sealed envelope. Bob writes in his own path,
-so the OrgFS author rule admits every one of these documents.
+Decision (service grant documents fix, 2026-11-26): every parse or validation
+failure of a single document, including ``RecursionError``, skips only that
+document. Bodies over 64 KiB are refused by byte count before parsing, and
+``credential`` must have the fixed key set and scalar types of the sealed
+envelope. Bob writes in his own path, so the OrgFS author rule admits every one
+of these documents.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _record(grant_id: str, **over: Any) -> dict[str, Any]:
 
 
 def envelope_shape(grant_id: str = BOB_GOOD) -> dict[str, Any]:
-    """A credential with the S2 envelope's exact key set and scalar types."""
+    """A credential with the sealed envelope's exact key set and scalar types."""
 
     return {
         "header": {
@@ -105,15 +105,15 @@ def _deep_dict(depth: int) -> object:
 @pytest.mark.parametrize(
     "body",
     [
-        pytest.param("[" * 100000 + "]" * 100000, id="critic-deep-array-200k"),
+        pytest.param("[" * 100000 + "]" * 100000, id="deep-array-200k"),
         pytest.param("[" * 30000 + "]" * 30000, id="deep-array-under-64k"),
-        pytest.param(json.dumps(_record(BOB_BAD, credential=_deep_dict(700))), id="critic-nested-credential-700"),
+        pytest.param(json.dumps(_record(BOB_BAD, credential=_deep_dict(700))), id="nested-credential-700"),
     ],
 )
 def test_malformed_member_document_does_not_hide_valid_grants(
     harness: dict[str, Any], body: str
 ) -> None:
-    """Each critic B1 body lists the other valid grants instead of raising."""
+    """Each malformed body lists the other valid grants instead of raising."""
 
     service: ServiceGrantService = harness["service"]
     own = _seed_good_grants(harness)
@@ -178,7 +178,7 @@ def test_body_over_64_kib_is_skipped_by_byte_count(harness: dict[str, Any]) -> N
 def test_credential_must_match_the_sealed_envelope_shape(
     harness: dict[str, Any], credential: dict[str, Any]
 ) -> None:
-    """A credential that is not an S2 envelope invalidates its document (N5)."""
+    """A credential that is not a sealed envelope invalidates its document."""
 
     service: ServiceGrantService = harness["service"]
     _bob_writes(harness, BOB_BAD, _record(BOB_BAD, credential=credential))
@@ -192,7 +192,7 @@ def test_credential_must_match_the_sealed_envelope_shape(
 def test_reader_skips_mismatched_id_extra_key_and_members_with_credential(
     harness: dict[str, Any],
 ) -> None:
-    """Critic S7 items 4, 5 and 11: each invalid document is skipped and the valid one stays."""
+    """Each invalid document is skipped and the valid one stays."""
 
     service: ServiceGrantService = harness["service"]
     _bob_writes(harness, "sg.cccccccccccccccccccccccccc", _record("sg.dddddddddddddddddddddddddd"))
@@ -220,7 +220,7 @@ def test_reader_skips_mismatched_id_extra_key_and_members_with_credential(
 def test_reader_applies_the_write_rules_to_names_notes_and_identifiers(
     harness: dict[str, Any], service_record: dict[str, Any]
 ) -> None:
-    """S6 and N4 on the read side: a document the writer would refuse is skipped."""
+    """On the read side: a document the writer would refuse is skipped."""
 
     service: ServiceGrantService = harness["service"]
     _bob_writes(harness, BOB_BAD, _record(BOB_BAD, service=service_record))

@@ -1,4 +1,4 @@
-# Decision notes (service grant S3, 2026-11-26):
+# Decision notes (service grant documents, 2026-11-26):
 # - Exposes `hyprial org service grant|revoke|grants` on `service_app` without
 #   any plaintext secret flag (`--secret`, `--key`, `--value`).
 # - `--credential` accepts `<entryId>` or `<entryId>:<fieldName>` and fails

@@ -1,4 +1,4 @@
-# Decision notes (service grant S3 fix, 2026-11-26, critic S5):
+# Decision notes (service grant documents fix, 2026-11-26):
 # - The owner-approved migration is "the org owner's daemon runs once after the
 #   upgrade". The periodic device-row publish tick therefore creates missing
 #   owner directories (directory/service-grants among them) for every org whose

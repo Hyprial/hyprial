@@ -1,8 +1,8 @@
-"""Shared arrangement for the S5 fix tests: one org directory as bob's device sees it.
+"""Shared arrangement for the recipient-side fix tests: one org directory as bob's device sees it.
 
-Decision (service grant S5 fix, 2026-11-27): the fix tests reuse the S5
-consumer support (real OrgFS store, real sealed envelopes, a real key store)
-and add only the few pieces the critic's findings need: a service manager
+Decision (service grant recipient side fix, 2026-11-27): the fix tests reuse
+the recipient-side consumer support (real OrgFS store, real sealed envelopes, a
+real key store) and add only the few pieces those fixes need: a service manager
 over the recipient home and helpers for writing a grantor document by hand.
 """
 
@@ -23,7 +23,7 @@ from tests.daemon.service_grants.consumer.support import (
 
 
 def world_at(tmp_path: Path, actor_host: Any) -> dict[str, Any]:
-    """The S5 directory plus a manager, a controller and a state port for the recipient."""
+    """The recipient-side directory plus a manager, a controller and a state port for the recipient."""
 
     directory = build_directory(tmp_path)
     return {

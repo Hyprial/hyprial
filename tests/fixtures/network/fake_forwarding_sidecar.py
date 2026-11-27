@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Decision notes (service grant S4-py, 2026-11-26):
+# Decision notes (service grant exposing side, 2026-11-26):
 # - expose now enforces admission the way the Go engine does, in two steps:
 #   membership first (engine.admits: the peer key equals some active roster
 #   row's clientPublicByServer entry for THIS sidecar's serverPublic), then
@@ -26,7 +26,7 @@
 # - "fixture-reload-roster" {} re-reads FAKE_FORWARD_ROSTER, the stand-in for
 #   the sidecar's own roster refresh, and closes connections the new roster no
 #   longer admits (a member that became a tombstone).
-# - FAKE_FORWARD_FAULT (S4-py fix, 2026-11-27) names a file a test writes while
+# - FAKE_FORWARD_FAULT (exposing side fix, 2026-11-27) names a file a test writes while
 #   the sidecar runs; the sidecar's environment cannot change under it. Its
 #   JSON is {"op", "mode", "port"?, "once"?}. While it exists, the first
 #   command of that op, on that port when one is given, ends as "mode" says.

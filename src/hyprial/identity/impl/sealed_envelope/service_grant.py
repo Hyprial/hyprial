@@ -1,23 +1,25 @@
 """Service-grant profile: a credential sealed to one recipient device key, unsigned.
 
-Decision (service grant S2, 2026-11-26, plan v2 D4 and section 3.4): no owner
-signature; the grant document's author rule in OrgFS is the only statement of
-who wrote it. The header binds org, grantId, the service endpoint
-(grantor owner, deviceId, port), the recipient device (owner, deviceId) and the
-recipient's encryptionKeyId; it is the AEAD associated data and is mixed into
-the HKDF info, so a ciphertext copied into another grant document, or re-labelled
-for another key, does not open. Both sealing and opening take structured grant
+Decision (service grant sealed envelope, 2026-11-26;
+docs/design/service-grant-2026-11-27.md, Sealing): no owner signature; the
+grant document's author rule in OrgFS is the only statement of who wrote it.
+The header binds org, grantId, the service endpoint (grantor owner, deviceId,
+port), the recipient device (owner, deviceId) and the recipient's
+encryptionKeyId; it is the AEAD associated data and is mixed into the HKDF
+info, so a ciphertext copied into another grant document, or re-labelled for
+another key, does not open. Both sealing and opening take structured grant
 fields rather than a raw header dict: sealing derives encryptionKeyId from the
-recipient public key, and opening rebuilds the expected header from the caller's
-document fields so the envelope's own header is never trusted on its own. The
-canonical encoding is the bounded canonical JSON of the whole header (keys
-sorted, no whitespace, UTF-8, integers only). Input faults are INVALID_ARGUMENT;
-every opening failure is one value-free PAYLOAD_INVALID. Grant ids are sg. plus
-26 lowercase base32 characters. Identifiers match the intersection with org
-directory _safe_path_component: non-empty str up to 256 chars, not "." or "..",
-no leading "@" (selector syntax), no "/" or "\\", no control chars (0x00-0x1F,
-0x7F) and no UTF-16 surrogates. Owner fields (grantor, recipient_owner) are
-bare document-path values and additionally reject ":" (no "user:" principal).
+recipient public key, and opening rebuilds the expected header from the
+caller's document fields so the envelope's own header is never trusted on its
+own. The canonical encoding is the bounded canonical JSON of the whole header
+(keys sorted, no whitespace, UTF-8, integers only). Input faults are
+INVALID_ARGUMENT; every opening failure is one value-free PAYLOAD_INVALID.
+Grant ids are sg. plus 26 lowercase base32 characters. Identifiers match the
+intersection with org directory _safe_path_component: non-empty str up to 256
+chars, not "." or "..", no leading "@" (selector syntax), no "/" or "\\", no
+control chars (0x00-0x1F, 0x7F) and no UTF-16 surrogates. Owner fields
+(grantor, recipient_owner) are bare document-path values and additionally
+reject ":" (no "user:" principal).
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Service grant S1: serving start ensures this device's encryption key.
+"""Service grant device encryption key: serving start ensures this device's encryption key.
 
 A daemon that has just become serving and already holds a committed account
 (``userId``) and a device record must leave serving start with exactly one

@@ -1,4 +1,4 @@
-# Decision record (service grant S1, 2026-11-26):
+# Decision record (service grant device encryption key, 2026-11-26):
 # - This subpackage is the one place the daemon asks for this device's
 #   encryption key.  It is a subpackage because ``org/network`` already holds
 #   the seven direct files the structure gate allows.
