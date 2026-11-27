@@ -17,6 +17,12 @@
 # - A port this device has issued a grant for stays in the result after that
 #   grant is revoked or expires, with an empty set. Only a port with no grant
 #   document at all is absent; the caller pushes nobody for both.
+# - An org whose tailnet binding could not be resolved (S4-py fix, 2026-11-27,
+#   coordinator ruling) contributes nothing, as an org whose roster cannot be
+#   read does not, and each of its grants is listed under its own reason. It
+#   has no tailnet id to read rows by, which is why it is named apart: to the
+#   derivation it looks like an unreadable roster, and to the operator it is
+#   not one.
 """Deriving each port's admission set from grants and the sidecar roster."""
 
 from __future__ import annotations
@@ -28,7 +34,7 @@ from typing import Any
 from ..models import ALL_MEMBERS, GrantRecipient, StoredServiceGrant, normalize_bare_owner
 from ..queries import is_grant_effective
 from .models import AdmissionProjection, AdmissionSet, UnresolvedGrant
-from .roster import ROSTER_UNAVAILABLE, admission_keys, tailnet_rows
+from .roster import ROSTER_UNAVAILABLE, TAILNET_UNRESOLVED, admission_keys, tailnet_rows
 
 
 @dataclass(frozen=True)
@@ -87,6 +93,7 @@ def derive_admission(
     device_id: str,
     server_public: str,
     now_ms: int,
+    tailnets_unresolved: Sequence[str] = (),
 ) -> dict[int, AdmissionProjection]:
     """Admission to push for each port this device has a grant for.
 
@@ -94,9 +101,13 @@ def derive_admission(
     port; the ones that are not this device's are filtered out here.
     ``rosters[org]`` is the membership observation to read ``org``'s members
     from, or ``None`` when it could not be read. ``tailnet_ids[org]`` is the
-    org's effective tailnet id. A port this device never issued a grant for is
-    absent from the result; its caller pushes an empty key set. A port whose
-    grants are all revoked or expired is present with an empty key set.
+    org's effective tailnet id. ``tailnets_unresolved`` names the orgs whose
+    binding could not be resolved, which therefore have no entry in
+    ``tailnet_ids``; each of their effective grants is reported as
+    unresolved under ``TAILNET_UNRESOLVED`` and none of them is looked up in
+    a roster. A port this device never issued a grant for is absent from the
+    result; its caller pushes an empty key set. A port whose grants are all
+    revoked or expired is present with an empty key set.
     """
 
     widened: set[int] = set()
@@ -111,6 +122,20 @@ def derive_admission(
         grants_by_org, owner=owner, device_id=device_id, now_ms=now_ms
     )
     for item in pushable:
+        if item.org in tailnets_unresolved:
+            unresolved.setdefault(item.port, []).append(
+                UnresolvedGrant(
+                    org=item.org,
+                    grant_id=item.grant_id,
+                    recipient=(
+                        {"recipient": ALL_MEMBERS}
+                        if item.recipient is None
+                        else {"owner": item.recipient.owner, "deviceId": item.recipient.device_id}
+                    ),
+                    reason=TAILNET_UNRESOLVED,
+                )
+            )
+            continue
         members = members_of(item.org)
         if item.recipient is None:
             if members is None:

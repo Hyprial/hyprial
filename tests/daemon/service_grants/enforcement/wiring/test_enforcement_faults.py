@@ -374,7 +374,7 @@ def test_a_tailnet_binding_that_cannot_be_resolved_is_reported_for_each_grant_it
     assert daemon.logged(DIRECTORY_UNAVAILABLE) == [("warn", {"org": ORG, "step": "tailnet"})]
     assert sorted(
         (fields["grantId"], fields["reason"]) for _level, fields in daemon.logged(KEY_UNAVAILABLE)
-    ) == [(bob, TAILNET_UNRESOLVED), (carol, TAILNET_UNRESOLVED)]
+    ) == sorted([(bob, TAILNET_UNRESOLVED), (carol, TAILNET_UNRESOLVED)])
     assert _grant_documents(daemon, ALICE_NODE.owner) == sorted([f"{bob}.json", f"{carol}.json"])
 
 

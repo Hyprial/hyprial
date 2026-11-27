@@ -9,6 +9,12 @@
 # - Only a canonical nodekey is accepted. The Go store validates the same
 #   shape before a row is kept, so anything else here means the observation
 #   is not what the contract says, and it is not pushed to the sidecar.
+# - A reason is a fixed value, never text from what failed (S4-py fix,
+#   2026-11-27, coordinator ruling). The org's tailnet binding that cannot
+#   be resolved has its own, TAILNET_UNRESOLVED, because it used to be
+#   reported as ROSTER_UNAVAILABLE, which sends the operator to a sidecar
+#   that is answering: the roster was read, and it is the binding that is
+#   not known.
 """Reading admission keys out of one membership observation."""
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ ROSTER_UNAVAILABLE = "roster-unavailable"
 MEMBER_NOT_IN_ROSTER = "member-not-in-roster"
 MEMBER_WITHOUT_LOCAL_KEY = "member-without-local-key"
 KEY_MALFORMED = "key-malformed"
+TAILNET_UNRESOLVED = "tailnet-unresolved"
 
 _NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
 _ZERO_NODEKEY = "nodekey:" + "0" * 64
@@ -114,6 +121,7 @@ __all__ = [
     "MEMBER_NOT_IN_ROSTER",
     "MEMBER_WITHOUT_LOCAL_KEY",
     "ROSTER_UNAVAILABLE",
+    "TAILNET_UNRESOLVED",
     "admission_keys",
     "member_key",
     "tailnet_rows",

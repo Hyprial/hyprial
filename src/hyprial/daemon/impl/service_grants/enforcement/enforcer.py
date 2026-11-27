@@ -74,6 +74,21 @@
 #   grant read, no event. Every sidecar start offers a derivation and most
 #   devices expose nothing, so without this every device would put a
 #   membership-status read on its wire for a set it has nowhere to push.
+# - A directory read that fails is one event per org and read, not one per
+#   derivation (S4-py fix, 2026-11-27, coordinator ruling). The port tightens
+#   to nobody either way; what was missing was the line that said so. It
+#   carries the org and the read and nothing of the failure: no grant, whose
+#   documents are what could not be read, no message and no path. The same
+#   failure is logged once for as long as it lasts, because a derivation runs
+#   at least every interval and a line per derivation is how the first line
+#   gets lost. It is remembered against the org and the read, and a
+#   derivation that fails neither of them for that pair forgets it, so the
+#   next failure of it is logged again. What is remembered is what the last
+#   derivation that reached its pushes saw: one that found no exposure reads
+#   nothing, and one that failed elsewhere reports that instead.
+# - An org whose tailnet binding cannot be resolved while its grants were
+#   read is the one directory failure that knows the grants, so it is also
+#   reported per grant, each as key_unavailable under tailnet-unresolved.
 """Pushing each exposure's derived admission set to the sidecar."""
 
 from __future__ import annotations
@@ -102,7 +117,9 @@ LIMIT_EVENT = "service.grant.admission_limit"
 UNEXPOSE_FAILED = "service.grant.unexpose_revoke_failed"
 DERIVATION_FAILED = "service.grant.admission_unavailable"
 ROSTER_UNREADABLE = "service.grant.roster_unreadable"
+DIRECTORY_UNAVAILABLE = "service.grant.directory_unavailable"
 PUSH_REJECTED = "network.exposure.admission_rejected"
+TAILNET = "tailnet"
 DEFAULT_INTERVAL_SECONDS = 30.0
 DEFAULT_MEMBERSHIP_TIMEOUT = 5.0
 DEFAULT_UNEXPOSE_WAIT_SECONDS = 15.0
@@ -209,6 +226,7 @@ class ServiceAdmissionEnforcer:
         self._removing: set[int] = set()
         self._retired: dict[int, int] = {}
         self._changes = 0
+        self._unreadable: set[tuple[str, str]] = set()
 
     def invalidate(self) -> None:
         """Mark the sets stale after a change that the caller knows about.
@@ -459,11 +477,12 @@ class ServiceAdmissionEnforcer:
         if snapshot is None:
             return
         snapshot.changes = self._triggers()
+        unreadable: set[tuple[str, str]] = set()
         try:
             roster = self._read_roster()
             inputs = self._inputs()
-            grants = self._read_grants(inputs)
-            tailnet_ids = self._tailnet_ids(inputs, grants)
+            grants = self._read_grants(inputs, unreadable)
+            tailnet_ids = self._tailnet_ids(inputs, grants, unreadable)
             projection = derive_admission(
                 grants,
                 {org: roster for org in grants},
@@ -472,12 +491,28 @@ class ServiceAdmissionEnforcer:
                 device_id=inputs.device_id,
                 server_public=snapshot.server_public,
                 now_ms=self._now_ms(),
+                tailnets_unresolved=tuple(org for org, step in unreadable if step == TAILNET),
             )
         except Exception as error:  # noqa: BLE001
             self._log("warn", DERIVATION_FAILED, errorType=type(error).__name__)
             return
+        self._report_directory(unreadable)
         self._push(projection, snapshot)
         self._finish(snapshot.changes)
+
+    def _report_directory(self, unreadable: set[tuple[str, str]]) -> None:
+        """Log each directory read that has newly failed, and remember what failed now.
+
+        A pair of org and read that is already remembered is not logged
+        again; one that did not fail this time is forgotten, so that its next
+        failure is logged.
+        """
+
+        with self._lock:
+            fresh = sorted(unreadable - self._unreadable)
+            self._unreadable = unreadable
+        for org, step in fresh:
+            self._log("warn", DIRECTORY_UNAVAILABLE, org=org, step=step)
 
     def _push(self, projection: Mapping[int, Any], snapshot: _Snapshot) -> None:
         """Push each port whose set changed, unless its unexpose has begun since the list."""
@@ -552,30 +587,47 @@ class ServiceAdmissionEnforcer:
             return None
 
     def _read_grants(
-        self, inputs: EnforcementInputs
+        self, inputs: EnforcementInputs, unreadable: set[tuple[str, str]]
     ) -> dict[str, tuple[StoredServiceGrant, ...]]:
         if self._grants_reader is not None:
             return dict(self._grants_reader())
-        return own_grants(inputs.store, orgs(inputs.store), owner=inputs.owner)
+
+        def could_not_read(org: str, step: str) -> None:
+            unreadable.add((org, step))
+
+        return own_grants(
+            inputs.store,
+            orgs(inputs.store, unreadable=could_not_read),
+            owner=inputs.owner,
+            unreadable=could_not_read,
+        )
 
     def _tailnet_ids(
-        self, inputs: EnforcementInputs, grants: Mapping[str, Sequence[StoredServiceGrant]]
+        self,
+        inputs: EnforcementInputs,
+        grants: Mapping[str, Sequence[StoredServiceGrant]],
+        unreadable: set[tuple[str, str]],
     ) -> dict[str, str]:
         """Each org's effective tailnet id: a sub-org inherits its parent's tailnet.
 
-        An org whose id cannot be resolved is left out, which derives it with
-        no roster: its grants contribute nothing until it can be resolved.
+        An org whose id cannot be resolved is left out and named to
+        ``unreadable`` as the tailnet read, which derives it with no roster:
+        its grants contribute nothing until it can be resolved, and each of
+        them is reported under the reason that says so.
         """
 
         ids: dict[str, str] = {}
         for org in grants:
             try:
                 space, _reason = resolve_org_directory_space(inputs.fs, org)
-                if space is not None:
-                    ids[org] = effective_tailnet_id(
-                        inputs.fs, inputs.home, org, space_id=space.space_id
-                    )
+                if space is None:
+                    unreadable.add((org, TAILNET))
+                    continue
+                ids[org] = effective_tailnet_id(
+                    inputs.fs, inputs.home, org, space_id=space.space_id
+                )
             except Exception:  # noqa: BLE001
+                unreadable.add((org, TAILNET))
                 continue
         return ids
 
@@ -592,6 +644,7 @@ __all__ = [
     "DEFAULT_INTERVAL_SECONDS",
     "DEFAULT_MEMBERSHIP_TIMEOUT",
     "DEFAULT_UNEXPOSE_WAIT_SECONDS",
+    "DIRECTORY_UNAVAILABLE",
     "KEY_UNAVAILABLE",
     "LIMIT_EVENT",
     "MAX_KEYS",

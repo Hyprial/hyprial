@@ -129,7 +129,6 @@ def _derive(
     tailnet_ids: dict | None = None,
     tailnets_unresolved: tuple[str, ...] = (),
 ) -> dict:
-    extra: dict = {} if not tailnets_unresolved else {"tailnets_unresolved": tailnets_unresolved}
     return derive_admission(
         grants_by_org,
         rosters,
@@ -138,9 +137,8 @@ def _derive(
         device_id=LOCAL_DEVICE,
         server_public=SERVER_PUBLIC,
         now_ms=now_ms,
-        **extra,
+        tailnets_unresolved=tailnets_unresolved,
     )
-
 
 def _reasons(projection: AdmissionProjection) -> list[tuple[str, str, str, str]]:
     return sorted(
