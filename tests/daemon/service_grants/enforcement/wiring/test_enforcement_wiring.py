@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl.service_grants.service import ServiceGrantService
+from hyprial.kernel import AdmissionResult
 from tests.daemon.service_grants.enforcement._support import (
     ALICE_NODE,
     BOB_NODE,
@@ -41,6 +42,7 @@ from tests.daemon.service_grants.enforcement._support import (
 )
 from tests.daemon.service_grants.enforcement.wiring._app import KEY_UNAVAILABLE, Daemon
 
+TRIGGER_FAILED = "service.grant.admission_trigger_failed"
 OTHER_PORT = PORT + 1
 BOB_KEY = peer_key(BOB_NODE, ALICE_NODE)
 CAROL_KEY = peer_key(CAROL_NODE, ALICE_NODE)
@@ -251,3 +253,67 @@ def test_an_unexpose_during_a_derivation_is_not_undone_by_its_push(make_daemon: 
     assert daemon.wire_ops(PORT)[-1] == "unexpose"
     assert daemon.app.handle("network.exposures", {})["exposures"] == []
     assert daemon.app.handle("service.grants", {"org": ORG})["granted"] == []
+
+
+def _effective_grants(daemon: Daemon) -> list[str]:
+    """The grant ids the durable directory still counts as effective."""
+
+    return [item["grantId"] for item in daemon.app.handle("service.grants", {"org": ORG})["granted"]]
+
+
+@pytest.mark.parametrize(
+    "method", ["service.grant", "service.revoke"], ids=["grant", "revoke"]
+)
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        pytest.param("raises", "failed", id="the-submit-raises"),
+        pytest.param(AdmissionResult.CLOSED, "unscheduled", id="the-cadence-is-closed"),
+        pytest.param(AdmissionResult.OVERLOADED, "unscheduled", id="the-cadence-is-overloaded"),
+        pytest.param(None, "unscheduled", id="there-is-no-cadence"),
+    ],
+)
+def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_durable(
+    make_daemon: Any, monkeypatch: pytest.MonkeyPatch, failure: Any, reason: str, method: str
+) -> None:
+    """Critic finding 1: an immediate trigger that does not reach the cadence is visible.
+
+    ``service.grant`` and ``service.revoke`` have already written the document
+    when they ask for a re-derivation. When that request cannot be delivered
+    the write is not rolled back, and it used to be indistinguishable from a
+    delivered one. It is one ``service.grant.admission_trigger_failed`` event
+    that names the operation and the kind of failure, carrying nothing else;
+    and the write it followed is still on disk.
+    """
+
+    daemon = make_daemon()
+    granted = _grant(daemon, BOB_NODE)["grantId"]
+    cadence = daemon.app._service_admission_cadence
+
+    def refuse(_observed_at_ms: int) -> Any:
+        raise RuntimeError("effect lane is gone")
+
+    if failure == "raises":
+        monkeypatch.setattr(cadence, "submit", refuse)
+    elif failure is None:
+        daemon.app._service_admission_cadence = None
+    else:
+        monkeypatch.setattr(cadence, "submit", lambda _observed_at_ms: failure)
+    monkeypatch.setattr(daemon, "settle", lambda timeout: None)
+
+    params = (
+        {"org": ORG, "port": PORT, "device": CAROL_NODE.slug}
+        if method == "service.grant"
+        else {"org": ORG, "grantId": granted}
+    )
+    answer = daemon.app.handle(method, params)
+
+    [(level, fields)] = daemon.logged(TRIGGER_FAILED)
+    assert level == "warn"
+    assert fields == {"method": method, "reason": reason}
+    if method == "service.grant":
+        assert answer["grant"]["grantId"]
+        assert _effective_grants(daemon) == sorted([granted, answer["grant"]["grantId"]])
+    else:
+        assert answer == {"grantId": granted, "revoked": True}
+        assert _effective_grants(daemon) == []
