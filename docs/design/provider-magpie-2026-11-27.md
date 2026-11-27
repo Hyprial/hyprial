@@ -30,6 +30,7 @@
 17. 本线只交付 macOS 和 Linux。Windows 上 daemon 检测不到可用的 Magpie 时返回明确的错误，hyprial 不替 Magpie 做后台服务或文件权限的替代实现。这一缺口随实现一起登记为已知问题，等 Magpie 在 Windows 上有后台服务形态并能保护自己的文件后再做。在此之前，Windows 上的 agent 调不了模型。
 18. 启动 harness 时 daemon 不调用 `magpie <harness>`。daemon 在每个 agent 自己的私有目录和启动环境里写入网关地址、绑定的模型 ID 和占位符，harness 直接连本机网关。用户自己的全局 harness 配置不被改动。各 harness 的网关配置写法由 hyprial 维护。这不意味着 hyprial 另起一个 Magpie：网关仍是第 4 条所说的用户自己的那一个。
 19. Magpie 已安装但网关没有运行时，daemon 用 Magpie 自己的后台服务启动它：已有服务就启动，没有就先安装服务再启动。这个进程属于用户的 Magpie，hyprial 退出后继续运行。hyprial 不监督它，也不把网关作为自己的子进程。
+20. 原有各 harness 的登录方式、原生凭据读取、原生凭据与显式认证的互斥检查以及按 agent 保存原生登录材料，全部随本线实现删除。新的启动路径统一只把 agent 指向 Magpie 网关，不保留按 harness 的旧登录兼容分支。旧凭据如何重新录入 Magpie 只写迁移文档；daemon 不自动读取、复制或删除旧文件，也不把旧文件交给 harness 使用。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
