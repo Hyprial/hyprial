@@ -49,6 +49,13 @@ change and are guards, not regressions: a manifest with all three fields empty
 is accepted, and a duplicate recorded in duplicateResult alone is rejected, as
 it always was.  The XML in this file is written by hand with invented paths
 only.
+
+Decision (2026-11-27, tier 1 smoke and tier 2 full suite).  A leg turned red
+by a run with nameless records names them in its errors, as
+"wave W run R: nameless-testcases:N (...)".  One test drives a passing run
+with one such record through the runner and then through the tier 1 and the
+tier 2 summary; it fails on the summary before this change, which showed only
+unreported-files, zero failures and zero errors.
 """
 
 from __future__ import annotations
@@ -62,7 +69,7 @@ import pytest
 
 from scripts.ci.windows import run_waves as run_waves_module
 from scripts.ci.windows.run_waves import HARD_STATES, run_waves
-from scripts.ci.windows.summarize import _collect_suite_cases, summarize_suite, validate_waves
+from scripts.ci.windows.summarize import _collect_suite_cases, summarize_leg, summarize_suite, validate_waves
 from scripts.ci.windows.wave_state import classify_run, read_junit
 from tests.tooling.ci.windows.suite.test_run_waves import write_events
 
@@ -227,6 +234,37 @@ def test_a_nameless_record_cannot_be_offset_by_expected_failures(
     assert any("matched=1 stale=0 unexpectedShape=0" in line for line in lines)
     assert ok is False
     assert "Overall status: **failed**" in "\n".join(lines)
+
+
+@pytest.mark.parametrize("tier", ["1", "2"])
+def test_the_summary_names_the_nameless_record_that_turns_a_passing_run_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str
+) -> None:
+    plan_path = plan(tmp_path, [["tests/a.py"]])
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace, run_number: int,
+        wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        junit = args.results / f"shard-0-wave-{wave_number}-run-{run_number}.xml"
+        ledger = write_ledger(args.ledger_root / f"wave-{wave_number}-run-{run_number}", ("tests/a.py::test_ok",))
+        write_xml(junit, NAMED_PASS, NAMELESS)
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    results = tmp_path / "results"
+
+    manifest = run_waves(wave_args(tmp_path, tier=tier, plan_manifest=plan_path), tmp_path)
+    (results / "waves.log").write_text(f"WINDOWS_WAVES_DONE {json.dumps(manifest)}\n", encoding="utf-8")
+    if tier == "1":
+        ok, _errors, lines = summarize_leg(results, "w1", waves=True)
+    else:
+        ok, lines = summarize_suite(plan_manifest_path=plan_path, leg_roots={"shard-0": results})
+
+    assert manifest["runs"][0]["details"] == ["nameless-testcases:1"]
+    assert ok is False
+    assert "  - error: wave 1 run 1: nameless-testcases:1 (testcase elements with neither classname nor name)" in lines
 
 
 def test_one_nameless_record_is_not_in_the_nodeid_set(tmp_path: Path) -> None:

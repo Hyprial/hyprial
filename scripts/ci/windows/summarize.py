@@ -29,6 +29,15 @@ a leg could show more passed tests than it has; resolved, the second one and
 every later one came out as duplicate-result <unknown>, which names no test.
 The wave manifest is rejected on each of duplicateResult, duplicateRuns and
 duplicateUnion on its own, so a duplicate is red whichever field records it.
+
+Decision (2026-11-27, tier 1 smoke and tier 2 full suite).  A wave run whose
+details hold nameless-testcases:N adds one leg error naming the wave, the run
+and that detail.  Without it, a leg turned red by such a run showed only
+unreported-files with zero failures and zero errors, and the cause was in the
+manifest alone.  The leg errors are used rather than the leg line because both
+tiers print them under the leg with the same "error:" prefix, while the two
+leg lines have different formats.  wave_state.py puts every such run in a hard
+state, so a leg that shows the error is red already; the error names the cause.
 """
 
 from __future__ import annotations
@@ -199,8 +208,17 @@ def validate_waves(
         errors.append("wave runs is not a list")
         runs = []
     for run in runs:
-        if isinstance(run, dict) and run.get("status") in HARD_STATES:
+        if not isinstance(run, dict):
+            continue
+        if run.get("status") in HARD_STATES:
             errors.append(f"hard red state {run['status']}")
+        details = run.get("details")
+        for detail in details if isinstance(details, list) else []:
+            if isinstance(detail, str) and detail.startswith("nameless-testcases:"):
+                errors.append(
+                    f"wave {run.get('wave')} run {run.get('run')}: {detail}"
+                    " (testcase elements with neither classname nor name)"
+                )
     return not errors, errors
 
 
