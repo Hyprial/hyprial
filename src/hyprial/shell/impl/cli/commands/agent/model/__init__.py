@@ -45,7 +45,7 @@ def configure(
     name: str = typer.Argument(..., help="Agent name or URI."),
     model: str = typer.Option(..., "--model", help="Exact model ID; never inferred or substituted."),
     connection: str = typer.Option(..., "--connection", help="Saved connection reference, not a Key."),
-    config_revision: int = typer.Option(..., "--config-revision", help="Saved connection revision from provider-list."),
+    config_revision: int = typer.Option(..., "--config-revision", help="Saved connection revision; required only with --connection."),
     binding_revision: int = typer.Option(..., "--binding-revision", help="Current binding revision; 0 for first configuration."),
     cell_revision: int = typer.Option(..., "--cell-revision", help="Current agent Cell revision."),
     operation_id: str = typer.Option(..., "--operation-id", help="Unique ID; retry the same ID and exact input after read-back."),

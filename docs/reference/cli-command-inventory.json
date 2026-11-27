@@ -8427,7 +8427,7 @@
           "multiple": false,
           "hidden": false,
           "type": "int",
-          "help": "Saved connection revision from provider-list.",
+          "help": "Saved connection revision; required only with --connection.",
           "nargs": 1,
           "metavar": null,
           "default": null,
