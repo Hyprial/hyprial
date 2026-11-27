@@ -200,6 +200,7 @@ def test_agent_family_stays_partially_migrated() -> None:
     assert {
         name for name in METHOD_REGISTRY.names if name.startswith("agent.")
     } == set(agent_catalog.PARTIAL_MIGRATED_METHODS) | {
+        "agent.model.configure", "agent.model.status", "agent.model.cancel",
         "agent.grant.check", "agent.grant.visibility",
         "agent.provider.allow", "agent.provider.auth.list",
         "agent.provider.default",
