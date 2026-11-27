@@ -28,6 +28,7 @@
 15. PR #84、#85、#86 不在原分支上改，第 10 条留下的选择定为另开 PR 取代。前六个 PR 合入后，本线从 `dev` 另开新 PR，按 daemon、CLI、GUI 的顺序切片，三个旧 PR 里能用的部分摘过来。新 PR 合入后关闭这三个旧 PR，并在 PR #71 里记下取代它们的提交。
 16. daemon 级 provider 登录设计（PR #68）不合入，由本文取代。该 PR 已于 2026-11-27 关闭，分支保留。
 17. 本线只交付 macOS 和 Linux。Windows 上 daemon 检测不到可用的 Magpie 时返回明确的错误，hyprial 不替 Magpie 做后台服务或文件权限的替代实现。这一缺口随实现一起登记为已知问题，等 Magpie 在 Windows 上有后台服务形态并能保护自己的文件后再做。在此之前，Windows 上的 agent 调不了模型。
+18. 启动 harness 时 daemon 不调用 `magpie <harness>`。daemon 在每个 agent 自己的私有目录和启动环境里写入网关地址、绑定的模型 ID 和占位符，harness 直接连本机网关。用户自己的全局 harness 配置不被改动。各 harness 的网关配置写法由 hyprial 维护。这不意味着 hyprial 另起一个 Magpie：网关仍是第 4 条所说的用户自己的那一个。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
@@ -39,6 +40,8 @@
 - 第 9 条有一点尚未核实：授权方的网关是否校验交出的那把 key（流量经转发后从授权方本机回环进入网关时）。
 - 第 11 条有两点尚未核实：第一把管理 key 是否只能通过命令行建立；管理接口里的登录流程能否由 daemon 转给 GUI。
 - 第 17 条所依据的 Magpie 在 Windows 上的行为来自读它的源码，没有在 Windows 上运行过。
+- 第 4 条有一点待定：网关没有运行时，daemon 用什么方式启动它（启动 Magpie 自己的后台服务，还是作为 daemon 的子进程）。
+- 第 18 条所依据的事实里，`magpie <harness>` 各命令具体改写哪些文件尚未复核。
 
 ## 3. 与其他线的关系
 
