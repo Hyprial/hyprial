@@ -321,3 +321,44 @@ def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_dur
     else:
         assert answer == {"grantId": granted, "revoked": True}
         assert _effective_grants(daemon) == []
+
+
+@pytest.mark.parametrize("method", ["service.grant", "service.revoke"], ids=["grant", "revoke"])
+def test_a_trigger_whose_application_method_raised_names_the_exception(
+    make_daemon: Any, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """The handler's own report, for an application that cannot run its trigger at all.
+
+    The handler reaches the application's method through ``getattr``, because
+    a host without admission enforcement has none. One that has it and
+    raises is reported by the handler itself, with the same event the
+    application would have logged: the operation, the reason, and the class
+    of what was raised and never its message. The grant is written before
+    the trigger, so the write stands.
+    """
+
+    daemon = make_daemon()
+    granted = _grant(daemon, BOB_NODE)["grantId"]
+
+    def broken(_method: str) -> Any:
+        raise KeyError("a message the event must not carry")
+
+    monkeypatch.setattr(daemon.app, "_service_admission_changed", broken)
+    monkeypatch.setattr(daemon, "settle", lambda timeout: None)
+    daemon.events.clear()
+
+    params = (
+        {"org": ORG, "port": PORT, "device": CAROL_NODE.slug}
+        if method == "service.grant"
+        else {"org": ORG, "grantId": granted}
+    )
+    answer = daemon.app.handle(method, params)
+
+    [(level, fields)] = daemon.logged(TRIGGER_FAILED)
+    assert level == "warn"
+    assert fields == {"method": method, "reason": "failed", "errorType": "KeyError"}
+    if method == "service.grant":
+        assert _effective_grants(daemon) == sorted([granted, answer["grant"]["grantId"]])
+    else:
+        assert answer == {"grantId": granted, "revoked": True}
+        assert _effective_grants(daemon) == []
