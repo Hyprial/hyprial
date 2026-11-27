@@ -320,8 +320,9 @@ def test_has_effective_grant_is_a_cheap_answer_and_treats_failure_as_no(world: d
 def test_the_startup_check_gives_up_once_its_budget_is_spent(world: dict[str, Any]) -> None:
     """A slow directory cannot hold daemon startup: past the budget the answer is "no".
 
-    The question reads its clock once for the deadline and once before each
-    org, so two told times stand for one whole question.
+    The question reads its clock once for the deadline, then before each org,
+    the listing and every document read; after the told times the clock keeps
+    telling the last one, so the second time stands for the whole question.
     """
 
     alice(world, OTHER_PORT).grant(org=ORG, port=OTHER_PORT, device="@members", name="relay")
@@ -345,12 +346,13 @@ def test_the_startup_check_gives_up_once_its_budget_is_spent(world: dict[str, An
 
 
 def ask(world: dict[str, Any], ticks: list[float]) -> bool:
-    """Ask the startup question with a clock that only tells the given times."""
+    """Ask the startup question with a clock that tells the given times, then stays at the last."""
 
     moments = iter(ticks)
+    last = ticks[-1]
     return has_effective_grant(
         orgfs=world["runtime"].facade, home=world["bob_home"], owner="bob", device_id="device-b",
-        now_ms=world["clock"], monotonic=lambda: next(moments),
+        now_ms=world["clock"], monotonic=lambda: next(moments, last),
     )
 
 
