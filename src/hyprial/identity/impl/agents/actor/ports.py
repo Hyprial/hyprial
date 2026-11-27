@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, TypeAlias
 
-from hyprial.kernel import CommandSink, EventSink, PortCommandRejected
+from hyprial.kernel import CommandSink, EventSink, PortCommandRejected, subject_cell_id
 from hyprial.identity.impl.agents.runtime.grants  import CapabilityGrant
 from hyprial.identity.impl.agents.runtime.secrets  import SecretGrant, SecretSource
 
@@ -475,6 +475,11 @@ class AgentProjection:
             return agent_id_for_entity_token(self.entity_token)
         except AgentError:
             return None
+
+    @property
+    def cell_id(self) -> str | None:
+        agent_id = self.agent_id
+        return subject_cell_id("agent", agent_id) if agent_id is not None else None
 
     def config_payload(self) -> object:
         return _thaw_json(self.config)

@@ -127,12 +127,12 @@ class CellObservationView:
         self._mounts.remove(actor)
         return None
 
-    def run_states(self, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None):
+    def run_states(self, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None, completed_stops=None):
         with self._lock:
             if self._closed:
                 return {}
             return run_states(self, interactive, blocks, now_ms=now_ms, monotonic_ms=monotonic_ms,
-                              cell_actors=cell_actors or self._cell_actors)
+                              cell_actors=cell_actors or self._cell_actors, completed_stops=completed_stops)
 
     def snapshot(self, actor: str) -> CellSnapshot | None:
         with self._lock:

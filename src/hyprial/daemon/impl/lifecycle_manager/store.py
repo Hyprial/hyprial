@@ -543,18 +543,24 @@ class _LifecycleStore:
         return tuple(str(row[0]) for row in rows)
 
     def read_start_failures(self):
-        """Project the latest reserved operation per actor; never retry from reads."""
+        failures, _ = self.read_runtime_receipts()
+        return failures
+
+    def read_runtime_receipts(self):
+        """Latest reservation per actor, so a subsequent start invalidates a stop."""
         with self._state_db.read() as db:
             rows = db.execute(
-                "SELECT request_json, error, updated_at FROM ("
+                "SELECT request_json, error, updated_at, state FROM ("
                 "SELECT *, ROW_NUMBER() OVER (PARTITION BY "
                 "json_extract(request_json, '$.target.actor') ORDER BY rowid DESC) AS position "
                 "FROM lifecycle_operations WHERE json_valid(request_json) = 1) WHERE position = 1 "
-                "AND state = 'compensated' AND error_code = 'HARNESS_START_FAILED' "
-                "AND json_extract(request_json, '$.kind') IN ('create', 'resume')"
+                "AND ((state = 'completed' AND json_extract(request_json, '$.kind') = 'deactivate') "
+                "OR (state = 'compensated' AND error_code = 'HARNESS_START_FAILED' "
+                "AND json_extract(request_json, '$.kind') IN ('create', 'resume')))"
             ).fetchall()
             result = {}
-            for payload, error, updated_at in rows:
+            stops = {}
+            for payload, error, updated_at, state in rows:
                 try:
                     operation = _operation_from_json(payload)
                 except LegacyLifecycleOperationError as legacy_error:
@@ -564,11 +570,13 @@ class _LifecycleStore:
                         legacy_error,
                     )
                     continue
-                if operation.observed_entity_token is not None:
+                if state == "completed":
+                    stops[operation.target.actor] = operation.operation_id
+                elif operation.observed_entity_token is not None:
                     result[operation.target.actor] = (
                         operation, str(error or ""), int(updated_at * 1000),
                     )
-            return result
+            return result, stops
 
     def result(self, operation_id: str) -> LifecycleResult:
         with self._state_db.read() as db:

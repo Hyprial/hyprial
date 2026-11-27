@@ -212,6 +212,7 @@ class StatePersistenceAuthority:
             raise TypeError("journal queries do not accept keyword arguments")
         arity = {
             JournalQuery.PENDING: 0,
+            JournalQuery.RUNTIME_RECEIPTS: 0,
             JournalQuery.START_FAILURES: 0,
             JournalQuery.LOAD: 1,
             JournalQuery.STATE: 1,

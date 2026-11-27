@@ -584,6 +584,9 @@ class LifecycleCoordinator:
         with self._condition:
             return self._last_error
 
+    def read_runtime_receipts(self):
+        return self._store.read_runtime_receipts()
+
     def read_start_failures(self):
         """Read compensated startup failures from the existing lifecycle journal."""
         return self._store.read_start_failures()

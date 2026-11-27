@@ -2,7 +2,7 @@
 from dataclasses import replace
 
 from hyprial.daemon.impl.cells.observability.model import RunFacts
-from .cell_states import cell_actor_facts
+from .member_runtime import MemberObservations
 from .mount import CellActorMount
 
 
@@ -28,7 +28,7 @@ def operation_fence(view, actor):
     return entity.entity_token, key, runtime
 
 
-def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None):
+def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=None, completed_stops=None):
     if cell_actors is not None and not isinstance(cell_actors, CellActorMount):
         cell_actors = CellActorMount(cell_actors)
     actor_source = cell_actors is not None
@@ -40,6 +40,7 @@ def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=N
         view._coordinator.read_run_operations()
         if not actor_source and view._coordinator is not None else ()
     )
+    observations = MemberObservations(view._harnesses, completed_stops)
     inputs = {}
     entities = tuple(view._agents.read_agents())
     for entity in entities:
@@ -52,7 +53,9 @@ def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=N
             continue
         facts = RunFacts()
         if actor_source:
-            facts = cell_actor_facts((entity,), cell_actors).get(entity.uri, facts)
+            cell_id = entity.cell_id
+            snapshot = cell_actors.snapshot(cell_id) if cell_id is not None else None
+            facts = observations.read(snapshot, entity, binding)
             if cell.lifecycle is not None and facts.source_epoch == "cell-unavailable":
                 facts = replace(facts, source_epoch=f"{cell.lifecycle.epoch}:unavailable")
         elif binding is not None:
@@ -63,7 +66,7 @@ def run_states(view, interactive, blocks, *, now_ms, monotonic_ms, cell_actors=N
         # Source owners do not share a transaction. Never adopt a changed mount.
         after = (view._refresh(entity.uri, actor_source=True)
                  if actor_source else view._refresh(entity.uri))
-        if after != cell:
+        if after != cell or (actor_source and cell_id and cell_actors.snapshot(cell_id) != snapshot):
             inputs[entity.uri] = (cell.diagnostic_incarnation, RunFacts(conflict=True),
                                   view._policies.for_actor(entity.uri))
             continue  # The old mount's positive exit/operation is no longer current.
