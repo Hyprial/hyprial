@@ -22,7 +22,7 @@
 #   effective grant still answers yes, but without one the answer is "do not
 #   start". Too many grantors or a spent deadline is "unknown" for the whole
 #   question. Each limit is said once per call with the fixed event
-#   service.grant.scan-limited (org, phase "startup", reason, and grantor
+#   service.grant.scan_limited (org, phase "startup", reason, and grantor
 #   when one grantor was limited), nothing else.
 """The startup question: does any org hold an effective grant for this device?"""
 
@@ -48,7 +48,7 @@ from hyprial.daemon.impl.service_grants.queries import (
 from hyprial.identity import read_device_record
 
 STARTUP_BUDGET_SECONDS = 0.2
-SCAN_LIMITED_EVENT = "service.grant.scan-limited"
+SCAN_LIMITED_EVENT = "service.grant.scan_limited"
 
 
 def has_effective_grant(

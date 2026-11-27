@@ -56,7 +56,7 @@
 #   MAX_ORG_GRANTORS grantor directories, or PERIODIC_BUDGET_SECONDS spent, is
 #   "unknown" for the whole org: the previous answer stays, or nothing is
 #   derived and nothing withdrawn when there is none, and the same fingerprint
-#   is not scanned again until it changes. service.grant.scan-limited (org,
+#   is not scanned again until it changes. service.grant.scan_limited (org,
 #   phase "periodic", reason, and grantor for a grantor's limit) is emitted
 #   when a limit starts or its reason changes, not on every tick it lasts.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
