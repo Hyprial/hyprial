@@ -154,7 +154,9 @@ _RECORD_KEYS = frozenset(
 _OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt", "deviceUid"})
 _ENCRYPTION_RECORD_KEYS = ("encryptionKeyId", "encryptionPublicKey")
 _MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
-_ENCRYPTION_KEY_ID = re.compile(r"x25519:[0-9a-f]{32}\Z")
+_ENCRYPTION_KEY_ID_PREFIX = "x25519:"
+_ENCRYPTION_KEY_ID_HEX_DIGITS = 32
+_LOWER_HEX = "0123456789abcdef"
 _ENCRYPTION_PUBLIC_BYTES = 32
 _X25519_P = 2**255 - 19
 _X25519_KEEP = (1 << 255) - 1
@@ -734,12 +736,14 @@ def _optional_timestamp(value: object, label: str) -> str | None:
 def encryption_key_digest(public_key: str) -> str:
     """The key id the local encryption key store derives from a public key."""
 
-    return "x25519:" + hashlib.sha256(base64.b64decode(public_key, validate=True)).hexdigest()[:32]
+    digest = hashlib.sha256(base64.b64decode(public_key, validate=True)).hexdigest()
+    return _ENCRYPTION_KEY_ID_PREFIX + digest[:_ENCRYPTION_KEY_ID_HEX_DIGITS]
 
 
 def _encryption_key_id(value: object) -> str:
     text = _non_empty_string(value, "encryptionKeyId")
-    if _ENCRYPTION_KEY_ID.fullmatch(text) is None:
+    digest = text.removeprefix(_ENCRYPTION_KEY_ID_PREFIX)
+    if digest == text or len(digest) != _ENCRYPTION_KEY_ID_HEX_DIGITS or digest.strip(_LOWER_HEX):
         raise ValueError("encryptionKeyId must be 'x25519:' followed by 32 lowercase hex digits")
     return text
 
