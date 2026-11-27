@@ -8,7 +8,9 @@
 #   lease has lapsed has no trustworthy rows. Both fail closed.
 # - Only a canonical nodekey is accepted. The Go store validates the same
 #   shape before a row is kept, so anything else here means the observation
-#   is not what the contract says, and it is not pushed to the sidecar.
+#   is not what the contract says, and it is not pushed to the sidecar. The
+#   pattern and the zero key are the forwarding policy's, which checks the
+#   same shape before an expose.
 # - A reason is a fixed value, never text from what failed (S4-py fix,
 #   2026-11-27, coordinator ruling). The org's tailnet binding that cannot
 #   be resolved has its own, TAILNET_UNRESOLVED, because it used to be
@@ -30,9 +32,9 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Mapping
 
+from hyprial.daemon.impl.forwarding.policy import CANONICAL_NODEKEY, ZERO_NODEKEY
 from hyprial.daemon.impl.service_grants.models import bare_owner_or_none
 
 ROSTER_UNAVAILABLE = "roster-unavailable"
@@ -42,10 +44,6 @@ KEY_MALFORMED = "key-malformed"
 TAILNET_UNRESOLVED = "tailnet-unresolved"
 NOT_ORG_MEMBER = "not-org-member"
 DEVICES_UNAVAILABLE = "org-devices-unavailable"
-
-_NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
-_ZERO_NODEKEY = "nodekey:" + "0" * 64
-
 
 def tailnet_rows(observation: Mapping[str, Any] | None, tailnet_id: str) -> list[Mapping[str, Any]] | None:
     """Active member rows of ``tailnet_id``; ``None`` when the roster is unusable.
@@ -84,7 +82,7 @@ def member_key(
     if not isinstance(by_server, Mapping):
         return None
     key = by_server.get(server_public)
-    if not isinstance(key, str) or key == _ZERO_NODEKEY:
+    if not isinstance(key, str) or key == ZERO_NODEKEY:
         return None
     return key
 
@@ -97,7 +95,7 @@ def member_keys(rows: list[Mapping[str, Any]], *, server_public: str) -> tuple[s
         if row.get("state") != "active":
             continue
         key = member_key(row, server_public)
-        if key is not None and _NODEKEY.fullmatch(key):
+        if key is not None and CANONICAL_NODEKEY.fullmatch(key):
             keys.append(key)
     return tuple(keys)
 
@@ -137,7 +135,7 @@ def admission_keys(
         key = member_key(row, server_public)
         if key is None:
             unresolved.append((recipient, MEMBER_WITHOUT_LOCAL_KEY))
-        elif not _NODEKEY.fullmatch(key):
+        elif not CANONICAL_NODEKEY.fullmatch(key):
             unresolved.append((recipient, KEY_MALFORMED))
         else:
             resolved.append(key)

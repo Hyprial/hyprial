@@ -35,7 +35,7 @@ WRAP_DOMAIN = b"hyprial/service-grant/wrap/v1"
 HEADER_FIELDS = frozenset({"v", "alg", "wrap", "org", "grantId", "service", "recipient", "encryptionKeyId"})
 ARGUMENT = ipc_errors.INVALID_ARGUMENT
 REFUSED = ipc_errors.PAYLOAD_INVALID
-_GRANT_ID = re.compile(r"sg\.[a-z2-7]{26}\Z")
+GRANT_ID_PATTERN = re.compile(r"sg\.[a-z2-7]{26}\Z")
 _KEY_ID = re.compile(r"x25519:[0-9a-f]{32}\Z")
 
 
@@ -59,6 +59,17 @@ def _owner(value: object) -> bool:
     return _identifier(value) and ":" not in value
 
 
+def service_grant_path_segment(value: object) -> bool:
+    """Whether ``value`` passes the header's owner rule, the rule a grant path segment follows.
+
+    The owner rule is the identifier rule without ":"; it is also what a
+    grant document's path segments (owner, document name) and the device ids
+    inside it must satisfy, so that what the directory stores and what the
+    envelope seals never disagree.
+    """
+    return _owner(value)
+
+
 def _port(value: object) -> bool:
     return type(value) is int and 0 < value < 65536
 
@@ -69,7 +80,7 @@ def _valid(header: object) -> bool:
     service, recipient = header["service"], header["recipient"]
     return (type(header["v"]) is int and header["v"] == 1 and header["alg"] == "A256GCM"
             and header["wrap"] == "X25519-HKDF-SHA256-A256GCM" and _identifier(header["org"])
-            and type(header["grantId"]) is str and _GRANT_ID.match(header["grantId"]) is not None
+            and type(header["grantId"]) is str and GRANT_ID_PATTERN.match(header["grantId"]) is not None
             and type(service) is dict and service.keys() == {"owner", "deviceId", "port"}
             and _owner(service["owner"]) and _identifier(service["deviceId"]) and _port(service["port"])
             and type(recipient) is dict and recipient.keys() == {"owner", "deviceId"}

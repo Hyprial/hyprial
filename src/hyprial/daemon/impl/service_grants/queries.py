@@ -32,7 +32,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-from hyprial.daemon.impl.org.network.directory import OrgFsDirectoryStore
+from hyprial.daemon.impl.org.network.directory import SERVICE_GRANTS_DIR, OrgFsDirectoryStore
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.identity import org_space_name
 
@@ -48,7 +48,6 @@ from .models import (
 MAX_GRANTOR_GRANT_DOCUMENTS = 256
 GRANTOR_READ_BYTES_LIMIT = 512 * 1024
 MAX_ORG_GRANTORS = 1024
-SERVICE_GRANTS_DIR = "directory/service-grants"
 SCAN_DOCUMENTS = "documents"
 SCAN_BYTES = "bytes"
 SCAN_GRANTORS = "grantors"

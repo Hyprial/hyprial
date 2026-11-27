@@ -77,8 +77,8 @@ ADMISSION_ALLOW = "allow"
 ADMISSION_KEYS = "keys"
 MAX_ADMISSION_KEYS = 4096
 _ADMISSION_MODES = frozenset({ADMISSION_ALLOW, ADMISSION_KEYS})
-_CANONICAL_NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
-_ZERO_NODEKEY = "nodekey:" + "0" * 64
+CANONICAL_NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
+ZERO_NODEKEY = "nodekey:" + "0" * 64
 
 
 def normalize_admission(admission: object, keys: object) -> tuple[str, list[str]]:
@@ -101,8 +101,8 @@ def normalize_admission(admission: object, keys: object) -> tuple[str, list[str]
     for entry in keys:
         if (
             not isinstance(entry, str)
-            or entry == _ZERO_NODEKEY
-            or not _CANONICAL_NODEKEY.fullmatch(entry)
+            or entry == ZERO_NODEKEY
+            or not CANONICAL_NODEKEY.fullmatch(entry)
         ):
             raise ForwardingSidecarError("exposure admission keys must be canonical nodekeys")
     if len(set(keys)) != len(keys):

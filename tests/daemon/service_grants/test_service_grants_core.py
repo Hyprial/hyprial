@@ -167,11 +167,13 @@ def harness(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
 
 def test_identity_facade_exports_only_expected_sealed_envelope_surface() -> None:
-    """Identity facade exposes ``SealedEnvelope`` with only ``seal_service_grant`` and ``ServiceGrantError``."""
+    """Identity facade exposes ``SealedEnvelope`` with sealing, its error, and the grant identifier rules."""
 
     assert identity.SealedEnvelope is SealedEnvelope
     public = {name for name in dir(SealedEnvelope) if not name.startswith("_")}
-    assert public == {"seal_service_grant", "ServiceGrantError"}
+    assert public == {
+        "seal_service_grant", "ServiceGrantError", "GRANT_ID_PATTERN", "service_grant_path_segment",
+    }
 
 
 def test_grant_refuses_unexposed_port_unknown_recipient_members_with_credential_and_missing_key(

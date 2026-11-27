@@ -8,9 +8,10 @@
 # - Grant ids use "sg." + 26 lowercase RFC 4648 base32 characters (130 random
 #   bits), matching S2's sealed-envelope grantId validator.
 # - S3 fix (2026-11-26, critic B1, S1, S6, N4, N5): owner and device identifiers
-#   follow S2's identifier rule (at most 256 characters, no leading "@", no
-#   surrogates) on top of the path-segment checks, because identity does not
-#   export that rule. service.name reuses service-connect's service-name pattern
+#   must be trimmed and pass identity's grant path segment rule
+#   (SealedEnvelope.service_grant_path_segment, the sealed header's owner
+#   rule), called and not copied (integration fix, 2026-11-27); the grant id
+#   pattern is identity's too. service.name reuses service-connect's service-name pattern
 #   by import, not by copy. service.note is at most 512 characters with no
 #   control or surrogate characters. The reader applies the same rules.
 # - credential is validated against the S2 envelope's fixed key sets and scalar
@@ -31,7 +32,6 @@
 from __future__ import annotations
 
 import base64
-import re
 import secrets
 import unicodedata
 from collections.abc import Mapping
@@ -39,13 +39,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from hyprial.daemon.impl.service_connect.models import SERVICE_NAME_PATTERN
-from hyprial.identity import directory_owner_principal, org_space_name
+from hyprial.identity import SealedEnvelope, directory_owner_principal, org_space_name
 from hyprial.kernel import parse_user_uri
 
 SCHEMA_VERSION = 1
 ALL_MEMBERS = "@members"
 GRANT_PROTOCOLS = frozenset({"tcp", "http"})
-GRANT_ID_PATTERN = re.compile(r"sg\.[a-z2-7]{26}\Z")
+GRANT_ID_PATTERN = SealedEnvelope.GRANT_ID_PATTERN
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -63,7 +63,6 @@ _OPTIONAL_KEYS = frozenset({"updatedAtMs"})
 _SERVICE_KEYS = frozenset({"deviceId", "port", "name", "protocol", "note"})
 _RECIPIENT_KEYS = frozenset({"owner", "deviceId"})
 NOTE_MAX_CHARS = 512
-IDENTIFIER_MAX_CHARS = 256
 _ENVELOPE_HEADER_TYPES: dict[str, type] = {
     "v": int,
     "alg": str,
@@ -86,17 +85,12 @@ _ENVELOPE_PAYLOAD_TYPES: dict[str, type] = {"nonce": str, "ciphertext": str}
 
 
 def _safe_segment(value: object, label: str) -> str:
+    """``value`` when identity's grant path segment rule accepts it and it is trimmed."""
+
     if type(value) is not str or not value or value.strip() != value:
         raise ValueError(f"{label} must be a non-empty trimmed string")
-    if (
-        len(value) > IDENTIFIER_MAX_CHARS
-        or value in {".", ".."}
-        or value.startswith("@")
-        or any(ch in value for ch in ("/", "\\", ":"))
-    ):
+    if not SealedEnvelope.service_grant_path_segment(value):
         raise ValueError(f"{label} is not a safe identifier")
-    if any(ord(ch) < 32 or ord(ch) == 127 or 0xD800 <= ord(ch) <= 0xDFFF for ch in value):
-        raise ValueError(f"{label} contains control or surrogate characters")
     return value
 
 
@@ -447,7 +441,6 @@ __all__ = [
     "GRANT_ID_PATTERN",
     "GRANT_PROTOCOLS",
     "GrantRecipient",
-    "IDENTIFIER_MAX_CHARS",
     "NOTE_MAX_CHARS",
     "SCHEMA_VERSION",
     "SERVICE_NAME_PATTERN",

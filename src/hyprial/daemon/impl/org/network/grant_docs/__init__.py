@@ -12,6 +12,10 @@
 #   False, not an error, so a cleanup that races another cleanup is harmless.
 # - service_grant_ids lists the names of one owner's documents from one
 #   listing, without reading any of them: it is what a document count costs.
+# - A path's owner and document name must pass identity's grant path segment
+#   rule (SealedEnvelope.service_grant_path_segment), the rule the domain
+#   models apply, so the store never writes a path the envelope would refuse.
+#   SERVICE_GRANTS_DIR is defined here and nowhere else.
 """Owner-scoped service-grant documents in an org directory space."""
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
-from hyprial.identity import directory_owner_principal, protected_directory_doc_id
+from hyprial.identity import SealedEnvelope, directory_owner_principal, protected_directory_doc_id
 from hyprial.kernel import parse_user_uri
 
 SERVICE_GRANTS_DIR = "directory/service-grants"
@@ -146,16 +150,14 @@ class ServiceGrantDocuments:
     @staticmethod
     def _bare_owner_segment(owner: str) -> str:
         bare = parse_user_uri(directory_owner_principal(owner))
-        if not bare or bare in {".", ".."} or any(ch in bare for ch in ("/", "\\", ":")):
+        if not SealedEnvelope.service_grant_path_segment(bare):
             raise ValueError("service grant owner is not a safe path segment")
         return bare
 
     @classmethod
     def _service_grant_path(cls, owner: str, grant_id: str) -> tuple[str, str]:
         bare = cls._bare_owner_segment(owner)
-        if not isinstance(grant_id, str) or not grant_id or grant_id in {".", ".."} or any(
-            ch in grant_id for ch in ("/", "\\", ":")
-        ):
+        if not SealedEnvelope.service_grant_path_segment(grant_id):
             raise ValueError("service grant id is not a safe path segment")
         return bare, f"{SERVICE_GRANTS_DIR}/{bare}/{grant_id}.json"
 
