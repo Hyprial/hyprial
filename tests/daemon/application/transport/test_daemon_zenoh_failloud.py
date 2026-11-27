@@ -11,6 +11,16 @@ verifies the documented guarantees:
 The disposable HOME cannot address the real user's supervisor domain; doctor
 reports that service refusal separately. Teardown stops only this daemon and
 removes only exact isolated unit paths without invoking a service manager.
+
+The executable is looked up by install scheme. ``sysconfig``'s ``venv`` scheme
+names the scripts directory of a virtual environment for the running platform
+(``Scripts`` on Windows, ``bin`` elsewhere), so the test holds no platform
+branch of its own. The base is the repository's ``.venv``, passed in explicitly
+rather than taken from the running interpreter's ``sys.prefix``: a system
+interpreter can keep its scripts directory elsewhere under its prefix, and a
+path derived from ``sys.prefix`` then names a directory that does not exist.
+The file name comes from ``hyprial.kernel.executable_filename``, which is where
+the ``.exe`` suffix of Windows is decided.
 """
 
 from __future__ import annotations
@@ -21,12 +31,18 @@ from tests.support.runtime.environment import isolated_environment, remove_isola
 import json
 import socket
 import subprocess
+import sysconfig
 import tempfile
 import time
 from pathlib import Path
 
+from hyprial.kernel import executable_filename
+
 ROOT = Path(__file__).resolve().parents[4]
-HYPRIAL = ROOT / ".venv" / "bin" / "hyprial"
+VENV = ROOT / ".venv"
+HYPRIAL = Path(
+    sysconfig.get_path("scripts", "venv", vars={"base": str(VENV), "platbase": str(VENV)})
+) / executable_filename("hyprial")
 
 if not HYPRIAL.exists():
     # Contract tests must RUN, not silently skip: a skip here would mean the
