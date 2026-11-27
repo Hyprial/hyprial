@@ -60,7 +60,7 @@ from hyprial.daemon.impl.service_grants.enforcement.enforcer import (
 from hyprial.daemon.impl.service_grants.enforcement.enforcer import (
     DEFAULT_UNEXPOSE_WAIT_SECONDS as UNEXPOSE_WAIT,
 )
-from hyprial.kernel import DaemonRequestError
+from hyprial.kernel import DaemonRequestError, ipc_errors
 from hyprial.daemon.impl.orgfs.docs import LocalOrgFs
 from tests.daemon.service_grants.enforcement._support import (
     ALICE_NODE,
@@ -376,6 +376,57 @@ def test_a_tailnet_binding_that_cannot_be_resolved_is_reported_for_each_grant_it
         (fields["grantId"], fields["reason"]) for _level, fields in daemon.logged(KEY_UNAVAILABLE)
     ) == sorted([(bob, TAILNET_UNRESOLVED), (carol, TAILNET_UNRESOLVED)])
     assert _grant_documents(daemon, ALICE_NODE.owner) == sorted([f"{bob}.json", f"{carol}.json"])
+
+
+LISTING_REFUSED = "org directory unavailable while attempting to"
+
+
+@pytest.mark.parametrize(
+    ("failure", "listing_message"),
+    [
+        pytest.param("orgs", "list orgs", id="the-org-listing-cannot-be-read"),
+        pytest.param("grants", "", id="one-orgs-grant-directory-cannot-be-read"),
+        pytest.param("ambiguous", "", id="the-orgs-directory-is-ambiguous"),
+    ],
+)
+def test_the_grants_listing_alone_does_not_tell_an_unreadable_directory_from_no_grant(
+    make_daemon: Any, failure: str, listing_message: str
+) -> None:
+    """``service.grants`` without an org answers an empty list, not an error.
+
+    The migration guide sends the operator to the log, and this is why: asked
+    for every org, the listing skips one whose grant directory cannot be read
+    and returns a list without it, which reads exactly like "nobody was
+    granted". Asked for that one org, it refuses. Both are the service's own
+    behaviour and are not changed here; what is held is that the event is
+    there to tell the two apart when the listing is not.
+    """
+
+    daemon = make_daemon()
+    grant_id = _grant(daemon, BOB_NODE)
+    assert [item["grantId"] for item in daemon.app.handle("service.grants", {})["granted"]] == [
+        grant_id
+    ]
+
+    _break(daemon, failure)
+    _derive_again(daemon)
+
+    assert daemon.logged(DIRECTORY_UNAVAILABLE)
+    if listing_message:
+        with pytest.raises(DaemonRequestError) as refused:
+            daemon.app.handle("service.grants", {})
+        assert (refused.value.code, str(refused.value)) == (
+            ipc_errors.SERVICE_UNAVAILABLE,
+            f"{LISTING_REFUSED} {listing_message}",
+        )
+    else:
+        assert daemon.app.handle("service.grants", {}) == {"granted": [], "received": []}
+    with pytest.raises(DaemonRequestError) as refused:
+        daemon.app.handle("service.grants", {"org": ORG})
+    assert (refused.value.code, str(refused.value)) == (
+        ipc_errors.SERVICE_UNAVAILABLE,
+        f"{LISTING_REFUSED} list service grants",
+    )
 
 
 OTHER_PORT = PORT + 1
