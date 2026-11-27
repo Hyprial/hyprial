@@ -110,7 +110,7 @@ def test_the_registered_lifecycle_names_and_the_family_stays_open() -> None:
     )
     assert "agent.start" in METHOD_REGISTRY
     assert "agent" not in MIGRATED_FAMILIES
-    assert "agent.get" not in METHOD_REGISTRY
+    assert "agent.grants" not in METHOD_REGISTRY
     for name in METHOD_REGISTRY.names:
         if name in lifecycle_catalog.AGENT_LIFECYCLE_METHODS:
             binding = METHOD_REGISTRY.get(name)

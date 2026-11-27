@@ -178,7 +178,7 @@ class MethodRegistrationTests(unittest.TestCase):
         with self.assertRaises(DaemonRequestError) as retired:
             handle(app, "work.unregistered", {})
         self.assertEqual(retired.exception.code, ipc_errors.METHOD_NOT_FOUND)
-        self.assertEqual(handle(app, "agent.get", {}), ("legacy-agent", "agent.get"))
+        self.assertEqual(handle(app, "agent.grants", {}), ("legacy-agent", "agent.grants"))
         with self.assertRaises(DaemonRequestError) as unlisted:
             handle(app, "agent.unregistered", {})
         self.assertEqual(unlisted.exception.code, ipc_errors.METHOD_NOT_FOUND)

@@ -79,6 +79,10 @@ def test_the_two_reads_are_declared_by_exact_name_and_the_family_stays_open() ->
     assert "agent.secret.list" in METHOD_REGISTRY
     assert agent_catalog.PARTIAL_MIGRATED_METHODS == frozenset(
         {
+            "agent.ensure-home",
+            "agent.get",
+            "agent.readiness",
+            "agent.runtime-context",
             "agent.list",
             "agent.resolve",
             "agent.secret.list",
@@ -120,7 +124,7 @@ def test_the_two_reads_are_declared_by_exact_name_and_the_family_stays_open() ->
         "agent.provider.revoke",
         "agent.provider.status",
     }
-    assert METHOD_REGISTRY.get("agent.get") is None
+    assert METHOD_REGISTRY.get("agent.grants") is None
     for name in ("agent.secret.grant", "agent.secret.provider-write"):
         assert METHOD_REGISTRY.get(name).spec.mutates is True
 
@@ -337,7 +341,7 @@ def test_the_declared_audience_matches_the_legacy_router_gate(
     assert refused.value.code == ipc_errors.CALLER_NOT_AUTHORIZED
 
 
-def test_an_unmigrated_agent_method_still_routes_through_the_legacy_branch(
+def test_single_agent_lookup_still_works_through_daemon_dispatch(
     app: DaemonApplication,
 ) -> None:
     app.agents.create("alpha")

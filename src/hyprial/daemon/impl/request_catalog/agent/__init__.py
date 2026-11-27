@@ -60,12 +60,17 @@ from hyprial.kernel import (
 
 from .cell import CELL_BINDINGS
 from .entity import agent_status_row, translated_agent_errors
+from .home_preparation import BINDINGS as HOME_PREPARATION_BINDINGS
 from .harness_args import BINDINGS as HARNESS_ARGS_BINDINGS
 
 JsonObject = dict[str, Any]
 
 PARTIAL_MIGRATED_METHODS = frozenset(
     {
+        "agent.ensure-home",
+        "agent.get",
+        "agent.readiness",
+        "agent.runtime-context",
         "agent.list",
         "agent.resolve",
         "agent.secret.list",
@@ -328,6 +333,7 @@ AGENT_BINDINGS = (
     (AGENT_SECRET_LIST_SPEC, agent_secret_list, _secret_list_param_error),
     *HARNESS_ARGS_BINDINGS,
     *CELL_BINDINGS,
+    *HOME_PREPARATION_BINDINGS,
 )
 
 __all__ = [

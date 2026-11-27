@@ -73,6 +73,8 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/request_catalog/agent/examples/__init__.py": ("resident", ("new-module: M-03 MethodExampleSet declarations; package since the UUID merge (1000-line and seven-direct-file gates)",)),
     "daemon/impl/request_catalog/agent/examples/relations.py": ("resident", ("new-module: M-03 relations MethodExampleSet declarations split from examples (1000-line gate)",)),
     "daemon/impl/request_catalog/agent/entity.py": ("resident", ("new-module: GUI v1 agents producer-backed entity schemas; the S2 merge folded the legacy exception translation here from legacy_boundary.py (seven-direct-file gate)",)),
+    "daemon/impl/request_catalog/agent/home_preparation/__init__.py": ("resident", ("P02 agent lookup, readiness and local home preparation IPC bindings",)),
+    "daemon/impl/request_catalog/agent/home_preparation/schemas.py": ("resident", ("P02 agent lookup, readiness and local home preparation IPC schemas",)),
     "daemon/impl/request_catalog/agent/legacy_boundary.py": ("resident", ("new-module: GUI v1 agents legacy exception translation; folded into entity.py by the S2 merge (seven-direct-file gate), kept as a historical row",)),
     "daemon/impl/request_catalog/agent/relations.py": ("resident", ("new-module: GUI v1 agents relations read methods (infra-ops/gui-agents-relations-methods)",)),
     "daemon/impl/request_catalog/agent/lifecycle.py": ("resident", ("new-module: GUI v1 agents create/stop/start MethodSpec bindings",)),
