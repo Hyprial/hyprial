@@ -173,14 +173,38 @@ class _CarrierSettlementMixin(CarrierRecoveryMixin):
                 else:
                     self._turn_reconcile_deadline(state, turn)
 
+        def _settlement_not_before(self) -> dict[str, float]:
+            """Retry times this poll thread chose, keyed by delivery id.
+
+            ``CarrierSettlementDeferred`` reaches the projection only once the
+            actor applies it, and the next poll step can run first.  The poll
+            thread is the only settlement driver, so the retry time it just
+            decided fences its own next attempt until the projection agrees.
+            """
+
+            due = getattr(self, "_carrier_settlement_due", None)
+            if due is None:
+                due = self._carrier_settlement_due = {}
+            return due
+
         def _settle_finals(self) -> None:
             now = time.monotonic()
+            snapshots = self._carrier_runtime.snapshots()
+            due = self._settlement_not_before()
+            live = {state.delivery.delivery_id for state in snapshots}
+            for message_id in tuple(due):
+                if message_id not in live:
+                    due.pop(message_id, None)
             ready = tuple(
                 state
-                for state in self._carrier_runtime.snapshots()
+                for state in snapshots
                 if state.stage == FINAL_OBSERVED
                 and state.final_output is not None
-                and state.next_settlement_at <= now
+                and max(
+                    state.next_settlement_at,
+                    due.get(state.delivery.delivery_id, 0.0),
+                )
+                <= now
                 and state.delivery.delivery_id not in self._carrier_settled_pending
             )
             for state in ready:
@@ -240,8 +264,27 @@ class _CarrierSettlementMixin(CarrierRecoveryMixin):
                 return
             self._carrier_settled_pending.add(message_id)
             self._log("info", "worker.carrier.settlement.kept", state=state)
+            self._release_turn_client(state)
+
+        def _release_turn_client(self, state: CarrierDeliverySnapshot) -> None:
+            """Drop the pump's turn client and hand it the final the carrier holds.
+
+            ``SupplyFinalRequested`` is derived from a FINAL_OBSERVED projection
+            row, so it can never reach a client this settlement already
+            dropped.  When the actor publishes FINAL_OBSERVED between the
+            reconcile and ``_settle_finals``, the supply would otherwise be
+            lost and ``receive_response`` would keep retrying a failing read:
+            the pump stays in flight and ``stop()`` cannot join it.
+            """
+
             with self._carrier_io_lock:
-                self._carrier_clients.pop(message_id, None)
+                client = self._carrier_clients.pop(state.delivery.delivery_id, None)
+            if (
+                client is not None
+                and state.turn_id is not None
+                and state.final_output is not None
+            ):
+                client.supply_reconciled_final(state.turn_id, state.final_output)
 
         def _report_turn_ended(self, turn_id: str, status: str, delivery_id: str) -> None:
             if turn_id not in self._carrier_reported_ended:
@@ -362,8 +405,7 @@ class _CarrierSettlementMixin(CarrierRecoveryMixin):
             if outcome is CarrierFactOutcome.DROPPED:
                 return
             self._carrier_settled_pending.add(message_id)
-            with self._carrier_io_lock:
-                self._carrier_clients.pop(state.delivery.delivery_id, None)
+            self._release_turn_client(state)
 
         def _settle_elsewhere(
             self,
@@ -401,8 +443,7 @@ class _CarrierSettlementMixin(CarrierRecoveryMixin):
             if outcome is CarrierFactOutcome.DROPPED:
                 return
             self._carrier_settled_pending.add(message_id)
-            with self._carrier_io_lock:
-                self._carrier_clients.pop(message_id, None)
+            self._release_turn_client(state)
 
         def _defer_settlement(
             self,
@@ -424,6 +465,9 @@ class _CarrierSettlementMixin(CarrierRecoveryMixin):
                 ),
             )
             next_settlement_at = time.monotonic() + delay
+            self._settlement_not_before()[state.delivery.delivery_id] = (
+                next_settlement_at
+            )
             self._submit_carrier_fact(
                 CarrierSettlementDeferred(
                     generation=state.generation,
