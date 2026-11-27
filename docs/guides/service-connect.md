@@ -34,9 +34,14 @@ service intents, nor an effective service grant addressed to this device, it
 starts no service-connect worker or polling cadence. A grant-only recipient is
 started without the record; see
 [Service grants: what the recipient gets](service-grants-recipient.md).
-Installing the record later, or receiving a first grant after startup, requires
-`hyprial daemon restart` or any `hyprial org service ...` call to activate the
-manager; the daemon does not poll the absent file.
+A first grant that arrives after startup activates the manager on its own:
+while the manager is not running, the daemon rechecks for an effective grant
+addressed to this device about once every 60 seconds. Installing the record
+later is not detected that way; it requires `hyprial daemon restart` or a
+`hyprial org service list`, `guide`, `connect` or `disconnect` call, and the
+daemon does not poll the absent file. Either of those calls also activates the
+manager at once for a grant-only recipient. The grant commands (`grant`,
+`revoke`, `grants`) do not start it.
 
 The source-only host package is generic TCP, not a sub2api-specific image:
 
