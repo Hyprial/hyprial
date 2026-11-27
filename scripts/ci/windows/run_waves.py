@@ -17,6 +17,31 @@ subprocess path so self-tests exercise the wrapper directly.
 Decision (2026-11-27, tier 2 full suite).  The manifest key collectionSkippedFiles
 lists, with a count, every planned file reported only through a collection-time
 module skip (the four-condition rule in wave_state.py), so the summary can show it.
+
+Decision (2026-11-27, tier 2 full suite).  A repeated nodeid in the XML of one
+attempt is still a hard red that nothing offsets, but it no longer stops the
+waves after it.  Stopping only lost evidence: every later wave of the shard went
+unrun while the status was already red.  The attempt that raised is recorded as
+unreported-files with the raised text in details, its files stay pending for the
+next attempt under the ordinary rerun rule, and the wave loop goes on to the
+next wave after the last attempt.
+
+The manifest keeps the two kinds of duplicate apart.  duplicateRuns lists every
+attempt that raised inside the wave loop, each as wave, run and the raised text.
+duplicateUnion holds what the final read of all attempt XMLs together raised.
+duplicateResult is the first entry of duplicateRuns, else duplicateUnion, so a
+union duplicate cannot hide a run-time one; summarize.py rejects each of the three.
+
+When the final read raises, the strict skip checks that follow it are skipped.
+They only ever turn a passed status into failed, and the status cannot be passed
+at that point: the raise itself sets it to unreported-files unless it is already
+a hard state.  That is the state in which they are skipped, and it is a hard
+red whatever they would have found.  The files still pending are reported
+through unreported.xml as in every other case.  The assignment is a guard, not
+a change of outcome: a wave is rerun only while one of its files is unfinished,
+and the attempt that leaves a file unfinished is always a hard red, so whenever
+the final read raises the status is already a hard red.  It is written down as
+code because that order is a property of the rerun rule, not of this branch.
 """
 
 from __future__ import annotations
@@ -602,7 +627,8 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     leaks: list[dict[str, Any]] = []
     leaked_processes: list[dict[str, Any]] = []
     final_status = "passed"
-    duplicate_error: str | None = None
+    duplicate_runs: list[dict[str, Any]] = []
+    duplicate_union: str | None = None
     stop_all = False
     for wave_number, wave_files in enumerate(waves, start=1):
         if time.monotonic() >= job_deadline:
@@ -644,9 +670,11 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                     strict_skips=strict_skips,
                 )
             except ValueError as error:
-                duplicate_error = str(error)
-                if not duplicate_error.startswith("duplicate-result:"):
+                if not str(error).startswith("duplicate-result:"):
                     raise
+                duplicate_runs.append(
+                    {"wave": wave_number, "run": attempt, "result": str(error)}
+                )
                 final_status = "unreported-files"
                 runs.append(
                     {
@@ -657,11 +685,10 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
                         "returncode": returncode,
                         "junit": str(junit),
                         "duration": round(time.monotonic() - started, 3),
-                        "details": [duplicate_error],
+                        "details": [str(error)],
                     }
                 )
-                stop_all = True
-                break
+                continue
             for file_name, nodeids in outcome.nodeids_by_file.items():
                 completed_nodeids_by_file.setdefault(file_name, set()).update(nodeids)
             completed_files.update(outcome.reported_files - outcome.partial_files)
@@ -701,7 +728,10 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if union_junit.other_skips and final_status == "passed":
                 final_status = "failed"
     except ValueError as error:
-        duplicate_error = str(error)
+        duplicate_union = str(error)
+        if final_status not in HARD_STATES:
+            final_status = "unreported-files"
+    duplicate_result = duplicate_runs[0]["result"] if duplicate_runs else duplicate_union
     if pending:
         if final_status not in HARD_STATES:
             final_status = "unreported-files"
@@ -712,7 +742,9 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         "aclProbe": bool(getattr(args, "acl_probe", False)),
         "status": final_status,
         "offsettable": is_offsettable(final_status),
-        "duplicateResult": duplicate_error,
+        "duplicateResult": duplicate_result,
+        "duplicateRuns": duplicate_runs,
+        "duplicateUnion": duplicate_union,
         "plannedFiles": planned,
         "reportedFiles": sorted(completed_files),
         "collectionSkippedFiles": {

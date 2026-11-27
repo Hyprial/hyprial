@@ -21,6 +21,14 @@ name made of exactly one failure-only case and one error-only case (a call failu
 followed by a teardown exception) is merged into one failed case whose message and
 text join both parts; every other repeat stays duplicate-result, matching
 wave_state.py.
+
+Decision (2026-11-27, tier 2 full suite).  A testcase with neither a classname
+nor a name is handled as in wave_state.py: it is neither counted as a test nor
+taken for a duplicate.  Counted, it raised the pass count by one per record, so
+a leg could show more passed tests than it has; resolved, the second one and
+every later one came out as duplicate-result <unknown>, which names no test.
+The wave manifest is rejected on each of duplicateResult, duplicateRuns and
+duplicateUnion on its own, so a duplicate is red whichever field records it.
 """
 
 from __future__ import annotations
@@ -172,8 +180,13 @@ def validate_waves(
     allowed_statuses = {"passed", "failed"} if allow_failed_status else {"passed"}
     if status not in allowed_statuses:
         errors.append(f"wave status is {status!r}")
-    if value.get("duplicateResult"):
-        errors.append(f"duplicate result: {value['duplicateResult']}")
+    for duplicate in (
+        value.get("duplicateResult"),
+        value.get("duplicateRuns"),
+        value.get("duplicateUnion"),
+    ):
+        if duplicate:
+            errors.append(f"duplicate result: {duplicate}")
     self_check = value.get("selfCheck")
     if not isinstance(self_check, dict) or self_check.get("passed") is not True:
         errors.append("wave selfCheck did not pass")
@@ -377,6 +390,8 @@ def _collect_suite_cases(
             continue
         pair_candidates: dict[str, tuple[str, int]] = {}
         for case in xml_root.iter("testcase"):
+            if not case.attrib.get("classname", "") and not case.attrib.get("name", ""):
+                continue
             nodeid = _resolve_suite_nodeid(case, planned)
             kind = _single_outcome_kind(case)
             if nodeid in seen_nodeids:

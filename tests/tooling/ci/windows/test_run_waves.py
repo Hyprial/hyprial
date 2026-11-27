@@ -5,6 +5,12 @@ Decision (2026-11-26, tier 1 smoke).  Exercises the ten-state ledger classifier
 rejection, unreported-file error synthesis, rerun --deselect flow, and
 fail-closed summarize.py validation using synthetic ledgers and JUnit XMLs on
 Linux.
+
+Decision (2026-11-27, tier 2 full suite).  A duplicate result no longer stops the
+wave loop: the attempt that raised is hard red and its files stay pending under
+the ordinary rerun rule, so one wave of three raising attempts records three runs
+and still ends unreported-files.  Nameless testcases and the two duplicate
+fields are covered in test_nameless_and_duplicates.py.
 """
 
 from __future__ import annotations
@@ -475,18 +481,23 @@ def test_run_waves_catches_duplicate_result_inside_rerun_loop(
 
     manifest = run_waves(args, tmp_path)
 
-    assert calls == 1
+    assert calls == 3
     assert manifest["status"] == "unreported-files"
     assert manifest["offsettable"] is False
-    assert isinstance(manifest["duplicateResult"], str)
-    assert manifest["duplicateResult"].startswith("duplicate-result:")
+    assert manifest["duplicateResult"] == "duplicate-result: tests/a.py::test_dup"
     assert manifest["plannedFiles"] == ["tests/a.py"]
-    assert len(manifest["runs"]) == 1
-    assert manifest["runs"][0]["status"] == "unreported-files"
-    assert any(
+    assert manifest["reportedFiles"] == []
+    assert len(manifest["runs"]) == 3
+    assert [run["status"] for run in manifest["runs"]] == ["unreported-files"] * 3
+    assert all(
         detail.startswith("duplicate-result:")
-        for detail in manifest["runs"][0]["details"]
+        for run in manifest["runs"]
+        for detail in run["details"]
     )
+    assert manifest["duplicateRuns"] == [
+        {"wave": 1, "run": run, "result": "duplicate-result: tests/a.py::test_dup"}
+        for run in (1, 2, 3)
+    ]
 
 
 def test_leak_timeout_with_a_hang_file_is_a_worker_crash(tmp_path: Path) -> None:

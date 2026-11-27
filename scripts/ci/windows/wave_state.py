@@ -45,6 +45,16 @@ unreported-files branch has already ended the classification.  The exemption cov
 the exit code only: a testcase holding a failure or an error child still fails the
 run whatever the exit code is, including a testcase that resolves to no planned file
 and therefore counts in neither the reported files nor collection_skipped_files.
+
+Decision (2026-11-27, tier 2 full suite).  A testcase element can carry neither a
+classname nor a name and hold nothing but a time attribute.  It names no test, so
+it is not a result.  Resolving it used to give one empty nodeid, so the second
+such record in a run raised duplicate-result with an empty nodeid and the wave
+loop stopped every later wave.  A nameless testcase is now counted per run as
+nameless-testcases:N before any resolution: it enters neither the nodeid set nor
+duplicate detection, and it counts as neither a pass nor a failure.  It never
+turns a run green.  A run keeps the state its exit code and its other evidence
+gave it, and a run that would otherwise pass is unreported-files instead.
 """
 
 from __future__ import annotations
@@ -102,6 +112,7 @@ class JUnitResult:
     parse_errors: tuple[str, ...] = ()
     other_skips: tuple[tuple[str, str], ...] = ()
     collection_skipped_files: frozenset[str] = frozenset()
+    nameless_testcases: int = 0
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,7 @@ class RunOutcome:
     details: tuple[str, ...]
     offsettable: bool
     collection_skipped_files: frozenset[str] = frozenset()
+    nameless_testcases: int = 0
 
 
 def is_offsettable(status: str) -> bool:
@@ -220,6 +232,10 @@ def _collection_skipped_file(case: ET.Element, module_names: dict[str, str]) -> 
     return module_names.get(case.attrib.get("name", ""))
 
 
+def _is_nameless_case(case: ET.Element) -> bool:
+    return not case.attrib.get("classname", "") and not case.attrib.get("name", "")
+
+
 def single_outcome_kind(case: ET.Element) -> str | None:
     failures = len(case.findall("failure"))
     errors = len(case.findall("error"))
@@ -251,6 +267,7 @@ def read_junit(
     contract_skip_errors: list[str] = []
     other_skips: list[tuple[str, str]] = []
     parse_errors: list[str] = []
+    nameless = 0
     for path in paths:
         if not path.exists():
             continue
@@ -261,6 +278,9 @@ def read_junit(
             continue
         pair_candidates: dict[str, str] = {}
         for case in xml_root.iter("testcase"):
+            if _is_nameless_case(case):
+                nameless += 1
+                continue
             skipped_module = _collection_skipped_file(case, module_names)
             if skipped_module is not None:
                 if skipped_module in nodeids:
@@ -315,6 +335,7 @@ def read_junit(
         tuple(parse_errors),
         tuple(other_skips),
         frozenset(collection_skipped),
+        nameless,
     )
 
 
@@ -501,6 +522,10 @@ def classify_run(
             status = "failed"
         else:
             status = "passed"
+    if result.nameless_testcases:
+        details.append(f"nameless-testcases:{result.nameless_testcases}")
+        if status == "passed":
+            status = "unreported-files"
     if strict_skips:
         if result.contract_skip_errors:
             details.extend(
@@ -534,6 +559,7 @@ def classify_run(
         tuple(details),
         is_offsettable(status),
         result.collection_skipped_files,
+        result.nameless_testcases,
     )
 
 
