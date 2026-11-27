@@ -1,3 +1,5 @@
+# Decision record (OrgFS package S, 2026-11-25): the ``orgfs-purge`` builder
+# came from the content-purge receipt tests, deleted with content purge.
 """Service mutations must not escape the configured home or account domain."""
 
 from pathlib import Path
@@ -179,12 +181,11 @@ def test_failloud_environment_isolates_home_and_xdg(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("builder", [
-    "adapter-online", "orgfs-purge", "owner-migration", "link-parity",
+    "adapter-online", "owner-migration", "link-parity",
     "codex-preflight", "network-isolated", "pac-principal",
 ])
 def test_additional_daemon_builders_own_home_and_xdg(tmp_path, monkeypatch, builder):
     from tests.daemon.channels.mcp.lifecycle.test_mcp_channel_owner_migration_e2e import IsolatedHarness
-    from tests.daemon.orgfs.purge.test_orgfs_purge_receipt import _IsolatedCli
     from tests.shell.cli.adapters.test_cli_adapter_online import _online_daemon
 
     def assert_root_local(env, root):
@@ -237,5 +238,5 @@ def test_additional_daemon_builders_own_home_and_xdg(tmp_path, monkeypatch, buil
         with pytest.raises(CapturedEnvironment), _online_daemon():
             pytest.fail("must not start a real daemon")
     else:
-        harness = _IsolatedCli(tmp_path) if builder == "orgfs-purge" else IsolatedHarness(tmp_path)
+        harness = IsolatedHarness(tmp_path)
         assert_root_local(harness.environment, tmp_path)

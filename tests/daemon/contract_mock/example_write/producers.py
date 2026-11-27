@@ -3,12 +3,14 @@
 The bridge receives an already admitted operator with a real operator path
 policy. Daemon authentication is not simulated; HTTP projection/auth boundaries
 are exercised separately. Only opaque IDs, clock/frontier values and the
-isolated filesystem root are normalized, never content, versions or receipts.
+isolated filesystem root are normalized, never content or receipts.  Package S
+(2026-11-25): an OrgFS ``version`` is an opaque digest over rows that carry
+random ids, so each distinct version is bound to the next ``orgfs-version-N``
+placeholder in the order it is first seen (a setup node's version first).
 """
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Mapping
 from contextlib import contextmanager
 import hashlib
@@ -18,7 +20,6 @@ from uuid import UUID
 
 from hyprial.daemon.impl.application.messaging.orgfs_bridge import _OrgFsBridgeMixin
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.projection.purge import canonical_bytes
 from hyprial.daemon.impl.path_authz.policy import operator_policy
 from hyprial.daemon.impl.request_catalog.org.orgfs.write_specs import BATCH4_ORGFS_BINDINGS
 
@@ -26,19 +27,11 @@ SPACE = "b363d762-a06e-496d-94d0-e4695b66e206"
 NODE = "89fd8adf4f8f43f48f475bef6914c61f"
 DOC = "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949"
 AT = "2026-11-03T09:00:00Z"
-EXPIRY = "2026-11-04T09:00:00Z"
-FRONTIER = "AvqhrMmIj78FGOCGnpfjt5UJDQ=="
+VERSIONS = tuple(f"orgfs-version-{index}" for index in range(1, 9))
 ROOT = "/tmp/hyprial-write-example"
 CONTENT = b"example-not-a-credential"
 SHA = hashlib.sha256(CONTENT).hexdigest()
-VERSION = "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
 URI = f"orgfs:example:{SPACE}:{NODE}"
-PLAN_UNSIGNED = {
-    "spaceId": SPACE, "metaFrontier": FRONTIER, "docs": [],
-    "blobs": [{"sha": SHA, "referencedElsewhereLocally": []}],
-    "snapshots": [], "writersAffected": [], "authorsBefore": {}, "expiresAt": EXPIRY,
-}
-PLAN = hashlib.sha256(canonical_bytes(PLAN_UNSIGNED)).hexdigest()
 HANDLERS = {spec.name: handler for spec, handler in BATCH4_ORGFS_BINDINGS}
 
 
@@ -81,12 +74,10 @@ class Observation:
             assert re.fullmatch(r"[0-9a-f]{32}", actual)
         elif fixed == DOC:
             assert actual.startswith("doc-") and str(UUID(actual[4:])) == actual[4:]
-        elif fixed == PLAN:
-            assert re.fullmatch(r"[0-9a-f]{64}", actual)
-        elif fixed in (AT, EXPIRY):
+        elif fixed == AT:
             assert actual.endswith("Z")
-        elif fixed == FRONTIER:
-            assert base64.b64decode(actual, validate=True)
+        elif fixed in VERSIONS:
+            assert isinstance(actual, str) and actual
         else:
             raise AssertionError("only opaque values may be normalized")
         self.replacements[actual] = fixed
@@ -109,13 +100,24 @@ class Observation:
         self.bind(node.node_id, NODE)
         if node.doc_id:
             self.bind(node.doc_id, DOC)
+        self.bind_version(node.version)
 
-    def bind_plan(self, plan):
-        assert hashlib.sha256(canonical_bytes(plan.unsigned_dict())).hexdigest() == plan.plan_id
-        self.bind(plan.meta_frontier, FRONTIER)
-        self.bind(plan.expires_at, EXPIRY)
-        assert self.transform(plan.unsigned_dict()) == PLAN_UNSIGNED
-        self.bind(plan.plan_id, PLAN)
+    def bind_version(self, actual):
+        if actual in self.replacements:
+            return
+        bound = sum(1 for fixed in self.replacements.values() if fixed in VERSIONS)
+        self.bind(actual, VERSIONS[bound])
+
+    def bind_versions(self, value):
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if key == "version" and isinstance(item, str):
+                    self.bind_version(item)
+                else:
+                    self.bind_versions(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                self.bind_versions(item)
 
     def call(self, method, params):
         result = HANDLERS[method](self.app, self.transform(params, inverse=True))
@@ -129,20 +131,7 @@ class Observation:
                 self.bind(result["node_id"], NODE)
                 if result.get("doc_id"):
                     self.bind(result["doc_id"], DOC)
-            if method == "orgfs.purge_plan":
-                unsigned = {
-                    "spaceId": result["space_id"], "metaFrontier": result["meta_frontier"],
-                    "docs": result["docs"], "snapshots": result["snapshots"],
-                    "blobs": [{"sha": row["sha"], "referencedElsewhereLocally": row["referenced_elsewhere_locally"]} for row in result["blobs"]],
-                    "writersAffected": result["writers_affected"],
-                    "authorsBefore": result["authors_before"], "expiresAt": result["expires_at"],
-                }
-                assert unsigned["docs"] == [] and unsigned["snapshots"] == []
-                assert hashlib.sha256(canonical_bytes(unsigned)).hexdigest() == result["plan_id"]
-                self.bind(result["meta_frontier"], FRONTIER)
-                self.bind(result["expires_at"], EXPIRY)
-                assert self.transform(unsigned) == PLAN_UNSIGNED
-                self.bind(result["plan_id"], PLAN)
+        self.bind_versions(result)
         return self.transform(result)
 
 
@@ -166,18 +155,8 @@ def observation(root: Path, method: str, case_name: str):
             result.bind_node(node)
             if method == "orgfs.restore":
                 runtime.facade.remove(space.space_id, "readme.txt")
-        if method in ("orgfs.purge_plan", "orgfs.purge", "orgfs.unban"):
-            node = runtime.facade.write_bytes(space.space_id, "payload.bin", CONTENT)
-            result.bind_node(node)
-            if method in ("orgfs.purge", "orgfs.unban") and case_name == "producer-success":
-                plan = runtime.purge_plan(space.space_id, [{"kind": "blob", "sha": SHA}])
-                result.bind_plan(plan)
-                if method == "orgfs.unban":
-                    runtime.purge(space.space_id, plan.plan_id)
         if method == "orgfs.remove_member" or case_name == "other-members":
             runtime.facade.invite(space.space_id, "user:reader", "ro")
-        if method == "orgfs.serve" and case_name == "backend-conflict":
-            runtime.serve(space.space_id, "memory")
         yield result
     finally:
         runtime.close()

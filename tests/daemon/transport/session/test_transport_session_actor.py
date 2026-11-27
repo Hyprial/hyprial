@@ -290,7 +290,7 @@ def test_orgfs_query_handler_survives_responder_authority_rebuild():
     requester = TransportSessionAuthority(
         ZenohTransport(ZenohConfig(connect=(endpoint,)))
     )
-    key = KeySpace().orgfs_sync("space-large", "node-responder")
+    key = KeySpace().orgfs3_sync("space-large", "node-responder")
     registration = responder.declare_query_handler(
         key, lambda selector, _payload: [(selector, b"sync-page")]
     )

@@ -1,3 +1,9 @@
+# Decision record (OrgFS package S, 2026-11-25): an OrgFS version is opaque
+# (a digest), so the projection check only requires a non-empty string.
+# Decision record (OrgFS package D4b, 2026-11-25): the join of a non-UUID id is
+# re-recorded as the state runtime's unknown-space (reason not-a-uuid), the
+# restore-by-version example left with the version argument, and a permanent
+# removal leaves nothing in the trash; no example is an expected failure.
 """Example values must be obtainable from real write producers."""
 
 from __future__ import annotations
@@ -25,26 +31,15 @@ def test_examples_replay_real_write_producer(method, case, tmp_path):
             assert observed.transform(str(raised.value)) == case.error.message
 
 
-def test_binary_and_plan_digests_have_public_reproducible_inputs():
+def test_binary_digest_has_a_public_reproducible_input():
     import hashlib
 
-    from hyprial.daemon.impl.orgfs.projection.purge import canonical_bytes
-    from .producers import CONTENT, SHA, PLAN, PLAN_UNSIGNED
+    from .producers import CONTENT, SHA
 
     assert hashlib.sha256(CONTENT).hexdigest() == SHA
-    assert hashlib.sha256(canonical_bytes(PLAN_UNSIGNED)).hexdigest() == PLAN
-    plan_case = next(item for item in ORGFS_WRITE_EXAMPLES if item.method == "orgfs.purge_plan").cases[0]
-    value = plain(plan_case.result)
-    assert value["plan_id"] == PLAN
-    assert value["docs"] == [] and value["snapshots"] == []
-    assert value["blobs"] == [{"sha": SHA, "referenced_elsewhere_locally": []}]
-    assert value["meta_frontier"] == PLAN_UNSIGNED["metaFrontier"]
-    assert value["expires_at"] == PLAN_UNSIGNED["expiresAt"]
 
 
 def test_node_uri_and_content_projection_invariants():
-    import base64
-    import json
     from hyprial.kernel import parse_orgfs_uri
     from .producers import SHA
 
@@ -56,8 +51,7 @@ def test_node_uri_and_content_projection_invariants():
         assert (owner, space, node) == ("example", value["space_id"], value["node_id"])
         assert not value["path"].startswith("/")
         assert value["modified_via"] is None
-        version = json.loads(base64.urlsafe_b64decode(value["version"] + "=="))
-        assert set(version) == {"contentFrontier", "treeFrontier"}
+        assert isinstance(value["version"], str) and value["version"]
         if value["kind"] == "doc":
             assert value["doc_id"].startswith("doc-") and value["blob_hash"] is None
         elif value["kind"] == "blob":
@@ -76,7 +70,7 @@ def test_success_examples_change_actual_local_state(method, case, tmp_path):
     from pathlib import Path
 
     from hyprial.daemon.impl.orgfs.api import OrgFsError
-    from .producers import SPACE, CONTENT, SHA
+    from .producers import SPACE, CONTENT
 
     with observation(tmp_path / "isolated", method, case.name) as observed:
         outcome = observed.call(method, case.params)
@@ -91,6 +85,10 @@ def test_success_examples_change_actual_local_state(method, case, tmp_path):
             assert target.read_bytes() == (b"" if case.name == "empty-export" else b"hello world!")
         elif method == "orgfs.mkdir":
             assert fs.stat(space, "docs").kind == "dir" and fs.listdir(space, "docs") == ()
+        elif method == "orgfs.remove" and case.name == "permanent":
+            assert fs.trash(space) == ()
+            with pytest.raises(OrgFsError, match="unknown-doc"):
+                fs.stat(space, "readme.txt")
         elif method == "orgfs.remove":
             assert len(fs.trash(space)) == 1 and fs.trash(space)[0].deleted
             with pytest.raises(OrgFsError, match="unknown-doc"):
@@ -106,8 +104,3 @@ def test_success_examples_change_actual_local_state(method, case, tmp_path):
             assert "user:reader" not in {member.user for member in fs.members(space)}
         elif method == "orgfs.space_purge" and case.name == "producer-success":
             assert fs.spaces() == ()
-        elif method == "orgfs.unban":
-            assert fs.write_bytes(space, "allowed-again.bin", CONTENT).blob_hash == SHA
-        elif method == "orgfs.purge":
-            status = observed.runtime.purge_status(space, observed.transform(outcome["plan_id"], inverse=True))
-            assert status.acknowledged == ("node-example",) and status.pending == ()

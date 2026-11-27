@@ -24,7 +24,7 @@ describe('daemon request HTTP projection gap', () => {
   // The count pin forces every new HTTP exposure through review: bump it only
   // together with the approved-method list below.
   it('pins the integrated HTTP-exposed method count', () => {
-    expect(operations).toHaveLength(130);
+    expect(operations).toHaveLength(122);
     expect([...ids].sort()).toEqual([...httpExposed].sort());
     expect(ids.has('management.adapter.remove.preview')).toBe(true);
     expect(ids.has('management.adapter.remove')).toBe(true);
@@ -138,7 +138,7 @@ describe('daemon request HTTP projection gap', () => {
     ]) {
       expect(ids.has(method), method).toBe(false);
     }
-    expect(document['x-hyprial-methods']).toHaveLength(175);
+    expect(document['x-hyprial-methods']).toHaveLength(167);
     expect(declared.size).toBe(document['x-hyprial-methods'].length);
     expect(declared.has('org.personal.ensure')).toBe(false);
     expect(declared.has('agent.rename')).toBe(true);

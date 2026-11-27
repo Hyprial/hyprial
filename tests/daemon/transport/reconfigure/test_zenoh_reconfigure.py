@@ -74,7 +74,7 @@ def test_a_rebuilt_session_reaches_a_new_peer_through_existing_subscriptions(pai
 
 def test_orgfs_queryable_answers_after_responder_session_rebuild(pair) -> None:
     responder, requester, requester_endpoint = pair
-    key = KeySpace().orgfs_sync("space-large", "node-responder")
+    key = KeySpace().orgfs3_sync("space-large", "node-responder")
     seen: list[bytes | None] = []
 
     def answer(selector: str, payload: bytes | None):

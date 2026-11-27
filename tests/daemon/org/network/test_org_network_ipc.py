@@ -238,7 +238,7 @@ def test_ipc_org_network_keeps_sidecar_when_directory_scan_hangs(
         _store: OrgFsDirectoryStore, _org: str
     ) -> tuple[list[Any], dict[str, Any]]:
         time.sleep(2.0)
-        return [], {"contentPending": [], "parkedCommits": []}
+        return [], {"contentPending": []}
 
     monkeypatch.setattr(OrgFsDirectoryStore, "scan_devices", hung_scan)
     started = time.monotonic()

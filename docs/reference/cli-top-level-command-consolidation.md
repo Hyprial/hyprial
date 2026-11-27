@@ -526,7 +526,7 @@ help 自称 prototype（`cc/transfer/credentials.py:15,130`），却是可见一
 4. S：Tailcat 切换完成后再设计 `network peers`。
 5. fs 分层（可选）：保留高频节点动词 `ls/read/write/...` 在 `fs` 下，只把
    `purge-plan/purge/purge-status/unban` 收为 `fs purge plan|run|status|unban`、空间管理收为
-   `fs space ...`。27 个叶子本身是“大但同域”，不违反方向 1，优先级最低。
+   `fs space ...`。27 个叶子本身是“大但同域”，不违反方向 1，优先级最低。（2026-11-25 注：OrgFS 精简实现删除了 `fs purge plan|status|unban`，只保留 `fs purge run`。）
 
 ## 7. 破坏面总表
 

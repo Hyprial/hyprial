@@ -167,7 +167,6 @@ PAC 总览只从当前文本投影任务分组；PAC 本身的执行、批准节
 hyprial org fs resolve "<space-id>" "work/<完整文件名>" --json
 hyprial org fs read "<space-id>" "id:<node-id>" --json
 hyprial org fs mv "<space-id>" "id:<node-id>" "work/<保留副本的新文件名>" --json
-hyprial org fs history "<space-id>" "id:<node-id>" --json
 ```
 
 要恢复已保留版本，使用通用命令：
@@ -179,7 +178,7 @@ hyprial org fs trash restore "<space-id>" "id:<node-id>" "<保留版本>" --json
 它创建普通恢复操作，不是“最近有效任务”修复。
 删除是普通 `org fs rm` 的软删除，仍须遵守下文不删数据的权限边界；
 `org fs trash list "<space-id>" --json` 可只读查看。done/dropped 文件默认保留。
-OrgFS 原有历史和恢复能力及其保留限制继续适用；当前文档的读取不要求完整 journal。
+OrgFS 不再提供节点历史（`org fs history` 已删除）；软删除与恢复能力及其保留限制继续适用；当前文档的读取不要求完整 journal。
 本次简化不迁移存储、不删除历史、未知 CRDT 根或旧本地账本，不执行旧 Yjs 切换方案。
 别人更新但本机尚未看到时，报告文件路径、nodeId 与读到的 version，不自行重写补齐。
 

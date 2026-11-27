@@ -1,3 +1,13 @@
+# Decision (OrgFS package D4b, 2026-11-25): the CLI is the built app of
+# ``hyprial.shell.impl.cli.runtime.entry``; ``commands.common.root.app`` holds
+# no command until ``build_app`` has run, so a run of this file alone (or an
+# xdist worker that collected nothing else) failed with "Could not get a
+# command for this Typer instance".
+# Decision (phase D, package T3, 2026-11-25): the daemon surface test builds
+# the daemon's OrgFS runtime as ``OrgFsRuntime`` (the bridge's runtime
+# class is replaced for the test, independent of ``HYPRIAL_ORGFS_IMPL``) and
+# checks the refused read-only write through the request surface instead of
+# the journal's commit table.
 from __future__ import annotations
 from tests.support.runtime._owned_applications import owned_applications as owned_applications
 
@@ -6,14 +16,16 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from hyprial.shell.impl.cli.commands.common.root import app
+from hyprial.shell.impl.cli.runtime.entry import app
 from hyprial.kernel.impl.contracts.daemon.ipc_errors import DaemonRequestError
 from hyprial.daemon.impl.application import DaemonApplication
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.application.messaging import orgfs_bridge
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 
 
-def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path):
+def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(orgfs_bridge, "OrgFsRuntime", OrgFsRuntime)
     application = DaemonApplication(
         state_dir=tmp_path / "state",
         socket_path=tmp_path / "daemon.sock",
@@ -44,12 +56,9 @@ def test_daemon_orgfs_surface_and_local_ro_gate(tmp_path):
                 "orgfs.write", {"spaceId": space_id, "path": "blocked.md", "text": "no"}
             )
         assert rejected.value.code == "not-a-member"
-        assert all(
-            json.loads(row[0])["origin"]["author"] != "user:reader"
-            for row in application._orgfs_runtime.stores[space_id]._db.execute(
-                "SELECT envelope_bytes FROM commits"
-            )
-        )
+        assert isinstance(application._orgfs_runtime, OrgFsRuntime)
+        listed = application._handle_orgfs("orgfs.ls", {"spaceId": space_id, "path": ""})
+        assert [entry["path"] for entry in listed["nodes"]] == ["readme.md"]
     finally:
         application._orgfs_runtime.close()
         application._orgfs_runtime = None
@@ -104,7 +113,7 @@ def test_fs_cli_exposes_frozen_commands_and_version_flags(monkeypatch, tmp_path)
     assert help_result.exit_code == 0
     for command in (
         "space", "member", "trash", "purge", "ls", "read", "write", "mkdir", "mv", "rm",
-        "history", "watch", "import", "export", "resolve",
+        "watch", "import", "export", "resolve",
     ):
         assert command in help_result.output
 

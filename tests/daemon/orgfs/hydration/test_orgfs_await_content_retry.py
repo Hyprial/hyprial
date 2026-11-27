@@ -4,6 +4,10 @@ CI task 38819 (test_cold_cache_blob_unavailable_then_fetches_when_holder_returns
 the first fetch attempt completed without the blob (the returning holder was not
 routable yet), request_blob's event fired, and await_content returned False long
 before its deadline.  The event only means "this attempt ended".
+
+Package F7 (ruling 5): ``await_content`` asks the space's sync host whether
+the local author is still a member before fetching, so the stub space answers
+that it is.
 """
 
 from __future__ import annotations
@@ -39,6 +43,9 @@ def _runtime_with_stub_mesh(tmp_path, monkeypatch, deliver_on_attempt: int):
         ),
     )
     monkeypatch.setattr(runtime.blobs, "contains", lambda digest: digest in held)
+    monkeypatch.setattr(
+        runtime.facade, "sync_host", lambda _space: SimpleNamespace(local_member=lambda: True)
+    )
     return runtime, attempts
 
 

@@ -9,8 +9,9 @@ in ``document_ids()`` order (meta, tree, then content).  The strict work-items
 chain validation then rejects the whole entry permanently.
 
 These tests pin the materialization seam: whatever envelope order the owner
-sees, the projected history must carry the birth content in the single
-``created`` entry.
+sees, the projected change events (the ``orgfs.watch`` projection) must carry
+the birth content in the single ``created`` event.  OrgFS keeps no public
+history (orgfs-minimal-plan Q5), so the change events are the observable.
 """
 
 from __future__ import annotations
@@ -30,8 +31,12 @@ BIRTH_TEXT = "member-authored birth content\nsecond line\n"
 REVISED_TEXT = "member-authored birth content\nsecond line\nedited later\n"
 
 
-def _history_sizes(runtime: OrgFsRuntime, space_id: str, node_ref: str):
-    return [(entry.node.size, entry.changed) for entry in runtime.facade.history(space_id, node_ref)]
+def _change_sizes(runtime: OrgFsRuntime, space_id: str, node_id: str):
+    return [
+        (event.node.size, event.kind)
+        for event in runtime.facade.changes_since(space_id)
+        if event.node.node_id == node_id
+    ]
 
 
 def _bind_pair(tmp_path, monkeypatch: pytest.MonkeyPatch):
@@ -76,7 +81,7 @@ def test_sync_pull_birth_is_one_created_version_with_content(
         created = member.facade.write_text(space.space_id, "work/item.md", BIRTH_TEXT)
         node_ref = f"id:{created.node_id}"
 
-        assert _history_sizes(member, space.space_id, node_ref) == [
+        assert _change_sizes(member, space.space_id, created.node_id) == [
             (len(BIRTH_TEXT.encode()), "created")
         ], "origin-side birth must stay one atomic created version"
 
@@ -85,13 +90,17 @@ def test_sync_pull_birth_is_one_created_version_with_content(
         _eventually(
             lambda: owner.facade.read_text(space.space_id, node_ref)[0] == BIRTH_TEXT
         )
-        assert _history_sizes(owner, space.space_id, node_ref) == [
+        assert _change_sizes(owner, space.space_id, created.node_id) == [
             (len(BIRTH_TEXT.encode()), "created")
         ], "owner-side birth must materialize as a single created-with-content version"
-        birth_version = owner.facade.history(space.space_id, node_ref)[0].node.version
-        assert (
-            owner.facade.read_at(space.space_id, node_ref, birth_version).decode()
-            == BIRTH_TEXT
+        birth_version = [
+            event.node.version
+            for event in owner.facade.changes_since(space.space_id)
+            if event.node.node_id == created.node_id
+        ][0]
+        assert owner.facade.read_text(space.space_id, node_ref) == (
+            BIRTH_TEXT,
+            birth_version,
         )
 
         # Follow-up mutations stay ordinary content versions on top of the
@@ -101,9 +110,9 @@ def test_sync_pull_birth_is_one_created_version_with_content(
         _eventually(
             lambda: owner.facade.read_text(space.space_id, node_ref)[0] == REVISED_TEXT
         )
-        assert _history_sizes(owner, space.space_id, node_ref) == [
-            (len(REVISED_TEXT.encode()), "content"),
+        assert _change_sizes(owner, space.space_id, created.node_id) == [
             (len(BIRTH_TEXT.encode()), "created"),
+            (len(REVISED_TEXT.encode()), "modified"),
         ]
     finally:
         member.close()
@@ -131,7 +140,7 @@ def test_live_push_birth_is_one_created_version_with_content(
         _eventually(
             lambda: owner.facade.read_text(space.space_id, node_ref)[0] == BIRTH_TEXT
         )
-        assert _history_sizes(owner, space.space_id, node_ref) == [
+        assert _change_sizes(owner, space.space_id, created.node_id) == [
             (len(BIRTH_TEXT.encode()), "created")
         ]
     finally:
@@ -151,8 +160,7 @@ def test_owner_local_birth_stays_atomic(
         space = owner.facade.create_space("work")
         owner.facade.mkdir(space.space_id, "work")
         created = owner.facade.write_text(space.space_id, "work/item.md", BIRTH_TEXT)
-        node_ref = f"id:{created.node_id}"
-        assert _history_sizes(owner, space.space_id, node_ref) == [
+        assert _change_sizes(owner, space.space_id, created.node_id) == [
             (len(BIRTH_TEXT.encode()), "created")
         ]
     finally:

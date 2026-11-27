@@ -172,12 +172,11 @@ def test_the_invitee_with_the_same_link_joins(tmp_path: Path) -> None:
 
 @pytest.mark.xfail(
     reason=(
-        "known gap: the supplier trusts the self-declared requester.author. "
-        "orgfs/storage/store/admission.py: 'This boundary assumes origin.author "
-        "is genuine; author signatures are a separate prerequisite'; "
-        "orgfs/storage/store/__init__.py: 'Authors are self-asserted until "
-        "signatures land'.  Passes once identity is bound to the peer's "
-        "authenticated device key (node-authentication card 21aafdb0)."
+        "known gap: the supplier trusts the self-declared requester.author "
+        "(OrgFS minimal design §3.1: node names and authors are self-asserted; "
+        "the node gate protects against honest nodes, not forgers).  Passes "
+        "once identity is bound to the peer's authenticated device key "
+        "(node-authentication card 21aafdb0)."
     ),
     raises=AssertionError,
     strict=False,

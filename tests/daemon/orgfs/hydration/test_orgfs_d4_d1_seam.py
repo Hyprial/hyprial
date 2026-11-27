@@ -1,3 +1,13 @@
+# Decisions:
+# - Phase D, package T2: the two seam tests run on ``OrgFsRuntime``.
+#   Delivery stays hand-driven: the in-process network drops every broadcast
+#   and the test moves state only with explicit pull rounds
+#   (``StatePeers.pull_all``), so the order of arrival is fixed and no
+#   journal envelope is read or imported.  The property is unchanged: the
+#   creator, the editor and a third writer all read the merged text, and the
+#   creator's ``await_content`` succeeds.
+# - Package S deleted ``test_committed_update_refuses_a_retired_document``
+#   (journal-only, ``snapshot-barrier``).
 """D4 x D1 seam: the creating node can read after a peer edits its text.
 
 Regression for docs/notes/orgfs-fix-round/d4-d1-seam.md, actor-line adaptation
@@ -16,136 +26,74 @@ both seam tests go red with content-pending.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import time
 
 import pytest
 
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
-from hyprial.daemon.impl.orgfs.storage.store import StoreError
+from tests.daemon.orgfs.mesh.replication.state_support import (
+    StatePeers,
+    open_state_peers,
+    shared_space,
+)
+from tests.daemon.orgfs.runtime_state.support import Peer, text
+
+
+@pytest.fixture
+def state_peers(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[StatePeers]:
+    yield from open_state_peers(tmp_path, monkeypatch)
 
 
 def _runtime(tmp_path, name, author):
     return OrgFsRuntime(tmp_path / name, node_id=name, author=author)
 
 
-def _local_commits(runtime, space_id):
-    # Only this node's own commits: re-delivering a peer its own envelopes
-    # would hand it back its coverage-clock op and mask the seam.  All
-    # writes settle synchronously through the space authority before the
-    # writing call returns, so this read-only journal query races nothing.
-    rows = runtime.stores.get(space_id)._db.execute(
-        "SELECT envelope_bytes FROM commits WHERE writer LIKE ? ORDER BY rowid",
-        (f"{runtime.node_id}.%",),
-    )
-    return [bytes(env) for (env,) in rows]
+def _hand_driven(state_peers: StatePeers, *names: str) -> tuple[list[Peer], str]:
+    state_peers.network.drop_updates = True
+    nodes = [state_peers.add(f"node-{name}", f"user:{name}") for name in names]
+    return nodes, shared_space(state_peers, nodes[0], *nodes[1:], name="seam")
 
 
-def _receive_fresh(runtime, space_id, envelopes):
-    store = runtime.stores.get(space_id)
-    for env in envelopes:
-        store.import_envelope(env, supplier="seed")
-    runtime.facade.load_space(space_id)
+def _deliver(state_peers: StatePeers, space_id: str) -> None:
+    for _ in range(3):
+        state_peers.pull_all(space_id)
 
 
-def _receive_live(runtime, space_id, envelopes):
-    store = runtime.stores.get(space_id)
-    for env in envelopes:
-        store.import_envelope(env, supplier="peer")
-        runtime.facade.apply_envelope(space_id, env)
+def test_creator_reads_after_peer_edit_two_writers(state_peers: StatePeers) -> None:
+    (b, c), sid = _hand_driven(state_peers, "b", "c")
+    created = b.fs.write_text(sid, "shared.txt", "from B 1")
+    ref = f"id:{created.node_id}"
+    _deliver(state_peers, sid)
+    assert text(c.fs, sid, ref) == "from B 1"
+
+    c.fs.write_text(sid, ref, "from B 1\nline-C")
+    expected = "from B 1\nline-C"
+    assert text(b.fs, sid, ref) == "from B 1"
+    _deliver(state_peers, sid)
+
+    assert text(b.fs, sid, ref) == expected
+    assert b.runtime is not None
+    assert b.runtime.await_content(sid, created.node_id, deadline_monotonic=time.monotonic() + 5.0)
+    assert text(b.fs, sid, ref) == expected
+    assert text(c.fs, sid, ref) == expected
 
 
-def test_creator_reads_after_peer_edit_two_writers(tmp_path) -> None:
-    b = _runtime(tmp_path, "node-b", "user:b")
-    c = _runtime(tmp_path, "node-c", "user:c")
-    try:
-        space = b.facade.create_space("seam")
-        sid = space.space_id
-        b.facade.invite(sid, "user:c", "rw")
+def test_creator_and_editor_read_after_third_writer(state_peers: StatePeers) -> None:
+    (b, c, d), sid = _hand_driven(state_peers, "b", "c", "d")
+    created = b.fs.write_text(sid, "shared.txt", "from B 1")
+    ref = f"id:{created.node_id}"
+    _deliver(state_peers, sid)
 
-        created = b.facade.write_text(sid, "shared.txt", "from B 1")
-        ref = f"id:{created.node_id}"
+    c.fs.write_text(sid, ref, "from B 1\nline-C")
+    _deliver(state_peers, sid)
+    d.fs.write_text(sid, ref, text(d.fs, sid, ref) + "\nline-D")
+    _deliver(state_peers, sid)
 
-        _receive_fresh(c, sid, _local_commits(b, sid))
-        assert c.facade.read_text(sid, ref)[0] == "from B 1"
-
-        c.facade.write_text(sid, ref, "from B 1\nline-C")
-        expected = "from B 1\nline-C"
-
-        _receive_live(b, sid, _local_commits(c, sid))
-
-        # The originating writer reads its own text through the facade...
-        assert b.facade.read_text(sid, ref)[0] == expected
-        # ...and through the daemon content-provisioning seam.
-        deadline = time.monotonic() + 5.0
-        assert b.await_content(sid, created.node_id, deadline_monotonic=deadline)
-        assert b.facade.read_text(sid, ref)[0] == expected
-        # The editor still reads correctly: both directions hold.
-        assert c.facade.read_text(sid, ref)[0] == expected
-    finally:
-        c.close()
-        b.close()
+    texts = {peer.node_id: text(peer.fs, sid, ref) for peer in (b, c, d)}
+    assert len(set(texts.values())) == 1, texts
+    only = next(iter(texts.values()))
+    assert only.startswith("from B 1")
+    assert "line-C" in only and "line-D" in only
 
 
-def test_creator_and_editor_read_after_third_writer(tmp_path) -> None:
-    b = _runtime(tmp_path, "node-b", "user:b")
-    c = _runtime(tmp_path, "node-c", "user:c")
-    d = _runtime(tmp_path, "node-d", "user:d")
-    try:
-        space = b.facade.create_space("seam3")
-        sid = space.space_id
-        b.facade.invite(sid, "user:c", "rw")
-        b.facade.invite(sid, "user:d", "rw")
-
-        created = b.facade.write_text(sid, "shared.txt", "from B 1")
-        ref = f"id:{created.node_id}"
-        seed = _local_commits(b, sid)
-        _receive_fresh(c, sid, seed)
-        _receive_fresh(d, sid, seed)
-
-        c.facade.write_text(sid, ref, "from B 1\nline-C")
-        c_edit = _local_commits(c, sid)
-        _receive_live(b, sid, c_edit)
-        _receive_live(d, sid, c_edit)
-
-        d.facade.write_text(sid, ref, d.facade.read_text(sid, ref)[0] + "\nline-D")
-        d_edit = _local_commits(d, sid)
-        _receive_live(b, sid, d_edit)
-        _receive_live(c, sid, d_edit)
-
-        # D's entry is the latest; every writer must cover it and read.
-        texts = {
-            runtime.node_id: runtime.facade.read_text(sid, ref)[0]
-            for runtime in (b, c, d)
-        }
-        assert len(set(texts.values())) == 1, texts
-        only = next(iter(texts.values()))
-        assert only.startswith("from B 1")
-        assert "line-C" in only and "line-D" in only
-    finally:
-        d.close()
-        c.close()
-        b.close()
-
-
-def test_committed_update_refuses_a_retired_document(tmp_path) -> None:
-    runtime = _runtime(tmp_path, "node-a", "user:owner")
-    try:
-        space = runtime.facade.create_space("retired")
-        node = runtime.facade.write_text(space.space_id, "gone.md", "old")
-        plan = runtime.purge_plan(
-            space.space_id,
-            [
-                {
-                    "kind": "doc-range",
-                    "node": f"id:{node.node_id}",
-                    "from": "all",
-                    "to": "all",
-                }
-            ],
-        )
-        runtime.purge(space.space_id, plan.plan_id)
-        with pytest.raises(StoreError) as caught:
-            runtime.stores[space.space_id].committed_update(node.doc_id, b"\x00")
-        assert caught.value.code == "snapshot-barrier"
-    finally:
-        runtime.close()

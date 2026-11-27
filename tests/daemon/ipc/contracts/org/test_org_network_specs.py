@@ -45,7 +45,6 @@ _EXPECTED = (
     "orgfs.checkout",
     "orgfs.create",
     "orgfs.export",
-    "orgfs.history",
     "orgfs.import",
     "orgfs.invite",
     "orgfs.join",
@@ -53,23 +52,16 @@ _EXPECTED = (
     "orgfs.members",
     "orgfs.mkdir",
     "orgfs.move",
-    "orgfs.purge",
-    "orgfs.purge_plan",
-    "orgfs.purge_status",
     "orgfs.read",
-    "orgfs.read_at",
     "orgfs.remove",
     "orgfs.remove_member",
     "orgfs.resolve",
     "orgfs.restore",
-    "orgfs.serve",
     "orgfs.space_purge",
     "orgfs.spaces",
     "orgfs.stat",
-    "orgfs.stat_at",
     "orgfs.status",
     "orgfs.trash",
-    "orgfs.unban",
     "orgfs.watch",
     "orgfs.write",
     "top.inspect",
@@ -309,7 +301,6 @@ def test_directory_pending_accepts_the_real_pending_object() -> None:
                         "reason": "content-pending",
                     }
                 ],
-                "parkedCommits": [{"author": "user:owner", "commits": 2}],
                 "dataProblems": [
                     {
                         "org": "group-x",
@@ -330,8 +321,17 @@ def test_directory_pending_rejects_string_items() -> None:
         "directoryPending": {
             "group-x": {
                 "contentPending": ["device-a"],
-                "parkedCommits": [],
             }
+        },
+    }
+    assert not _accepts(result)
+
+
+def test_directory_pending_rejects_the_removed_parked_commits_field() -> None:
+    result = {
+        **_NETWORK_RESULT,
+        "directoryPending": {
+            "group-x": {"contentPending": [], "parkedCommits": []}
         },
     }
     assert not _accepts(result)

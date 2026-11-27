@@ -18,6 +18,22 @@ Decision notes (slice GC0):
 - Repair after a gap is pinned on both edges: the supplier-online edge pulls
   every space the node holds; the periodic tick covers org directory and
   ACL spaces only, with an org directory space as its control.
+
+Decision notes (OrgFS package S, 2026-11-25):
+
+- Protocol 3 joins fetch the catalog first and content on demand (design
+  Q7), so a reader waits for content: reads after a join are re-tried until
+  they converge.  A pending read (``content-pending``) is an absent
+  segment, read again on the next refresh.
+- Package O (2026-11-25): the conversation readers name the wire code
+  through ``hyprial.kernel.ORGFS_CONTENT_PENDING``, so the explicit-join
+  probe is a plain test again (it was a strict xfail while the readers
+  spelled the code ``content_pending``/``ORGFS_CONTENT_PENDING``).
+- A lost live update is no longer parked until an explicit sync: the next
+  update of the same space that depends on it makes the receiver pull
+  (T2 report §7-3), and the supplier-online edge still pulls.  The lost-update
+  probe pins that; "the periodic tick does not pull a home space" stays
+  pinned with the org directory control.
 """
 
 from __future__ import annotations
@@ -25,23 +41,22 @@ from __future__ import annotations
 import pytest
 
 from hyprial.daemon.impl.orgfs.composition import directory as directory_composition
-from hyprial.identity import org_space_name
 from tests.daemon.conversations.two_node.support import (
     NODE_A,
     NODE_B,
     OWNER,
     announce_until_held,
-    broadcast_drained,
     close,
+    content_arrived,
     drained,
     entry,
     eventually,
     expect_message_ids,
-    ingress_drained,
     read_message_ids,
     record,
     start_node,
     start_pair,
+    updates_dropped,
 )
 
 CELL = "c.probe"
@@ -118,7 +133,8 @@ def test_an_explicit_join_needs_no_invite_and_converges_reads_and_writes(tmp_pat
         both = tuple(sorted((home_a, home_b)))
         assert a.homes() == b.homes() == both
         assert a.write_space() == b.write_space() == both[0]
-        assert read_message_ids(a, CELL) == read_message_ids(b, CELL) == ["m-a", "m-b"]
+        eventually(lambda: expect_message_ids(a, CELL, ["m-a", "m-b"]))
+        eventually(lambda: expect_message_ids(b, CELL, ["m-a", "m-b"]))
 
         record(b, CELL, [_line("m-b2", 3)], seq=0)
         eventually(lambda: expect_message_ids(a, CELL, ["m-a", "m-b", "m-b2"]))
@@ -133,6 +149,7 @@ def test_a_write_made_while_the_holder_was_offline_is_pulled_on_its_online_edge(
         home = record(a, CELL, [_line("m1", 1)])
         announce_until_held(a, home, b)
         b.fs.join(home)
+        content_arrived(b, home)
         assert read_message_ids(b, CELL) == ["m1"]
         close(b)
 
@@ -142,40 +159,30 @@ def test_a_write_made_while_the_holder_was_offline_is_pulled_on_its_online_edge(
         assert read_message_ids(restarted, CELL) == ["m1"]
 
         restarted.presence.emit_online(NODE_A)
+        eventually(lambda: content_arrived(restarted, home))
         eventually(lambda: expect_message_ids(restarted, CELL, ["m1", "m2"]))
     finally:
         close(restarted, a)
 
 
-def test_a_live_update_lost_while_both_online_is_not_pulled_by_the_periodic_tick(tmp_path) -> None:
+def test_a_live_update_lost_while_both_online_is_pulled_by_the_next_dependent_update(tmp_path) -> None:
     bus, a, b = start_pair(tmp_path)
     try:
         home = record(a, CELL, [_line("m1", 1)])
         announce_until_held(a, home, b)
         b.fs.join(home)
-        control = a.fs.create_space(org_space_name("group-probe"))
-        announce_until_held(a, control.space_id, b)
-        b.fs.join(control.space_id)
-        assert b.runtime.anti_entropy_tick(0.0) == 0
+        content_arrived(b, home)
+        assert read_message_ids(b, CELL) == ["m1"]
 
         bus.drop_updates = True
         record(a, CELL, [_line("m2", 2)], seq=0)
-        lost = a.fs.write_text(control.space_id, "lost.md", "lost")
-        eventually(lambda: broadcast_drained(a, home, control.space_id))
+        eventually(lambda: updates_dropped(bus, 1))
         bus.drop_updates = False
+        assert read_message_ids(b, CELL) == ["m1"]
+
         record(a, OTHER_CELL, [_other("m3", 3)])
-        eventually(lambda: broadcast_drained(a, home))
-        eventually(lambda: ingress_drained(b, home))
-        assert read_message_ids(b, CELL) == ["m1"]
-        assert read_message_ids(b, OTHER_CELL) == []
-
-        assert b.runtime.anti_entropy_tick(INTERVAL) == 1
-        eventually(lambda: b.fs.read_text(control.space_id, f"id:{lost.node_id}"))
-        assert read_message_ids(b, CELL) == ["m1"]
-        assert read_message_ids(b, OTHER_CELL) == []
-
-        b.presence.emit_online(NODE_A)
-        eventually(lambda: expect_message_ids(b, CELL, ["m1", "m2"]))
+        eventually(lambda: content_arrived(b, home))
         eventually(lambda: expect_message_ids(b, OTHER_CELL, ["m3"]))
+        eventually(lambda: expect_message_ids(b, CELL, ["m1", "m2"]))
     finally:
         close(b, a)

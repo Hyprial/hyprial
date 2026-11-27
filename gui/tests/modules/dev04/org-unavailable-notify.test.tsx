@@ -569,77 +569,6 @@ describe('the toast subject is the label of the button that was pressed', () => 
 });
 
 describe('a refused read or retry leaves no false state behind', () => {
-  async function openFile(user: ReturnType<typeof userEvent.setup>, name: string) {
-    await openRail(user, '组织');
-    await openOrgTab(user, '文件');
-    await user.click(screen.getByRole('button', { name }));
-  }
-
-  it('历史 refused at dispatch with nothing cached: one toast, no panel, no empty text', async () => {
-    const { user } = renderPreview(previewSource('owner', { override: { loadHistory: unavailable } }));
-    await openFile(user, 'README.md');
-    await user.click(screen.getByRole('button', { name: '历史' }));
-
-    await waitFor(() => expectUnavailableToast('历史暂不可用。'));
-    expect(screen.queryByRole('complementary', { name: /^历史/ })).toBeNull();
-    expect(document.body).not.toHaveTextContent('没有版本记录');
-  });
-
-  it('重新读取 refused keeps the versions on screen and names itself in the toast', async () => {
-    let calls = 0;
-    const { user } = renderPreview(previewSource('owner', {
-      wrap: (_base, store) => ({
-        loadHistory: async (orgId: string, spaceId: string, path: string): Promise<OrgResult<unknown>> => {
-          calls += 1;
-          if (calls > 1) return { kind: 'unavailable' };
-          store.update((state) => {
-            const detail = state.details[orgId]!;
-            const version = { version: 3, modifiedBy: '姚', modifiedAt: '10-30', content: '', contentStatus: 'error' as const };
-            return {
-              ...state,
-              details: { ...state.details, [orgId]: { ...detail, history: { ...detail.history, [`${spaceId}:${path}`]: [version] } } },
-            };
-          });
-          return { kind: 'ok', value: [] };
-        },
-      }),
-    }));
-    await openFile(user, 'README.md');
-    await user.click(screen.getByRole('button', { name: '历史' }));
-    await user.click(within(await screen.findByRole('list', { name: '版本记录' })).getAllByRole('button')[0] as HTMLElement);
-    await user.click(screen.getByRole('button', { name: '重新读取' }));
-
-    await waitFor(() => expectUnavailableToast('重新读取暂不可用。'));
-    expect(screen.getByRole('list', { name: '版本记录' })).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent('没有版本记录');
-  });
-
-  it('a version whose content read was refused shows the row and neither text nor a body', async () => {
-    const { user } = renderPreview(previewSource('owner', {
-      wrap: (_base, store) => ({
-        loadHistory: async (orgId: string, spaceId: string, path: string): Promise<OrgResult<unknown>> => {
-          store.update((state) => {
-            const detail = state.details[orgId]!;
-            const version = { version: 3, modifiedBy: '姚', modifiedAt: '10-30', content: '', contentStatus: 'refused' as const };
-            return {
-              ...state,
-              details: { ...state.details, [orgId]: { ...detail, history: { ...detail.history, [`${spaceId}:${path}`]: [version] } } },
-            };
-          });
-          return { kind: 'ok', value: [] };
-        },
-      }),
-    }));
-    await openFile(user, 'README.md');
-    await user.click(screen.getByRole('button', { name: '历史' }));
-    await user.click(within(await screen.findByRole('list', { name: '版本记录' })).getAllByRole('button')[0] as HTMLElement);
-
-    expect(screen.getByRole('button', { name: /版本 3/ })).toHaveAttribute('aria-pressed', 'true');
-    expect(document.body).not.toHaveTextContent('读取失败');
-    expect(screen.queryByRole('button', { name: '重新读取' })).toBeNull();
-    expect(screen.queryByLabelText('版本 3 的内容')).toBeNull();
-  });
-
   it('a join refused at dispatch gives the typed link back', async () => {
     const { user } = renderPreview(previewSource('owner', { override: { joinByLink: unavailable } }));
     await openRail(user, '组织');
@@ -772,12 +701,10 @@ const OPENERS: readonly OpenerCase[] = [
     open: async (user) => { await inFiles('onboarding.md')(user); await user.click(screen.getByRole('button', { name: '移动' })); } },
   { name: 'deleteEntry', scenario: 'owner', methods: ['deleteEntry'], subject: '删除',
     open: async (user) => { await inFiles('onboarding.md')(user); await user.click(screen.getByRole('button', { name: '删除' })); } },
-  { name: 'loadHistory', scenario: 'owner', methods: ['loadHistory'], subject: '历史',
-    open: async (user) => { await inFiles('onboarding.md')(user); await user.click(screen.getByRole('button', { name: '历史' })); } },
 ];
 
 describe('every opener decides a refusal before it opens anything', () => {
-  it.each(OPENERS)('$name: one toast named after the control, no dialog, no panel', async (item) => {
+  it.each(OPENERS)('$name: one toast named after the control, no dialog', async (item) => {
     const refused = new Set<string>(item.methods);
     const { user } = renderPreview(previewSource(item.scenario, {
       refusal: (method) => refused.has(method) ? { code: 'METHOD_NOT_FOUND', source: `catalog.${method}` } : null,
@@ -786,6 +713,5 @@ describe('every opener decides a refusal before it opens anything', () => {
 
     await waitFor(() => expectUnavailableToast(`${item.subject}暂不可用。`));
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.queryByRole('complementary', { name: /^历史/ })).toBeNull();
   });
 });

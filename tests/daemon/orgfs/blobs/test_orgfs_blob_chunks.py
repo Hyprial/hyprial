@@ -1,3 +1,7 @@
+# Decisions:
+# - Package F6 (R3-1): every ``orgfs-blob`` request names its requester
+#   (node and author); ``REQUESTER`` is passed wherever a test encodes one, and
+#   a request without it is refused by the codec.
 """Pure blob wire codec and chunk-serving tests."""
 
 from __future__ import annotations
@@ -20,6 +24,9 @@ from hyprial.daemon.impl.orgfs.storage.blobs import (
     encode_chunk,
     encode_request)
 
+REQUESTER = {"requester_node": "node-a", "requester_author": "user:a"}
+WIRE_REQUESTER = {"node": "node-a", "author": "user:a"}
+
 
 def test_multi_chunk_round_trip_accepts_reordered_chunks(tmp_path: Path) -> None:
     data = bytes(index % 251 for index in range(ORGFS_BLOB_CHUNK_BYTES * 2 + 123))
@@ -32,6 +39,7 @@ def test_multi_chunk_round_trip_accepts_reordered_chunks(tmp_path: Path) -> None
                     digest,
                     offset=offset,
                     length=min(ORGFS_BLOB_CHUNK_BYTES, len(data) - offset),
+                    **REQUESTER,
                 )
             )
             for offset in range(0, len(data), ORGFS_BLOB_CHUNK_BYTES)
@@ -57,18 +65,37 @@ def test_chunk_codec_rejects_tampering_only_after_whole_blob_is_assembled() -> N
 
 def test_request_defaults_alignment_and_range_errors() -> None:
     digest = hashlib.sha256(b"blob").hexdigest()
-    request = decode_request(encode_request("space", digest))
+    request = decode_request(encode_request("space", digest, **REQUESTER))
     assert request["offset"] == 0
     assert request["length"] == ORGFS_BLOB_CHUNK_BYTES
+    assert request["requester"] == WIRE_REQUESTER
 
     with pytest.raises(BlobRangeError):
-        encode_request("space", digest, offset=1)
+        encode_request("space", digest, offset=1, **REQUESTER)
     with pytest.raises(BlobRangeError):
-        encode_request("space", digest, length=ORGFS_BLOB_CHUNK_BYTES + 1)
+        encode_request("space", digest, length=ORGFS_BLOB_CHUNK_BYTES + 1, **REQUESTER)
     with pytest.raises(BlobRangeError):
         decode_request(
-            {"schemaVersion": 1, "type": "orgfs-blob", "spaceId": "space", "digest": digest, "offset": -1}
+            {"schemaVersion": 1, "type": "orgfs-blob", "spaceId": "space", "digest": digest,
+             "requester": WIRE_REQUESTER, "offset": -1}
         )
+
+
+@pytest.mark.parametrize(
+    "requester",
+    [None, {"node": "node-a"}, {"node": "node-a", "author": ""}, {"node": "", "author": "user:a"},
+     {"node": "node-a", "author": "user:a", "extra": "x"}, "user:a"],
+)
+def test_request_without_a_complete_requester_is_refused(requester: object) -> None:
+    digest = hashlib.sha256(b"blob").hexdigest()
+    value = {"schemaVersion": 1, "type": "orgfs-blob", "spaceId": "space", "digest": digest}
+    if requester is not None:
+        value["requester"] = requester
+
+    with pytest.raises(ValueError, match="requester"):
+        decode_request(value)
+    with pytest.raises(ValueError, match="requester"):
+        encode_request("space", digest, requester_node="node-a", requester_author="")
 
 
 def test_encoded_chunk_bound_and_error_shape(tmp_path: Path) -> None:
@@ -79,7 +106,7 @@ def test_encoded_chunk_bound_and_error_shape(tmp_path: Path) -> None:
     assert decode_chunk(encoded)["dataBytes"] == data
 
     with BlobStore(tmp_path) as blobs:
-        unknown = blobs.handle_request(encode_request("space", "0" * 64))
+        unknown = blobs.handle_request(encode_request("space", "0" * 64, **REQUESTER))
     response = json.loads(unknown)
     assert response == {
         "schemaVersion": 1,
@@ -96,7 +123,7 @@ def test_default_request_returns_short_final_chunk_without_size_hint(
     data = b"size is not present in the tree entry"
     with BlobStore(tmp_path) as blobs:
         digest = blobs.put("space", data, reason="own-write")
-        chunk = blobs.get_chunk(encode_request("space", digest))
+        chunk = blobs.get_chunk(encode_request("space", digest, **REQUESTER))
 
     assert decode_chunk(chunk)["dataBytes"] == data
     assert assemble(digest, [chunk]) == data

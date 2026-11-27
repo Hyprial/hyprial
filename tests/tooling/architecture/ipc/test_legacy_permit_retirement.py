@@ -18,7 +18,7 @@ GROUPS = {
     'identity': frozenset(['identity.users.add', 'identity.users.list']),
     'message': frozenset(['message.history', 'message.pending.batch', 'message.query', 'message.status']),
     'org': frozenset(['org.acl.grant', 'org.acl.ls', 'org.acl.revoke', 'org.create', 'org.delete', 'org.execute', 'org.fetch', 'org.invite', 'org.join', 'org.leave', 'org.list', 'org.network', 'org.publish', 'org.remove', 'org.repair']),
-    'orgfs': frozenset(['orgfs.checkout', 'orgfs.create', 'orgfs.export', 'orgfs.history', 'orgfs.import', 'orgfs.invite', 'orgfs.join', 'orgfs.ls', 'orgfs.members', 'orgfs.mkdir', 'orgfs.move', 'orgfs.purge', 'orgfs.purge_plan', 'orgfs.purge_status', 'orgfs.read', 'orgfs.read_at', 'orgfs.remove', 'orgfs.remove_member', 'orgfs.resolve', 'orgfs.restore', 'orgfs.serve', 'orgfs.space_purge', 'orgfs.spaces', 'orgfs.stat', 'orgfs.stat_at', 'orgfs.status', 'orgfs.trash', 'orgfs.unban', 'orgfs.watch', 'orgfs.write']),
+    'orgfs': frozenset(['orgfs.checkout', 'orgfs.create', 'orgfs.export', 'orgfs.import', 'orgfs.invite', 'orgfs.join', 'orgfs.ls', 'orgfs.members', 'orgfs.mkdir', 'orgfs.move', 'orgfs.read', 'orgfs.remove', 'orgfs.remove_member', 'orgfs.resolve', 'orgfs.restore', 'orgfs.space_purge', 'orgfs.spaces', 'orgfs.stat', 'orgfs.status', 'orgfs.trash', 'orgfs.watch', 'orgfs.write']),
     'routine': frozenset(['routine.list', 'routine.status']),
     'views': frozenset(['hosts', 'top.snapshot', 'workflow.list']),
 }

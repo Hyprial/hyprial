@@ -36,6 +36,7 @@ from hyprial.daemon.impl.orgfs import LocalOrgFs
 from hyprial.identity.impl.device import DeviceRecord, address_path, write_device_record
 from hyprial.kernel import DaemonRequestError, keyed_cell_id
 from tests.daemon.cells.runtime.cell_runtime_support import uid_for
+from tests.daemon.org.cell_actor.replica_support import link_replicas
 from tests.support.tailnet_membership import (
     FakeMembershipSidecar,
     confirm_ipc_removal,
@@ -271,42 +272,21 @@ def test_member_machine_org_cell_actor_is_readonly_and_does_not_hold_cells_for_o
         sidecar=alice_app._forwarding_supervisor.for_device(BOB_OWNER, "node-b"),
     )
     try:
-        created = ipc_org_create(alice_app, {"org": "group-acme"})
-        space_id = created["spaceId"]
-        acl_space_id = created["aclSpaceId"]
+        space_id = ipc_org_create(alice_app, {"org": "group-acme"})["spaceId"]
         invited = ipc_org_invite(alice_app, {"org": "group-acme", "user": f"user:{BOB_OWNER}"})
         bob_app.oidc_roster = {
             f"u.{ALICE_UID}": {"username": ALICE_OWNER},
             f"u.{BOB_UID}": {"username": BOB_OWNER},
         }
 
-        bob_fs = bob_runtime.facade
-        alice_fs = alice_app._runtime.facade
-        for sid, name in ((space_id, "group-acme"), (acl_space_id, "group-acme-acl")):
-            bob_fs._spaces[sid] = alice_fs._spaces[sid]
-        bob_fs.invite = lambda *_args, **_kwargs: None
-        original_join = bob_fs.join
-
-        def fake_join(sid: str, timeout: float = 0.0) -> Any:
-            src = alice_fs._spaces[sid]
-            bob_fs.spaces()
-            return src
-
-        bob_fs.join = fake_join
-        bob_fs.members = lambda sid: alice_fs.members(sid)
-        bob_fs.space_meta = lambda sid: alice_fs.space_meta(sid)
-        bob_fs.read_text = lambda sid, path: alice_fs.read_text(sid, path)
-        bob_fs.listdir = lambda sid, path: alice_fs.listdir(sid, path)
-        bob_fs.document_authors = lambda sid, path: alice_fs.document_authors(sid, path)
-        bob_fs.write_text = lambda sid, path, content, **kw: alice_fs.write_text(
-            sid, path, content, **kw
-        )
-        bob_fs.mkdir = lambda sid, path: alice_fs.mkdir(sid, path)
-        bob_fs.remove = lambda sid, path: alice_fs.remove(sid, path)
-        assert original_join is not None
+        link_replicas(alice_app, bob_app)
 
         joined = ipc_org_join(bob_app, {"link": invited["link"]})
         assert joined["org"] == "group-acme"
+        bob_device = f"directory/devices/{BOB_OWNER}/node-b.json"
+        assert alice_app._runtime.facade.document_authors(space_id, bob_device) == (
+            f"user:{BOB_OWNER}",
+        )
 
         bob_actors = org_cell_actors(bob_app)
         assert bob_actors is not None

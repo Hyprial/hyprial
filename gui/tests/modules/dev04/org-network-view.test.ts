@@ -47,7 +47,7 @@ describe('org network read model', () => {
         mappedPeers: { available: false, reason: 'timeout' },
         sidecar: { available: false, reason: 'timeout' },
       },
-      directoryPending: { 'group-alpha': { contentPending: [{ owner: 'user:b', deviceId: 'device-b', reason: 'pending' }], parkedCommits: null } },
+      directoryPending: { 'group-alpha': { contentPending: [{ owner: 'user:b', deviceId: 'device-b', reason: 'pending' }] } },
     };
     const view = networkViewFor('group-alpha', partial);
     expect(view?.devices).toHaveLength(1);
