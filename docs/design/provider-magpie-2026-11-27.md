@@ -32,12 +32,12 @@
 19. Magpie 已安装但网关没有运行时，daemon 用 Magpie 自己的后台服务启动它：已有服务就启动，没有就先安装服务再启动。这个进程属于用户的 Magpie，hyprial 退出后继续运行。hyprial 不监督它，也不把网关作为自己的子进程。
 20. 原有各 harness 的登录方式、原生凭据读取、原生凭据与显式认证的互斥检查以及按 agent 保存原生登录材料，全部随本线实现删除。新的启动路径统一只把 agent 指向 Magpie 网关，不保留按 harness 的旧登录兼容分支。旧凭据如何重新录入 Magpie 只写迁移文档；daemon 不自动读取、复制或删除旧文件，也不把旧文件交给 harness 使用。
 21. 删除 hyprial 对 harness 子进程的上游代理管理能力：`workerProxy.*` 配置项及启动时的上游代理注入一并删除，访问上游模型的代理由 Magpie 自己的运行环境负责。启动 harness 时，daemon 只在子进程的 `NO_PROXY` 和 `no_proxy` 中确保包含本机 Magpie 网关地址与回环主机名（`127.0.0.1`、`localhost`、`::1`），防止子进程继承外部代理时把发往本机网关的请求误送到外部代理。
+22. `agent teleport` 删除全部凭据迁移能力：不再打包、封存或还原任何凭据（含信封 `envelope.json`、环境凭据导出、目标机凭据落盘还原及容器凭据暂存）。原因：`host-invite` 已删除，`teleport` 只允许同一用户的 host 之间转移，调用方同时控制来源和目标 host，可直接在目标机器配置 Magpie，不需要 `teleport` 保留任何凭据迁移能力。`teleport` 简化为只迁移 agent 的状态、会话与绑定的模型 ID；目标机接收时直接落盘、不预检本机 Magpie，启动或唤醒时直接使用目标机器的 Magpie 并按常规检查。`contract/agent-teleport/` 契约随之修改。`hyprial doctor` 删除旧的 `codex-credential-backups` 检查，由 daemon 新增 Magpie 诊断项（网关是否可达、各 agent 绑定的模型 ID 在本机网关里是否存在），CLI 和 GUI 只请求并渲染检查结果。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
-## 2. 尚未决定
+## 2. 实现前待核实项
 
-- 跨机 `agent teleport` 与 `hyprial doctor` 在模型凭据移交 Magpie 之后的行为。
 - 第 14 条有一点尚未核实：Magpie 的管理接口能否删除单个订阅账号（它的命令行帮助里没有这样的命令）。实现前先确认。
 - 第 15 条有一点尚未核实：三个旧 PR 里各有多少能直接摘用，还没有逐个核对。
 - 第 12 条有一点尚未核实：分组在会话中途换了实际提供服务的模型之后，恢复检查和 thinking 签名是否受影响。实现前先测。
