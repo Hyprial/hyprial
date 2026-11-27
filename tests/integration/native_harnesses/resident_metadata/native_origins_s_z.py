@@ -161,4 +161,8 @@ NATIVE_ORIGINS_PART = {
     "daemon/impl/terminals/acquisition/download.py": ("resident", ("new-module: pinned hc acquisition",)),
     "daemon/impl/terminals/acquisition/extract.py": ("resident", ("new-module: pinned hc acquisition",)),
     "daemon/impl/terminals/acquisition/lock.py": ("resident", ("new-module: pinned hc acquisition",)),
+    "daemon/impl/terminals/client/__init__.py": ("resident", ("new-module: hc local IPC client",)),
+    "daemon/impl/terminals/client/events.py": ("resident", ("new-module: hc local IPC client",)),
+    "daemon/impl/terminals/client/protocol.py": ("resident", ("new-module: hc local IPC client",)),
+    "daemon/impl/terminals/client/rpc.py": ("resident", ("new-module: hc local IPC client",)),
 }
