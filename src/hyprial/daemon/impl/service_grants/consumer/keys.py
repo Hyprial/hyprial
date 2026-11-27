@@ -1,7 +1,12 @@
 # Decision notes (service grant S5, 2026-11-26):
-# - The opened Key becomes one user-provider entry written through identity's
-#   existing public writer, under a name derived from the grant id alone. A
-#   user entry that already owns that name is never overwritten.
+# - The opened Key becomes one user-provider entry, under a name derived from
+#   the grant id alone. A user entry that already owns that name is never
+#   overwritten.
+# - S5 fix (2026-11-27, critic 1): the first write goes through identity's
+#   create-only entry, which checks and writes under the record's own write
+#   lock. The lstat beforehand only saves opening a credential for nothing;
+#   an entry that appears after it is refused by identity ("entry-exists"),
+#   never merged over.
 # - Ownership is proved by a private ledger, not by the name: one row per
 #   (org, grant id) naming the entry id and the digest of the Key value this
 #   slice wrote into it. The proof is about the Key, not about the file: the
@@ -50,7 +55,8 @@ from typing import Any
 from hyprial.identity import (
     EncryptionKey,
     IdentityRecordError,
-    SecretResolver,
+    SecretResolutionError,
+    create_user_provider,
     delete_user_provider,
     machine_fingerprint,
     read_onboarding_subject,
@@ -385,22 +391,14 @@ def _restore(
     except Exception:
         return KeyOutcome.refused(grant, CREDENTIAL_UNOPENABLE)
     try:
-        _write_entry(home, entry_id, {KEY_FIELD: text})
+        create_user_provider(home, entry_id, {KEY_FIELD: text})
         info = path.lstat()
+    except SecretResolutionError as error:
+        return KeyOutcome.refused(grant, ENTRY_EXISTS if error.category == "exists" else KEY_UNAVAILABLE)
     except Exception:
         return KeyOutcome.refused(grant, KEY_UNAVAILABLE)
     ledger.claim(KeyRow(grant.org, grant.grant_id, grant.grantor, entry_id, _digest(text), info.st_size, info.st_mtime_ns))
     return KeyOutcome(entry_id, True, True)
-
-
-def _write_entry(home: Path, entry_id: str, values: dict[str, str]) -> None:
-    """Write through identity's existing operator-side user-provider writer.
-
-    Like ``read_user_provider_value`` beside it, this is an owner-side daemon
-    operation, so no agent registry is consulted.
-    """
-
-    SecretResolver(home, None).write_user_provider(entry_id, values)  # type: ignore[arg-type]
 
 
 def withdraw_entry(row: KeyRow, home: Path) -> str:
