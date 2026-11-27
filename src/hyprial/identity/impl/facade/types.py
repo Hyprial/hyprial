@@ -289,6 +289,7 @@ if TYPE_CHECKING:
         agent_secret_store_exists,
     )
     from hyprial.identity.impl.agents.runtime.secrets import secret_environment_name_is_allowed as secret_environment_name_is_allowed
+    from hyprial.identity.impl.agents.runtime.secrets import create_user_provider as create_user_provider
     from hyprial.identity.impl.agents.runtime.secrets import delete_user_provider as delete_user_provider
     from hyprial.identity.impl.agents.runtime.secrets import read_user_provider_value as read_user_provider_value
     from hyprial.identity.impl.agents.secret_store import secret_fingerprint as secret_fingerprint
@@ -425,7 +426,7 @@ __all__ = [
     'WORKFLOW_REMOTE_OWNER_UNSUPPORTED', 'WORKFLOW_WORKER_RECEIPT_MISMATCH', 'WorkerProxyError', 'WorkerSessionBinding', 'address_path', 'agent_config_digest', 'agent_home_mode',
     'agent_id_for_entity_token', 'agent_secret_store_exists', 'ambient_proxy_absent', 'apply_runtime_environment_profile', 'assess_agent_readiness',
     'bootstrap_yaml', 'check_org_context', 'check_shared_path', 'compose_worker_child_launch', 'consume_rotation_event',
-    'decode_invite', 'default_bootstrap', 'default_role_grants_document', 'delete_user_provider', 'derived_proxy_environment', 'desired_generation', 'device_key_path', 'device_record_path',
+    'decode_invite', 'default_bootstrap', 'default_role_grants_document', 'create_user_provider', 'delete_user_provider', 'derived_proxy_environment', 'desired_generation', 'device_key_path', 'device_record_path',
     'directory_device_path', 'directory_owner_principal', 'encode_invite', 'explain', 'explain_target', 'id_form_minting', 'identity_credential_path', 'identity_slug', 'inspect_logout_artifacts',
     'install_native_credential', 'install_native_credential_set', 'inspect_native_credentials', 'invite_deep_link', 'invite_https_url', 'is_inactive', 'is_org_acl_space', 'is_org_directory_space', 'JoinIdentityError', 'JoinTokenLedger', 'launch_worker_proxy_route',
     'load_packaged_support_matrix', 'machine_binding_path', 'machine_fingerprint', 'mark_first_published', 'may_send', 'migrate_legacy_agent_keep_list', 'name_taken_remedy', 'native_secrets_root', 'node_owner_or_none',

@@ -41,6 +41,7 @@ __all__ = [
     "SecretResolver",
     "SecretResolutionError",
     "SecretSource",
+    "create_user_provider",
     "delete_user_provider",
     "read_user_provider_value",
     "secret_environment_name_is_allowed",
@@ -360,6 +361,34 @@ class SecretResolver:
             model_records.write(path, values)
         except (OSError, PrivateAccessUnsupported, ValueError):
             raise SecretResolutionError("unavailable", entry_id, "write") from None
+        return path
+
+    def create_user_provider(self, entry_id: str, values: Mapping[str, str]) -> Path:
+        """Create a new user-owned provider entry; never merge into or replace one that exists.
+
+        The create-only counterpart of :meth:`write_user_provider`, for a
+        writer that must not own a name the user already has. It takes the
+        same lock and performs the same validation; under the lock it either
+        finds no entry file at the path and creates it, or raises
+        :class:`SecretResolutionError` with category ``"exists"`` and writes
+        nothing. A symlink or a directory at the path counts as "exists".
+        """
+
+        _validate_entry(entry_id)
+        if any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in values.items()
+        ):
+            raise TypeError("provider secret fields and values must be strings")
+        directory = self.hyprial_home / "secrets" / "providers"
+        self._ensure_private_directory(directory)
+        path = directory / f"{entry_id}.json"
+        try:
+            model_records.write(path, values, create_only=True)
+        except FileExistsError:
+            raise SecretResolutionError("exists", entry_id, "create") from None
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "create") from None
         return path
 
     def configure_model_service(
@@ -794,6 +823,18 @@ def read_user_provider_value(
         route_required=resolver.model_route_required(entry_id, field_name),
     )
     return resolver._read_value(resolver._entry_path("user", grant), grant)[0]
+
+
+def create_user_provider(hyprial_home: Path, entry_id: str, values: Mapping[str, str]) -> Path:
+    """Create one user-provider entry only when nothing is at its path.
+
+    The owner-side form of :meth:`SecretResolver.create_user_provider`: the
+    existence check and the write happen under the record's write lock, so an
+    entry that appears between a caller's own look and this call is refused
+    with category ``exists``, never merged into or replaced.
+    """
+
+    return SecretResolver(hyprial_home, None).create_user_provider(entry_id, values)  # type: ignore[arg-type]
 
 
 def delete_user_provider(hyprial_home: Path, entry_id: str) -> bool:
