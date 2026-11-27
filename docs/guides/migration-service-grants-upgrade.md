@@ -128,7 +128,7 @@ hyprial org service grant <PORT> --org group-<name> --device '<owner>/<deviceId>
 hyprial org service grants --org group-<name>
 ```
 
-`Granted:` 下列出刚写的授权，状态为 `effective`。暴露方日志（组件 `service`）里出现 `service.grant.key_unavailable` 时，看它的 `reason`：`member-without-local-key` 与 `member-not-in-roster` 多数在接收方上线、名册刷新（约 60 秒）后的下一次派生自动消失，处置见默认拒绝说明第 5 节。
+`Granted:` 下列出刚写的授权，状态为 `effective`；末尾的 `Grant documents:` 一节列出本机在该 org 名下的文档数与上限（`<份数>/256`）。补发时对同一端口、同一接收方再授权一次不会多出一份授权，而是原地更新原授权，命令首行是 `Updated:`。暴露方日志（组件 `service`）里出现 `service.grant.key_unavailable` 时，看它的 `reason`：`member-without-local-key` 与 `member-not-in-roster` 多数在接收方上线、名册刷新（约 60 秒）后的下一次派生自动消失，处置见默认拒绝说明第 5 节。
 
 ### 第 6 步：接收方
 
