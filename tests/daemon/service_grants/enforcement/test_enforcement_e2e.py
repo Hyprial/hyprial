@@ -17,14 +17,21 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from hyprial.daemon.impl.forwarding import ForwardingSidecarController, ForwardingSidecarSupervisor
+from hyprial.daemon.impl.forwarding import (
+    ForwardingSidecarController,
+    ForwardingSidecarError,
+    ForwardingSidecarSupervisor,
+)
 from hyprial.daemon.impl.service_grants.enforcement import ServiceAdmissionEnforcer
+from hyprial.daemon.impl.service_grants.enforcement.wiring import unexpose_port
 from tests.daemon.service_grants.enforcement._crowd import crowd_grants, crowd_roster
 from tests.daemon.service_grants.enforcement._support import (
     ALICE_NODE,
@@ -603,4 +610,239 @@ def test_a_revoke_that_fails_during_unexpose_is_logged_and_does_not_raise(make_r
     assert result == {"port": PORT, "revoked": [], "failed": [{"org": "*", "code": "OSError"}]}
     [(level, fields)] = rig.logged(UNEXPOSE_FAILED)
     assert (level, fields) == ("warn", {"port": PORT, "org": "*", "code": "OSError"})
+    assert enforcer.last_set(PORT) == "keys"
+
+
+# -- the derivation lock and the unexpose wait (critic finding 2) --------------
+#
+# Decision (S4-py fix, 2026-11-27, critic finding 2): one enforcer object is
+# shared by the slow derivation and the unexpose in every case, because what
+# orders the two is that object's own state; a second enforcer has a second
+# lock and would prove nothing. A derivation is held on one step through an
+# injected reader or a wrapped supervisor call, so a wait is measured against
+# that step and not against a scheduler. The unexpose goes through the
+# wiring's own function over an application that carries only the enforcer.
+
+THIRD_PORT = PORT + 2
+WAIT_BOUND = 1.0
+
+
+class _Held:
+    """A step of one derivation that blocks until the test releases it."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self) -> dict[str, Any] | None:
+        self.entered.set()
+        assert self.release.wait(20.0)
+        return {"readiness": {}, "tailnets": []}
+
+
+class _Derivation:
+    """One derivation on its own thread, held on one step until released."""
+
+    def __init__(self, rig: Rig, *, step: str) -> None:
+        self.rig = rig
+        self.held = _Held()
+        self.worker: threading.Thread | None = None
+        self._expose = rig.supervisor.expose
+        if step == "roster":
+            self.reader: Any = self.held
+        else:
+            self.reader = rig.roster
+            rig.supervisor.expose = self._held_expose
+
+    def _held_expose(self, exposure: Any, **admission: Any) -> Any:
+        if exposure["port"] == PORT:
+            self.held.entered.set()
+            assert self.held.release.wait(20.0)
+        return self._expose(exposure, **admission)
+
+    def start(self, enforcer: ServiceAdmissionEnforcer) -> None:
+        enforcer._roster_reader = self.reader
+        self.worker = threading.Thread(target=enforcer.apply_now, daemon=True)
+        self.worker.start()
+        assert self.held.entered.wait(10.0)
+
+    def finish(self) -> None:
+        self.held.release.set()
+        assert self.worker is not None
+        self.worker.join(20.0)
+        assert not self.worker.is_alive()
+        self.rig.supervisor.expose = self._expose
+
+
+def _unexpose(rig: Rig, enforcer: ServiceAdmissionEnforcer, port: int) -> tuple[threading.Thread, list[Any]]:
+    """Start the wiring's unexpose of ``port`` on its own thread."""
+
+    app = SimpleNamespace(_service_admission_enforcer=enforcer)
+    outcome: list[Any] = []
+
+    def remove() -> None:
+        rig.supervisor.unexpose(port)
+        rig.harness.exposures.remove(port)
+
+    def run() -> None:
+        try:
+            outcome.append(unexpose_port(app, port, remove))
+        except BaseException as error:  # noqa: BLE001 - the test reads the failure
+            outcome.append(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def _done_within(thread: threading.Thread, seconds: float) -> bool:
+    thread.join(seconds)
+    return not thread.is_alive()
+
+
+def _exposed_ports(rig: Rig) -> set[int]:
+    return {int(item["port"]) for item in rig.harness.exposures.list()}
+
+
+def _ops(rig: Rig, port: int) -> list[str]:
+    """The expose and unexpose commands for ``port``, in wire order."""
+
+    commands = [json.loads(line) for line in rig.receipt.read_text().splitlines()]
+    return [
+        command["op"]
+        for command in commands
+        if command["op"] in {"expose", "unexpose"} and command.get("port") == port
+    ]
+
+
+def _granted(rig: Rig) -> list[str]:
+    return [item["grantId"] for item in rig.harness.grants().grants(org=ORG)["granted"]]
+
+
+@pytest.mark.parametrize("step", ["roster", "push"])
+def test_an_unexpose_of_another_port_waits_for_no_step_of_a_derivation(
+    make_rig: Any, step: str
+) -> None:
+    """Critic finding 2: nothing a derivation does is another port's unexpose's business.
+
+    A maintenance tick over several ports spends its roster budget and then
+    one push per changed port. The unexpose of a port that is in neither used
+    to queue behind the whole derivation, because the derivation held one lock
+    from its first read to its last push.
+    """
+
+    rig = make_rig()
+    rig.add_exposure(OTHER_PORT)
+    rig.add_exposure(THIRD_PORT)
+    enforcer = rig.build(interval_seconds=0.0)
+    enforcer.apply_now()
+    rig.grant(BOB_NODE.slug)
+    rig.grant(CAROL_NODE.slug, port=OTHER_PORT)
+    derivation = _Derivation(rig, step=step)
+    derivation.start(enforcer)
+    try:
+        unexposer, outcome = _unexpose(rig, enforcer, THIRD_PORT)
+
+        assert _done_within(unexposer, WAIT_BOUND), outcome
+    finally:
+        derivation.finish()
+
+    assert outcome == [None]
+    assert THIRD_PORT not in _exposed_ports(rig)
+    assert _ops(rig, THIRD_PORT)[-1] == "unexpose"
+    assert _ops(rig, PORT)[-1] == "expose"
+    assert rig.exposes(port=PORT)[-1]["keys"] == [BOB_KEY]
+
+
+def test_an_unexpose_waits_for_the_push_of_its_own_port_and_that_wait_is_ordered(
+    make_rig: Any,
+) -> None:
+    """The one wait an unexpose has is the push of its own port, and it ends after it.
+
+    A derivation that is already pushing the port is let to finish, so that
+    the unexpose is the port's last command on the wire. Before the release
+    the unexpose is still waiting; after it the unexpose follows the push.
+    """
+
+    rig = make_rig()
+    rig.add_exposure(OTHER_PORT)
+    enforcer = rig.build(interval_seconds=0.0)
+    enforcer.apply_now()
+    rig.grant(BOB_NODE.slug)
+    kept = rig.grant(CAROL_NODE.slug, port=OTHER_PORT)["grantId"]
+    derivation = _Derivation(rig, step="push")
+    derivation.start(enforcer)
+    unexposer, outcome = _unexpose(rig, enforcer, PORT)
+    waiting = not _done_within(unexposer, 0.3)
+    derivation.held.release.set()
+
+    assert waiting
+    assert _done_within(unexposer, WAIT_BOUND), outcome
+    derivation.finish()
+    assert outcome == [None]
+    assert _ops(rig, PORT)[-2:] == ["expose", "unexpose"]
+    assert PORT not in _exposed_ports(rig)
+    assert _granted(rig) == [kept]
+
+
+def test_an_unexpose_that_cannot_get_its_port_within_the_bound_fails_and_nothing_moves(
+    make_rig: Any,
+) -> None:
+    """At the bound the three states agree: the unexpose fails and changes nothing.
+
+    The push of the port is held past the bound. The unexpose then fails with
+    the forwarding error the exposure path already maps, and what it would
+    have changed is exactly what it left alone: the exposure is still desired,
+    the sidecar still carries it, and its grants are still effective.
+    """
+
+    rig = make_rig()
+    grant_id = rig.grant(BOB_NODE.slug)["grantId"]
+    enforcer = rig.build(interval_seconds=0.0, unexpose_wait_seconds=0.3)
+    enforcer.apply_now()
+    assert rig.connect(BOB_NODE)["admitted"] is True
+    derivation = _Derivation(rig, step="push")
+    derivation.start(enforcer)
+    unexposer, outcome = _unexpose(rig, enforcer, PORT)
+
+    assert _done_within(unexposer, WAIT_BOUND), "the unexpose outlived its bound"
+    [error] = outcome
+    derivation.finish()
+    assert isinstance(error, ForwardingSidecarError)
+    assert error.code == "FORWARD_PROTOCOL"
+    assert PORT in _exposed_ports(rig)
+    assert _ops(rig, PORT)[-1] == "expose"
+    assert _granted(rig) == [grant_id]
+    assert rig.connect(BOB_NODE)["admitted"] is True
+
+
+def test_a_derivation_that_listed_a_port_before_its_unexpose_pushes_nothing_for_it(
+    make_rig: Any,
+) -> None:
+    """The exposure snapshot carries a generation, and an unexpose makes it stale.
+
+    The derivation takes its list and is held on the roster read. The unexpose
+    of a port it listed completes meanwhile. The stale derivation must not
+    expose that port again, or the port would be open with no record to close
+    it; its other port still gets its set on the derivation that follows.
+    """
+
+    rig = make_rig()
+    rig.add_exposure(OTHER_PORT)
+    enforcer = rig.build(interval_seconds=0.0)
+    enforcer.apply_now()
+    rig.grant(BOB_NODE.slug)
+    rig.grant(CAROL_NODE.slug, port=OTHER_PORT)
+    pushes_before = len(rig.exposes(port=OTHER_PORT))
+    derivation = _Derivation(rig, step="roster")
+    derivation.start(enforcer)
+    unexposer, outcome = _unexpose(rig, enforcer, OTHER_PORT)
+    assert _done_within(unexposer, WAIT_BOUND), outcome
+    derivation.held.answer = rig.roster()
+    derivation.finish()
+
+    assert outcome == [None]
+    assert _ops(rig, OTHER_PORT)[-1] == "unexpose"
+    assert len(rig.exposes(port=OTHER_PORT)) == pushes_before
+    assert OTHER_PORT not in _exposed_ports(rig)
     assert enforcer.last_set(PORT) == "keys"
