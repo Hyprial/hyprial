@@ -14,7 +14,7 @@
 #   grants are unknown, not absent.
 # - Gate fix (2026-11-27): error codes come from hyprial.error.codes, and the
 #   '<entryId>:<fieldName>' reference is cut at its one ':' by index. It is a
-#   user-provider entry reference, not an agent/channel URI, and the address
+#   saved secret entry reference, not an agent/channel URI, and the address
 #   parsing guard reserves split/partition on ':' for the URI module.
 """Service-grant CLI leaves mounted under ``hyprial org service``."""
 
