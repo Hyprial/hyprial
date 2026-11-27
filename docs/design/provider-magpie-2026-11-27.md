@@ -26,6 +26,7 @@
 13. `hyprial provider` 是一族顶层命令：`login <名字>`、`logout <名字>`、`list`。订阅登录和按 Key 接入的厂商都走它。可用的名字由 daemon 向 Magpie 查询，不在 hyprial 里写死。订阅类由 daemon 调用 Magpie 的登录流程，CLI 只显示链接和用户码并等待。Key 类由 CLI 用不回显的提示或标准输入读入 Key，交给 daemon 写进 Magpie。GUI 使用同一组 daemon 方法。命令行上的 `hyprial agent provider` 和 `hyprial user provider` 两族不再保留；按 agent 授权 Key 和轮换 Key 的功能随第 7、8 条取消。
 14. 名词用 provider，账号是它下面的一层，与 Magpie 的用词一致。一个 provider 下可以有多个账号或多把 Key：`hyprial provider login <provider>` 每执行一次就多加一个；`list` 按 provider 列出它下面的各个账号和 Key，不显示 Key 的值；`logout <provider> [账号]` 可以只退出其中一个。daemon 一侧改写现有的 `user.provider.login`、`user.provider.logout`、`user.provider.list`，方法名不变，后面调用 Magpie，并对 GUI 开放；`user.provider.rotate` 和 hyprial 自己的 Key 封存存储删除。这组方法的契约随之修改。
 15. PR #84、#85、#86 不在原分支上改，第 10 条留下的选择定为另开 PR 取代。前六个 PR 合入后，本线从 `dev` 另开新 PR，按 daemon、CLI、GUI 的顺序切片，三个旧 PR 里能用的部分摘过来。新 PR 合入后关闭这三个旧 PR，并在 PR #71 里记下取代它们的提交。
+16. daemon 级 provider 登录设计（PR #68）不合入，由本文取代。该 PR 已于 2026-11-27 关闭，分支保留。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
@@ -36,7 +37,6 @@
 - 第 12 条有一点尚未核实：分组在会话中途换了实际提供服务的模型之后，恢复检查和 thinking 签名是否受影响。实现前先测。
 - 第 9 条有一点尚未核实：授权方的网关是否校验交出的那把 key（流量经转发后从授权方本机回环进入网关时）。
 - 第 11 条有两点尚未核实：第一把管理 key 是否只能通过命令行建立；管理接口里的登录流程能否由 daemon 转给 GUI。
-- daemon 级 provider 登录设计（PR #68）的处置。
 - Windows 的范围。
 
 ## 3. 与其他线的关系
