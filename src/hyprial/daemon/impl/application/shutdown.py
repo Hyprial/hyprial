@@ -471,6 +471,7 @@ class _ShutdownMixin:
                     "IPC requests did not settle before domain teardown"
                 )
             self._ipc_request_owner = None
+        self._stop_grant_recheck()
         if self._service_manager is not None:
             service_timeout = dict(_CLOSE_STEP_BUDGETS)["service-connect"]
             if not self._close_service_connect(service_timeout):

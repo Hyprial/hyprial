@@ -664,6 +664,7 @@ class _MaintenanceMixin:
         orgfs = self._orgfs_runtime
         if orgfs is not None:  # the tick never raises: it logs and returns 0
             _timed("orgfs.anti_entropy", lambda: orgfs.anti_entropy_tick(now))
+        self._recheck_grant_only_start(now)
 
         adapter_events = (
             _timed("adapters.drain_health", self._lark_client.drain_health_events)

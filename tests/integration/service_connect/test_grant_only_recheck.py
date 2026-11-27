@@ -41,7 +41,8 @@ def test_a_first_grant_after_startup_starts_service_connect(tmp_path: Path) -> N
     try:
         assert app._service_manager is not None
         app._service_manager.reconcile()
-        assert app._handle_service_connect("service.list", {})["services"][0]["name"] == "magpie"
+        connected = app._handle_service_connect("service.connect", {"name": "magpie"})
+        assert connected["service"]["state"] == "listening"
     finally:
         assert app._close_service_connect(2.0) is True
 

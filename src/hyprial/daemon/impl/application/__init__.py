@@ -363,6 +363,10 @@ class DaemonApplication(
         self._forwarding_supervisor: ForwardingSidecarSupervisor | None = None
         self._service_manager_lock = threading.Lock()
         self._service_manager: Any | None = None
+        self._grant_recheck_lock = threading.Lock()
+        self._grant_recheck_thread: threading.Thread | None = None
+        self._grant_recheck_due = 0.0
+        self._grant_recheck_stopped = False
         self._forwarding_dialed: tuple[str, ...] | None = None
         # The other two parts of the session's connect set, kept apart so a
         # forwarding redial recomposes it instead of dropping them: the
