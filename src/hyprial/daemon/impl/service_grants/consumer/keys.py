@@ -7,6 +7,20 @@
 #   lock. The lstat beforehand only saves opening a credential for nothing;
 #   an entry that appears after it is refused by identity ("entry-exists"),
 #   never merged over.
+# - S5 fix (2026-11-27, critic 5): each ledger row also records a digest of
+#   the credential ciphertext (never of the plaintext). When the grantor
+#   replaces the ciphertext under the same (org, grant id), the credential is
+#   opened again and, while the entry still holds the Key this slice wrote,
+#   its KEY field is replaced through identity's ordinary writer (one atomic
+#   file replace under the record's write lock; a configured entry keeps its
+#   routes). An entry whose Key the user replaced is released and left alone,
+#   as before. A replacement that cannot be opened keeps the entry and the
+#   row as they are, reports the fixed reason, and is tried again next tick,
+#   as a first write that cannot be opened already is. The ownership check
+#   runs right before the write and outside identity's lock; the window
+#   between them is what remains of the race for a replaced credential.
+#   A ledger row without the credential digest is not read (no migration:
+#   nothing of this slice has shipped), which fails towards keeping files.
 # - Ownership is proved by a private ledger, not by the name: one row per
 #   (org, grant id) naming the entry id and the digest of the Key value this
 #   slice wrote into it. The proof is about the Key, not about the file: the
@@ -56,6 +70,7 @@ from hyprial.identity import (
     EncryptionKey,
     IdentityRecordError,
     SecretResolutionError,
+    SecretResolver,
     create_user_provider,
     delete_user_provider,
     machine_fingerprint,
@@ -90,9 +105,10 @@ def entry_path(home: Path, entry_id: str) -> Path:
 class KeyRow:
     """The ledger's proof that one entry holds the Key this slice wrote for one grant.
 
-    ``digest`` is the SHA-256 of the Key value as written; ``size`` and
-    ``mtime_ns`` describe the entry file right after the write, so a steady
-    tick can tell an untouched entry by one lstat.
+    ``digest`` is the SHA-256 of the Key value as written and
+    ``credential_digest`` the SHA-256 of the ciphertext it was opened from;
+    ``size`` and ``mtime_ns`` describe the entry file right after the write,
+    so a steady tick can tell an untouched entry by one lstat.
     """
 
     org: str
@@ -100,6 +116,7 @@ class KeyRow:
     grantor: str
     entry_id: str
     digest: str
+    credential_digest: str
     size: int
     mtime_ns: int
 
@@ -114,12 +131,13 @@ class KeyRow:
             "grantor": self.grantor,
             "entryId": self.entry_id,
             "digest": self.digest,
+            "credentialDigest": self.credential_digest,
             "size": self.size,
             "mtimeNs": self.mtime_ns,
         }
 
 
-_ROW_TEXT = ("org", "grantId", "grantor", "entryId", "digest")
+_ROW_TEXT = ("org", "grantId", "grantor", "entryId", "digest", "credentialDigest")
 _ROW_INTS = ("size", "mtimeNs")
 
 
@@ -293,6 +311,16 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def credential_digest(grant: DerivedGrant) -> str:
+    """The SHA-256 of the grant's ciphertext as canonical JSON; it never sees a plaintext."""
+
+    try:
+        text = json.dumps(grant.stored.grant.credential, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError, RecursionError):
+        return ""
+    return _digest(text)
+
+
 def _key_still_ours(row: KeyRow, home: Path) -> bool:
     """Whether the entry still holds the Key this slice wrote, read through identity's rules."""
 
@@ -363,7 +391,10 @@ def sync_entry(
                 ledger.release(row.key)
                 return KeyOutcome.refused(grant, ENTRY_MODIFIED)
             if not _unchanged(row, state.info):
-                ledger.claim(dataclasses.replace(row, size=state.info.st_size, mtime_ns=state.info.st_mtime_ns))
+                row = dataclasses.replace(row, size=state.info.st_size, mtime_ns=state.info.st_mtime_ns)
+                ledger.claim(row)
+            if row.credential_digest != credential_digest(grant):
+                return _rotate(grant, ledger, opener, home, row)
             return KeyOutcome(entry_id, True)
         ledger.release(row.key)
     elif not state.missing:
@@ -375,6 +406,51 @@ def _unchanged(row: KeyRow, info: os.stat_result) -> bool:
     return info.st_size == row.size and info.st_mtime_ns == row.mtime_ns
 
 
+def _open(grant: DerivedGrant, opener: Callable[[Any], bytes]) -> str:
+    """The plaintext Key; failures raise :class:`KeyUnavailable` with a fixed reason only."""
+
+    try:
+        return opener(grant.stored).decode("utf-8")
+    except KeyUnavailable:
+        raise
+    except Exception:
+        raise KeyUnavailable(CREDENTIAL_UNOPENABLE) from None
+
+
+def _claim(ledger: Ledger, grant: DerivedGrant, entry_id: str, text: str, info: os.stat_result) -> None:
+    ledger.claim(
+        KeyRow(
+            grant.org, grant.grant_id, grant.grantor, entry_id, _digest(text),
+            credential_digest(grant), info.st_size, info.st_mtime_ns,
+        )
+    )
+
+
+def _rotate(
+    grant: DerivedGrant,
+    ledger: Ledger,
+    opener: Callable[[Any], bytes],
+    home: Path,
+    row: KeyRow,
+) -> KeyOutcome:
+    """The ciphertext changed: open it again and replace the Key of an entry that is still ours."""
+
+    try:
+        text = _open(grant, opener)
+    except KeyUnavailable as error:
+        return KeyOutcome(row.entry_id, True, False, Rejection(grant.org, grant.grant_id, grant.grantor, error.reason))
+    if not _key_still_ours(row, home):
+        ledger.release(row.key)
+        return KeyOutcome.refused(grant, ENTRY_MODIFIED)
+    try:
+        SecretResolver(home, None).write_user_provider(row.entry_id, {KEY_FIELD: text})  # type: ignore[arg-type]
+        info = entry_path(home, row.entry_id).lstat()
+    except Exception:
+        return KeyOutcome(row.entry_id, True, False, Rejection(grant.org, grant.grant_id, grant.grantor, KEY_UNAVAILABLE))
+    _claim(ledger, grant, row.entry_id, text, info)
+    return KeyOutcome(row.entry_id, True, True)
+
+
 def _restore(
     grant: DerivedGrant,
     ledger: Ledger,
@@ -384,12 +460,9 @@ def _restore(
     entry_id: str,
 ) -> KeyOutcome:
     try:
-        plaintext = opener(grant.stored)
-        text = plaintext.decode("utf-8")
+        text = _open(grant, opener)
     except KeyUnavailable as error:
         return KeyOutcome.refused(grant, error.reason)
-    except Exception:
-        return KeyOutcome.refused(grant, CREDENTIAL_UNOPENABLE)
     try:
         create_user_provider(home, entry_id, {KEY_FIELD: text})
         info = path.lstat()
@@ -397,7 +470,7 @@ def _restore(
         return KeyOutcome.refused(grant, ENTRY_EXISTS if error.category == "exists" else KEY_UNAVAILABLE)
     except Exception:
         return KeyOutcome.refused(grant, KEY_UNAVAILABLE)
-    ledger.claim(KeyRow(grant.org, grant.grant_id, grant.grantor, entry_id, _digest(text), info.st_size, info.st_mtime_ns))
+    _claim(ledger, grant, entry_id, text, info)
     return KeyOutcome(entry_id, True, True)
 
 
@@ -419,6 +492,7 @@ __all__ = [
     "ENTRY_MODIFIED",
     "KEY_UNAVAILABLE",
     "LEDGER_RELPATH",
+    "credential_digest",
     "EntryState",
     "KeyOutcome",
     "KeyRow",
