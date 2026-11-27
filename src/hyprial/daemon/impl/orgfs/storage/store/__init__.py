@@ -409,6 +409,16 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         return int.from_bytes(digest[:7], "big") >> (56 - PYCRDT_CLIENT_ID_BITS)
 
 
+    def facade_client_id(self) -> int:
+        """Return the client id the document layer authors new documents under.
+
+        One id per store incarnation: distinct from every writer lane's id and
+        from the id live documents are constructed with.
+        """
+
+        return self._client_id(f"{self.node_id}.{self._incarnation}.facade")
+
+
     def _new_doc(self, doc_id: str, *, client_id: int | None = None) -> Doc:
         if client_id is None:
             client_id = self._client_id(f"{self.node_id}.{self._incarnation}.store")
