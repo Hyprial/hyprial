@@ -26,11 +26,11 @@
 # - "Could not read" is not "no grant". A Key entry is withdrawn only when
 #   every live org answered; while any org is unreadable and has no earlier
 #   answer to fall back on, nothing is withdrawn.
-# - Events are only service.grant.received (a Key entry was written, or
+# - Events are service.grant.received (a Key entry was written, or
 #   written again after it went missing) and service.grant.rejected (a grant
 #   yields no Key, and the fixed reason). A rejection is reported once per
 #   (org, grant id, reason) for as long as it lasts, so a steady tick emits
-#   nothing.
+#   nothing. service.grant.withdrawn, below, is the third.
 # - The connections bookkeeping (connected/forget/retain/remembers) is the
 #   ledger's connection set: service-connect reports which derived names are
 #   mapped, so a connection is withdrawn together with its grant, also after
@@ -59,6 +59,18 @@
 #   is not scanned again until it changes. service.grant.scan_limited (org,
 #   phase "periodic", reason, and grantor for a grantor's limit) is emitted
 #   when a limit starts or its reason changes, not on every tick it lasts.
+# - Integration fix (2026-11-27): when a grant's Key entry is withdrawn, or a
+#   grant leaves what is offered to service-connect (which then takes its
+#   mapping down), service.grant.withdrawn is emitted once for that grant,
+#   with org, grantId, grantor and a fixed reason: revoked or expired (the
+#   grant itself ended), credential-cleared (still offered, no Key any more),
+#   grantor-device-gone (the grantor's device row is gone), left-org,
+#   not-org-member, org-deleted, grant-removed (the document is gone), or the
+#   fixed rejection reason that now stops the grant (device-conflict among
+#   them). A grant that only became unreadable is not withdrawn and so not
+#   reported. A Key entry withdrawn after a restart is reported then; a
+#   mapping that came down while the daemon was stopped is not. A home that
+#   cannot prove who it is offers nothing and reports nothing.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
 
 from __future__ import annotations
@@ -90,6 +102,7 @@ from hyprial.identity import DIRECTORY_DIR, ORG_META_DOC, org_space_name
 
 from .derive import (
     DEVICE_CONFLICT,
+    DEVICE_UNKNOWN,
     KEY_GRANTED,
     KEY_NONE,
     KEY_UNAVAILABLE_STATE,
@@ -100,6 +113,7 @@ from .derive import (
     derive_org,
 )
 from .keys import (
+    CREDENTIAL_UNOPENABLE,
     LEDGER_RELPATH,
     Ledger,
     default_opener,
@@ -110,6 +124,15 @@ from .startup import SCAN_LIMITED_EVENT
 
 RECEIVED_EVENT = "service.grant.received"
 REJECTED_EVENT = "service.grant.rejected"
+WITHDRAWN_EVENT = "service.grant.withdrawn"
+REVOKED = "revoked"
+EXPIRED = "expired"
+CREDENTIAL_CLEARED = "credential-cleared"
+GRANTOR_DEVICE_GONE = "grantor-device-gone"
+LEFT_ORG = "left-org"
+NOT_ORG_MEMBER = "not-org-member"
+ORG_DELETED = "org-deleted"
+GRANT_REMOVED = "grant-removed"
 GRANTS_DIR = SERVICE_GRANTS_DIR
 PERIODIC_BUDGET_SECONDS = 2.0
 _COMPONENT = "service"
@@ -139,6 +162,9 @@ class _OrgAnswer:
     answer is re-read when that moment passes even though the fingerprint is
     the same. ``unknown`` names the grantors this answer could not read and
     had no earlier answer for: their Key entries are not withdrawn.
+    ``ended`` maps the grant ids this org holds that are revoked or expired
+    to which of the two, and ``deleted`` says the org is marked deleted; both
+    only explain a withdrawal.
     """
 
     fingerprint: object = _UNKNOWN
@@ -146,6 +172,8 @@ class _OrgAnswer:
     rejected: tuple[Rejection, ...] = ()
     expires_at_ms: int | None = None
     unknown: frozenset[str] = frozenset()
+    ended: tuple[tuple[str, str], ...] = ()
+    deleted: bool = False
 
     def expired(self, now_ms: int) -> bool:
         return self.expires_at_ms is not None and self.expires_at_ms <= now_ms
@@ -159,7 +187,10 @@ class _OrgAnswer:
             pair for pair in self.wanted
             if pair[0].stored.grant.expires_at_ms is None or pair[0].stored.grant.expires_at_ms > now_ms
         )
-        return _OrgAnswer(self.fingerprint, wanted, self.rejected, _earliest(wanted), self.unknown)
+        lapsed = tuple((pair[0].grant_id, EXPIRED) for pair in self.wanted if pair not in wanted)
+        return _OrgAnswer(
+            self.fingerprint, wanted, self.rejected, _earliest(wanted), self.unknown, self.ended + lapsed, self.deleted
+        )
 
 
 @dataclass(slots=True)
@@ -167,6 +198,7 @@ class _KeyPass:
     states: dict[tuple[str, str], tuple[str, str | None]] = field(default_factory=dict)
     rejected: list[Rejection] = field(default_factory=list)
     received: list[tuple[str, str, str, str]] = field(default_factory=list)
+    withdrawn: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 class GrantConsumer:
@@ -205,6 +237,7 @@ class GrantConsumer:
         self._contested: frozenset[str] = frozenset()
         self._limited: dict[str, tuple[object, str]] = {}
         self._grantor_limits: dict[tuple[str, str], str] = {}
+        self._offered: dict[tuple[str, str], str] = {}
 
     @property
     def active(self) -> bool:
@@ -218,6 +251,7 @@ class GrantConsumer:
         if not self.active:
             with self._lock:
                 self._snapshot = Snapshot()
+                self._offered = {}
             return
         try:
             self._refresh()
@@ -227,9 +261,10 @@ class GrantConsumer:
     def _refresh(self) -> None:
         with self._lock:
             left = set(read_left_orgs(self._home))
+            known = list(self._store.orgs())
             answers = {
                 org: self._answer_for(org)
-                for org in self._store.orgs()
+                for org in known
                 if org not in left and self._store.is_member(org, f"user:{self._owner}")
             }
             self._answers = answers
@@ -258,7 +293,44 @@ class GrantConsumer:
                 for grant in items
             )
             self._snapshot = Snapshot(grants, tuple(devices.values()))
-            self._report(sorted({*rejected, *keys.rejected}, key=_order), keys.received)
+            withdrawn = self._withdrawals(items, keys.withdrawn, rejected, answers, left, set(known))
+            self._report(sorted({*rejected, *keys.rejected}, key=_order), keys.received, withdrawn)
+
+    def _withdrawals(
+        self,
+        items: tuple[DerivedGrant, ...],
+        released: list[tuple[str, str, str]],
+        rejected: list[Rejection],
+        answers: dict[str, _OrgAnswer],
+        left: set[str],
+        known: set[str],
+    ) -> list[tuple[str, str, str, str]]:
+        offered = {(grant.org, grant.grant_id): grant for grant in items}
+        gone = {key: grantor for key, grantor in self._offered.items() if key not in offered}
+        gone.update({(org, grant_id): grantor for org, grant_id, grantor in released})
+        self._offered = {key: grant.grantor for key, grant in offered.items()}
+        stopped: dict[tuple[str, str], str] = {}
+        for item in rejected:
+            stopped.setdefault((item.org, item.grant_id), item.reason)
+        withdrawn = []
+        for (org, grant_id), grantor in sorted(gone.items()):
+            if org in left:
+                reason = LEFT_ORG
+            elif org not in answers:
+                reason = NOT_ORG_MEMBER if org in known else ORG_DELETED
+            elif answers[org].deleted:
+                reason = ORG_DELETED
+            elif grant_id in dict(answers[org].ended):
+                reason = dict(answers[org].ended)[grant_id]
+            elif (org, grant_id) in stopped:
+                found = stopped[(org, grant_id)]
+                reason = GRANTOR_DEVICE_GONE if found == DEVICE_UNKNOWN else found
+            elif (org, grant_id) in offered:
+                reason = CREDENTIAL_UNOPENABLE if offered[(org, grant_id)].has_credential else CREDENTIAL_CLEARED
+            else:
+                reason = GRANT_REMOVED
+            withdrawn.append((org, grant_id, grantor, reason))
+        return withdrawn
 
     def _answer_for(self, org: str) -> _OrgAnswer:
         previous = self._answers.get(org)
@@ -290,7 +362,7 @@ class GrantConsumer:
     ) -> tuple[_OrgAnswer, dict[str, str]]:
         now = self._now()
         if self._store.org_state(org) == "deleted":
-            return _OrgAnswer(fingerprint), {}
+            return _OrgAnswer(fingerprint, deleted=True), {}
         limits = ScanLimits(
             self._fs,
             deadline=self._monotonic() + PERIODIC_BUDGET_SECONDS,
@@ -307,6 +379,12 @@ class GrantConsumer:
             device_id=self._device_id,
             now_ms=now,
         )
+        ended = tuple(
+            (stored.grant.grant_id, REVOKED if stored.grant.revoked_at_ms is not None else EXPIRED)
+            for stored in scan.grants
+            if stored.grant.revoked_at_ms is not None
+            or (stored.grant.expires_at_ms is not None and stored.grant.expires_at_ms <= now)
+        )
         unknown: frozenset[str] = frozenset()
         if scan.limited:
             base = previous.unexpired(now) if previous is not None else _OrgAnswer()
@@ -316,7 +394,8 @@ class GrantConsumer:
                 wanted = (*wanted, *(pair for pair in base.wanted if pair[0].grantor in scan.limited))
                 rejected = (*rejected, *(item for item in base.rejected if item.grantor in scan.limited))
                 unknown = frozenset(grantor for grantor in scan.limited if grantor in base.unknown)
-        return _OrgAnswer(fingerprint, tuple(wanted), tuple(rejected), _earliest(wanted), unknown), scan.limited
+        answer = _OrgAnswer(fingerprint, tuple(wanted), tuple(rejected), _earliest(wanted), unknown, ended)
+        return answer, scan.limited
 
     def _note_grantor_limits(self, org: str, limited: dict[str, str]) -> None:
         for grantor, reason in sorted(limited.items()):
@@ -343,8 +422,8 @@ class GrantConsumer:
                 openable[(item.org, item.grant_id)] = item
         if settled:
             for key, row in tuple(self._ledger.rows.items()):
-                if key not in openable and (row.org, row.grantor) not in unknown:
-                    self._withdraw(key)
+                if key not in openable and (row.org, row.grantor) not in unknown and self._withdraw(key):
+                    keys.withdrawn.append((row.org, row.grant_id, row.grantor))
         for key, item in openable.items():
             outcome = sync_entry(item, self._ledger, self._opener(), self._home)
             if outcome.rejection is not None:
@@ -357,10 +436,12 @@ class GrantConsumer:
                 keys.states[key] = (KEY_UNAVAILABLE_STATE, None)
         return keys
 
-    def _withdraw(self, key: tuple[str, str]) -> None:
+    def _withdraw(self, key: tuple[str, str]) -> bool:
         row = self._ledger.release(key)
-        if row is not None:
-            withdraw_entry(row, self._home)
+        if row is None:
+            return False
+        withdraw_entry(row, self._home)
+        return True
 
     def _opener(self) -> Callable[[Any], bytes]:
         if self._open_credential is not None:
@@ -373,7 +454,14 @@ class GrantConsumer:
             device_id=self._device_id,
         )
 
-    def _report(self, rejected: list[Rejection], received: list[tuple[str, str, str, str]]) -> None:
+    def _report(
+        self,
+        rejected: list[Rejection],
+        received: list[tuple[str, str, str, str]],
+        withdrawn: Collection[tuple[str, str, str, str]] = (),
+    ) -> None:
+        for org, grant_id, grantor, reason in withdrawn:
+            self._emit("info", WITHDRAWN_EVENT, org=org, grantId=grant_id, grantor=grantor, reason=reason)
         current = {(item.org, item.grant_id, item.grantor, item.reason) for item in rejected}
         for key in sorted(current - self._reported):
             self._emit("warn", REJECTED_EVENT, org=key[0], grantId=key[1], grantor=key[2], reason=key[3])

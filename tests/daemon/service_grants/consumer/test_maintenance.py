@@ -442,4 +442,9 @@ def test_withdrawn_events_name_the_grant_without_private_material(world: dict[st
     text = world["events"].text()
     assert made["grant"]["grantId"] in text
     assert "nodekey:" not in text and "tcdevice" not in text
-    assert set(world["events"].names()) <= {"service.grant.received", "service.grant.rejected"}
+    assert set(world["events"].names()) <= {
+        "service.grant.received",
+        "service.grant.rejected",
+        "service.grant.withdrawn",
+    }
+    assert [row["reason"] for row in world["events"].of("service.grant.withdrawn")] == ["revoked"]
