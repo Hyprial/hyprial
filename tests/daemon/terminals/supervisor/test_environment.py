@@ -59,6 +59,23 @@ def test_private_environment_accepts_explicit_non_secret_passthrough(tmp_path: P
     assert private["NO_PROXY"] == "127.0.0.1"
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("MAGPIE_URL", "http://user:token@127.0.0.1:3425"),
+        ("MAGPIE_URL", "http://127.0.0.1:3425/?token=secret"),
+        ("NO_PROXY", "127.0.0.1@attacker.example"),
+    ],
+)
+def test_passthrough_rejects_credentials_and_secret_bearing_values(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    with pytest.raises(ValueError):
+        build_private_hc_environment(
+            tmp_path, {"HOME": "/host", "PATH": "/bin"}, passthrough={key: value}
+        )
+
+
 def test_holder_socket_length_is_checked_before_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

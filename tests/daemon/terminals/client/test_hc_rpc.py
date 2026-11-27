@@ -62,17 +62,19 @@ def test_terminal_run_validates_values_and_reuses_finished_names(tmp_path: Path)
         assert reused.address != first.address
 
 
-def test_server_stop_finishes_non_kept_terminals(tmp_path: Path) -> None:
+def test_server_stop_finishes_non_kept_terminals_and_closes_socket(tmp_path: Path) -> None:
     endpoint = tmp_path / "hc.sock"
-    with FakeHcServer(endpoint):
+    with FakeHcServer(endpoint) as server:
         client = HcClient(endpoint)
         terminal = client.terminal_run(["pi"], keep=False)
         kept = client.terminal_run(["pi"], keep=True)
         result = client.server_stop()
         assert result == {"stopped": True}
-        assert client.terminal_get(terminal.address).reason == "server_stop"
-        assert client.terminal_get(terminal.address).signal == 1
-        assert client.terminal_get(kept.address).state == "live"
+        assert server.stopped is True
+        assert server.socket_alive is False
+        assert server._terminals[terminal.address].reason == "server_stop"
+        assert server._terminals[terminal.address].signal == 1
+        assert server._terminals[kept.address].state == "live"
 
 
 def test_rpc_error_uses_data_kind_over_numeric_code(tmp_path: Path) -> None:

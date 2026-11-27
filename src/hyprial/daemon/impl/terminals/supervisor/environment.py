@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 from collections.abc import Mapping
+from urllib.parse import urlsplit
 
 from hyprial.kernel import hc_core_root
 from hyprial.kernel import hc_core_socket_path
@@ -22,8 +22,9 @@ class HcSocketPathTooLongError(ValueError):
 
 
 _BASE_KEYS = frozenset({"HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"})
-_SAFE_PASSTHROUGH = re.compile(r"^(?:MAGPIE_[A-Z0-9_]+|NO_PROXY|no_proxy)$")
-_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "OAUTH")
+_SAFE_PASSTHROUGH = frozenset(
+    {"MAGPIE_URL", "MAGPIE_BASE_URL", "MAGPIE_GATEWAY_URL", "NO_PROXY", "no_proxy"}
+)
 
 
 def build_private_hc_environment(
@@ -50,10 +51,8 @@ def build_private_hc_environment(
         for key, value in passthrough.items():
             if not isinstance(key, str) or not isinstance(value, str):
                 raise ValueError("hc passthrough values must be strings")
-            if _SAFE_PASSTHROUGH.fullmatch(key) is None or any(
-                marker in key.upper() for marker in _SECRET_MARKERS
-            ):
-                raise ValueError(f"unsafe hc passthrough key: {key}")
+            if key not in _SAFE_PASSTHROUGH or not _safe_passthrough_value(key, value):
+                raise ValueError(f"unsafe hc passthrough key or value: {key}")
             private[key] = value
     private.update(
         {
@@ -66,6 +65,22 @@ def build_private_hc_environment(
     )
     validate_hc_socket_paths(resolved_home)
     return private
+
+
+def _safe_passthrough_value(key: str, value: str) -> bool:
+    if any(character in value for character in "\r\n"):
+        return False
+    if key in {"NO_PROXY", "no_proxy"}:
+        return "@" not in value and "://" not in value and "?" not in value and "#" not in value
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 def validate_hc_socket_paths(home: Path, path_limit: int | None = None) -> None:

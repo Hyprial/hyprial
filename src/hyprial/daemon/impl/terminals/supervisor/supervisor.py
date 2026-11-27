@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from hyprial.kernel import cleanup_private_hc_runtime_dirs
@@ -24,6 +24,7 @@ from ..client import HcClient
 from ..client import HcEventSubscription
 from ..client import HcHeartbeatTimeout
 from ..client import HcStreamClosed
+from ..client import HcStreamEvent
 from ..client import HcTransportError
 from ..client import TerminalRecord
 from ..client import probe_socket_alive
@@ -31,6 +32,7 @@ from .environment import build_private_hc_environment
 from .environment import write_private_hc_config
 from .naming import member_terminal_labels
 from .naming import member_terminal_name
+from .naming import reconcile_orphan_terminals
 
 
 class HcGenerationIncompatibleError(RuntimeError):
@@ -67,6 +69,8 @@ class PrivateCoreSupervisor:
         restart_runner: Callable[[Sequence[str], Mapping[str, str]], Any] | None = None,
         cleanup: Callable[[str], Sequence[Path]] | None = None,
         version_remover: Callable[[str, Path], bool] | None = None,
+        active_launch_rows: Iterable[Any] | None = None,
+        active_launch_rows_provider: Callable[[], Iterable[Any]] | None = None,
         subscription_timeout: float = 0.2,
         startup_timeout: float = 5.0,
     ) -> None:
@@ -90,6 +94,11 @@ class PrivateCoreSupervisor:
         self._version_remover = version_remover or (
             lambda version, home: remove_hc_version_dir(version, home)
         )
+        if active_launch_rows_provider is not None:
+            self._active_launch_rows = active_launch_rows_provider
+        else:
+            rows = tuple(active_launch_rows or ())
+            self._active_launch_rows = lambda: rows
         self._subscription_timeout = subscription_timeout
         self._startup_timeout = startup_timeout
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hc-acquirer")
@@ -97,7 +106,10 @@ class PrivateCoreSupervisor:
         self._subscription: HcEventSubscription | None = None
         self._subscription_thread: threading.Thread | None = None
         self._state_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
         self._tracked: dict[str, TerminalRecord] = {}
+        self._pending_events: dict[str, set[str]] = {}
+        self._pending_launches = 0
         self._running = False
         self._core_version: str | None = None
         self._version_lagging = False
@@ -130,31 +142,33 @@ class PrivateCoreSupervisor:
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("private hc supervisor is closed")
-            client = self._client_factory(self._socket)
-            if probe_socket_alive(self._socket):
+        client = self._client_factory(self._socket)
+        if probe_socket_alive(self._socket):
+            with self._state_lock:
                 self._client = client
-                try:
-                    hello = client.hello()
-                except HcTransportError:
+            try:
+                hello = client.hello()
+            except HcTransportError:
+                with self._state_lock:
                     self._client = None
+            else:
+                if hello.version != self.lock.version:
+                    self._connect_old_core(client, hello)
                 else:
-                    if hello.version != self.lock.version:
-                        self._connect_old_core(client, hello)
-                    else:
-                        self._adopt_connected(client, hello)
-                    if self._generation_incompatible:
-                        raise HcGenerationIncompatibleError(
-                            "private hc core generation is incompatible with the pinned lock"
-                        )
-                    return client
-            executable = self._acquire().result()
-            self._launcher((str(executable), "server", "start"), self._environment)
-            client = self._wait_for_client()
-            hello = client.hello()
-            if hello.version != self.lock.version or hello.generation != self.lock.generation:
-                raise RuntimeError("started private hc core does not match the pinned lock")
-            self._adopt_connected(client, hello)
-            return client
+                    self._adopt_connected(client, hello)
+                if self._generation_incompatible:
+                    raise HcGenerationIncompatibleError(
+                        "private hc core generation is incompatible with the pinned lock"
+                    )
+                return client
+        executable = self._acquire().result()
+        self._launcher((str(executable), "server", "start"), self._environment)
+        client = self._wait_for_client()
+        hello = client.hello()
+        if hello.version != self.lock.version or hello.generation != self.lock.generation:
+            raise RuntimeError("started private hc core does not match the pinned lock")
+        self._adopt_connected(client, hello)
+        return client
 
     def ensure_running_and_run_terminal(
         self,
@@ -169,33 +183,68 @@ class PrivateCoreSupervisor:
         keep: bool = False,
         size: Mapping[str, int] | None = None,
     ) -> TerminalRecord:
-        client = self.ensure_running()
         with self._state_lock:
-            if self._generation_incompatible:
-                raise HcGenerationIncompatibleError(
-                    "new terminals are refused while hc generation is incompatible"
+            self._pending_launches += 1
+        try:
+            with self._lifecycle_lock:
+                client = self.ensure_running()
+                with self._state_lock:
+                    if self._generation_incompatible:
+                        raise HcGenerationIncompatibleError(
+                            "new terminals are refused while hc generation is incompatible"
+                        )
+                terminal = client.terminal_run(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    labels=member_terminal_labels(agent_id, member, role, spec_digest),
+                    name=member_terminal_name(agent_id, member, role),
+                    keep=keep,
+                    no_parent=True,
+                    no_notify=True,
+                    size=size,
                 )
-        terminal = client.terminal_run(
-            argv,
-            cwd=cwd,
-            env=env,
-            labels=member_terminal_labels(agent_id, member, role, spec_digest),
-            name=member_terminal_name(agent_id, member, role),
-            keep=keep,
-            no_parent=True,
-            no_notify=True,
-        )
-        with self._state_lock:
-            self._tracked[terminal.address] = terminal
-        return terminal
+                terminal = self._reconcile_terminal_after_run(client, terminal)
+                with self._state_lock:
+                    if terminal.state != "removed":
+                        self._tracked[terminal.address] = terminal
+                self._maybe_stop_when_idle()
+                return terminal
+        finally:
+            with self._state_lock:
+                self._pending_launches -= 1
 
     def remove_terminal(self, terminal: str) -> Mapping[str, Any]:
-        client = self._require_client()
-        result = client.terminal_rm(terminal)
+        with self._lifecycle_lock:
+            client = self._require_client()
+            result = client.terminal_rm(terminal)
+            with self._state_lock:
+                self._tracked.pop(terminal, None)
+            self._maybe_stop_when_idle()
+            return result
+
+    def _reconcile_terminal_after_run(
+        self, client: HcClient, terminal: TerminalRecord
+    ) -> TerminalRecord:
+        current = terminal
+        for _attempt in range(20):
+            try:
+                current = client.terminal_get(terminal.address)
+                break
+            except HcTransportError:
+                with self._state_lock:
+                    if terminal.address in self._pending_events:
+                        break
+                time.sleep(0.01)
         with self._state_lock:
-            self._tracked.pop(terminal, None)
-        self._maybe_stop_when_idle()
-        return result
+            events = self._pending_events.pop(terminal.address, set())
+        if "removed" in events:
+            return replace(current, state="removed")
+        if "lost" in events:
+            return replace(current, state="lost")
+        if "finished" in events:
+            return replace(current, state="finished")
+        return current
 
     def reconcile_versions(self) -> None:
         client = self._require_client()
@@ -272,7 +321,25 @@ class PrivateCoreSupervisor:
             self._generation_incompatible = hello.generation != self.lock.generation
         self._start_subscription(client)
         if not self._generation_incompatible:
-            self.reconcile_versions()
+            self._reconcile_orphans(client)
+            if self.snapshot().running:
+                self.reconcile_versions()
+
+    def _reconcile_orphans(self, client: HcClient) -> None:
+        with self._lifecycle_lock:
+            with self._state_lock:
+                terminals = tuple(self._tracked.values())
+            orphaned = reconcile_orphan_terminals(terminals, self._active_launch_rows())
+            for address in orphaned:
+                try:
+                    client.terminal_kill(address)
+                    client.terminal_rm(address)
+                except HcTransportError:
+                    continue
+                with self._state_lock:
+                    self._tracked.pop(address, None)
+            if orphaned:
+                self._maybe_stop_when_idle()
 
     def _start_subscription(self, client: HcClient) -> None:
         with self._state_lock:
@@ -329,36 +396,56 @@ class PrivateCoreSupervisor:
             except HcTransportError:
                 return
             delay = 0.05
-            self._apply_event(event.type, event.terminal, event.data)
+            self._apply_event(event)
 
-    def _apply_event(self, event_type: str, terminal: str | None, data: Mapping[str, Any]) -> None:
+    def _apply_event(self, event: HcStreamEvent) -> None:
+        if event.type == "missed" and event.snapshot is not None:
+            with self._state_lock:
+                self._tracked = {
+                    item.address: item for item in event.snapshot.terminals
+                }
+            self._reconcile_orphans(self._require_client())
+            self._maybe_stop_when_idle()
+            return
+        terminal = event.terminal
         if terminal is None:
             return
         with self._state_lock:
             current = self._tracked.get(terminal)
-            if event_type == "removed":
+            if event.type == "removed":
                 self._tracked.pop(terminal, None)
-            elif current is not None and event_type in {"finished", "lost"}:
-                self._tracked[terminal] = replace(current, state=event_type)
-        if event_type == "removed":
+                if current is None:
+                    self._pending_events.setdefault(terminal, set()).add("removed")
+            elif event.type in {"finished", "lost"}:
+                if current is None:
+                    self._pending_events.setdefault(terminal, set()).add(event.type)
+                else:
+                    self._tracked[terminal] = replace(current, state=event.type)
+        if event.type == "removed":
             self._maybe_stop_when_idle()
 
     def _maybe_stop_when_idle(self) -> None:
-        with self._state_lock:
-            if not self._running or any(item.state == "live" for item in self._tracked.values()):
+        with self._lifecycle_lock:
+            with self._state_lock:
+                if (
+                    not self._running
+                    or self._pending_launches
+                    or self._pending_events
+                    or self._tracked
+                ):
+                    return
+                client = self._client
+            if client is None:
                 return
-            client = self._client
-        if client is None:
-            return
-        client.server_stop()
-        deadline = time.monotonic() + min(self._startup_timeout, 1.0)
-        while time.monotonic() < deadline and probe_socket_alive(self._socket):
-            time.sleep(0.01)
-        failures = tuple(self._cleanup(hc_session_name(self.home)))
-        with self._state_lock:
-            self._running = False
-            self._subscription = None
-            self._runtime_cleanup_warnings = tuple(str(item) for item in failures)
+            client.server_stop()
+            deadline = time.monotonic() + min(self._startup_timeout, 1.0)
+            while time.monotonic() < deadline and probe_socket_alive(self._socket):
+                time.sleep(0.01)
+            failures = tuple(self._cleanup(hc_session_name(self.home)))
+            with self._state_lock:
+                self._running = False
+                self._subscription = None
+                self._runtime_cleanup_warnings = tuple(str(item) for item in failures)
 
     def _acquire(self) -> Future[Path]:
         with self._state_lock:

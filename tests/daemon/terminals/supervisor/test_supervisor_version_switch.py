@@ -54,6 +54,7 @@ def test_connect_switches_old_core_with_pinned_executable_and_defers_cleanup(
         )
         assert "HYPRIAL_TOKEN" not in restarts[0][1]
         assert old_marker.exists()
+        assert server._holders[0]["current"] is False
         assert supervisor.snapshot().pending_old_versions == ("0.1.21",)
         server._holders = []
         supervisor.reconcile_versions()
