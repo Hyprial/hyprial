@@ -700,7 +700,6 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
 
     def publish_self(self) -> dict[str, Any]:
         """Write this device into every org it belongs to (§4.3)."""
-
         published: list[str] = []
         skipped: list[dict[str, str]] = []
         errors: list[dict[str, str]] = []
@@ -783,7 +782,6 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
                 if self._join_budget is not None:
                     wait = self._join_budget.remaining(leg, wait)
                 self._sleep(wait)
-
     def _publish_into(self, org: str) -> bool:
         """Write this device's row into one org's directory.
 

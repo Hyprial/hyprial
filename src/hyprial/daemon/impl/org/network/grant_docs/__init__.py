@@ -16,6 +16,10 @@
 #   rule (SealedEnvelope.service_grant_path_segment), the rule the domain
 #   models apply, so the store never writes a path the envelope would refuse.
 #   SERVICE_GRANTS_DIR is defined here and nowhere else.
+# - OrgFS protocol 3 (2026-11-27): ``unknown-doc`` is a harmless disappearance
+#   race, but every other OrgFS read failure propagates. In particular,
+#   ``content-pending`` means temporarily unreadable, never an absent grant;
+#   recipients retain their prior answer and exposers tighten at upper layers.
 """Owner-scoped service-grant documents in an org directory space."""
 
 from __future__ import annotations
@@ -184,7 +188,11 @@ class ServiceGrantDocuments:
                 directory_owner_principal(author)
                 for author in self._fs.document_authors(space_id, f"id:{node_id}")
             }
-        except (OrgFsError, TypeError, ValueError, RecursionError):
+        except OrgFsError as error:
+            if error.code == "unknown-doc":
+                return None
+            raise
+        except (TypeError, ValueError, RecursionError):
             return None
         return record if authors == {path_principal} else None
 
