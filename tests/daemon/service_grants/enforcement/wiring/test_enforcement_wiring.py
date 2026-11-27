@@ -265,16 +265,16 @@ def _effective_grants(daemon: Daemon) -> list[str]:
     "method", ["service.grant", "service.revoke"], ids=["grant", "revoke"]
 )
 @pytest.mark.parametrize(
-    ("failure", "reason"),
+    ("failure", "reason", "error_type"),
     [
-        pytest.param("raises", "failed", id="the-submit-raises"),
-        pytest.param(AdmissionResult.CLOSED, "unscheduled", id="the-cadence-is-closed"),
-        pytest.param(AdmissionResult.OVERLOADED, "unscheduled", id="the-cadence-is-overloaded"),
-        pytest.param(None, "unscheduled", id="there-is-no-cadence"),
+        pytest.param("raises", "failed", "RuntimeError", id="the-submit-raises"),
+        pytest.param(AdmissionResult.CLOSED, "unscheduled", None, id="the-cadence-is-closed"),
+        pytest.param(AdmissionResult.OVERLOADED, "unscheduled", None, id="the-cadence-is-overloaded"),
+        pytest.param(None, "unscheduled", None, id="there-is-no-cadence"),
     ],
 )
 def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_durable(
-    make_daemon: Any, monkeypatch: pytest.MonkeyPatch, failure: Any, reason: str, method: str
+    make_daemon: Any, monkeypatch: pytest.MonkeyPatch, failure: Any, reason: str, error_type: str | None, method: str
 ) -> None:
     """Critic finding 1: an immediate trigger that does not reach the cadence is visible.
 
@@ -282,8 +282,9 @@ def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_dur
     when they ask for a re-derivation. When that request cannot be delivered
     the write is not rolled back, and it used to be indistinguishable from a
     delivered one. It is one ``service.grant.admission_trigger_failed`` event
-    that names the operation and the kind of failure, carrying nothing else;
-    and the write it followed is still on disk.
+    that names the operation and the kind of failure, and the exception's
+    class when one was raised; it carries nothing else, and no message of the
+    exception. The write it followed is still on disk.
     """
 
     daemon = make_daemon()
@@ -310,7 +311,10 @@ def test_a_trigger_that_cannot_be_delivered_is_logged_and_the_grant_is_still_dur
 
     [(level, fields)] = daemon.logged(TRIGGER_FAILED)
     assert level == "warn"
-    assert fields == {"method": method, "reason": reason}
+    expected = {"method": method, "reason": reason}
+    if error_type is not None:
+        expected["errorType"] = error_type
+    assert fields == expected
     if method == "service.grant":
         assert answer["grant"]["grantId"]
         assert _effective_grants(daemon) == sorted([granted, answer["grant"]["grantId"]])
