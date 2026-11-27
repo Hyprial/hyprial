@@ -162,13 +162,16 @@ class HcClient:
             raise HcTransportError("hc response result is not an object")
         return result
 
-    def _open_subscription(self, params: Mapping[str, Any]) -> tuple[Any, SubscribeSnapshot]:
+    def _open_subscription(
+        self, params: Mapping[str, Any]
+    ) -> tuple[Any, SubscribeSnapshot, bytearray]:
         with self._request_lock:
             request_id = next(self._request_ids)
         stream = self._connect()
+        pending = bytearray()
         try:
             self._send(stream, request_id, "events.subscribe", params)
-            response = _decode_line(_read_line(stream, self.timeout))
+            response = _decode_line(_read_line(stream, self.timeout, pending))
             if response.get("id") != request_id:
                 raise HcTransportError("hc returned a response for another request")
             if "error" in response:
@@ -176,7 +179,7 @@ class HcClient:
             result = response.get("result")
             if not isinstance(result, Mapping):
                 raise HcTransportError("hc subscription snapshot is not an object")
-            return stream, parse_snapshot(result)
+            return stream, parse_snapshot(result), pending
         except BaseException:
             stream.close()
             raise

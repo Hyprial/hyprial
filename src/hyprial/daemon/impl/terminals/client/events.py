@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 _EVENT_TYPES = frozenset(
     {
         "created",
+        "doc",
         "foreground",
         "status",
         "title",
@@ -55,11 +56,10 @@ class HcEventSubscription:
         ):
             raise ValueError("label values must be strings")
         params = {} if labels is None else {"labels": dict(labels)}
-        self._stream, self.snapshot = client._open_subscription(params)
+        self._stream, self.snapshot, self._buffer = client._open_subscription(params)
         self.read_timeout = read_timeout
         self.last_seq = self.snapshot.seq
         self._closed = False
-        self._buffer = bytearray()
         self._close_lock = threading.Lock()
 
     def next_event(self) -> HcStreamEvent:

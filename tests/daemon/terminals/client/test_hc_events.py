@@ -8,6 +8,39 @@ from hyprial.daemon.impl.terminals.client.rpc import HcClient
 from tests.daemon.terminals.fake_hc.server import FakeHcServer
 
 
+def test_subscription_keeps_event_coalesced_with_handshake_response(tmp_path: Path) -> None:
+    endpoint = tmp_path / "hc.sock"
+    with FakeHcServer(
+        endpoint,
+        initial_subscription_event={
+            "type": "created",
+            "terminal": "t-initial",
+            "data": {"argv": ["pi"]},
+        },
+    ):
+        subscription = HcEventSubscription(HcClient(endpoint), read_timeout=0.2)
+        try:
+            event = subscription.next_event()
+            assert event.type == "created"
+            assert event.terminal == "t-initial"
+        finally:
+            subscription.close()
+
+
+def test_doc_events_are_delivered(tmp_path: Path) -> None:
+    endpoint = tmp_path / "hc.sock"
+    with FakeHcServer(endpoint) as server:
+        subscription = HcEventSubscription(HcClient(endpoint), read_timeout=0.2)
+        try:
+            server.emit_event("doc", "t-doc", {"path": "guide"})
+            event = subscription.next_event()
+            assert event.type == "doc"
+            assert event.terminal == "t-doc"
+            assert event.data == {"path": "guide"}
+        finally:
+            subscription.close()
+
+
 def test_subscription_delivers_ordered_events_and_filters_stale_unknown(tmp_path: Path) -> None:
     endpoint = tmp_path / "hc.sock"
     with FakeHcServer(endpoint) as server:
@@ -17,7 +50,7 @@ def test_subscription_delivers_ordered_events_and_filters_stale_unknown(tmp_path
         assert server.frames[-1]["method"] == "events.subscribe"
         assert "docs" not in server.frames[-1]["params"]
         try:
-            server.emit_event("doc", terminal.address, {"ignored": True})
+            server.emit_event("future", terminal.address, {"ignored": True})
             server.emit_event("created", terminal.address, {"argv": ["pi"]})
             server.emit_status(
                 terminal.address,

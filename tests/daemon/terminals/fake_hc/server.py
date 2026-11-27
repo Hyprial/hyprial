@@ -77,12 +77,18 @@ class FakeHcServer:
         holders: Sequence[Mapping[str, Any]] | None = None,
         error_code: int = -32603,
         heartbeat_interval: float | None = None,
+        initial_subscription_event: Mapping[str, Any] | None = None,
     ) -> None:
         self.endpoint = Path(endpoint)
         self.version = version
         self.generation = generation
         self.error_code = error_code
         self.heartbeat_interval = heartbeat_interval
+        self.initial_subscription_event = (
+            dict(initial_subscription_event)
+            if initial_subscription_event is not None
+            else None
+        )
         self._core = {"id": "fake-core-id", "name": "fake-core"}
         self._holders = [dict(holder) for holder in holders or ()]
         self._listener = listen_local_ipc(self.endpoint)
@@ -235,7 +241,10 @@ class FakeHcServer:
             with self._lock:
                 self.frames.append(dict(frame))
             response, subscription = self._handle_request(frame, stream)
-            self._send_response(stream, response)
+            if subscription is not None and self.initial_subscription_event is not None:
+                self._send_initial_subscription(stream, response)
+            else:
+                self._send_response(stream, response)
             if subscription is None:
                 return
             while not self._stop.is_set():
@@ -467,6 +476,27 @@ class FakeHcServer:
 
     def _send_response(self, stream: Any, response: Mapping[str, Any]) -> None:
         stream.sendall(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+
+    def _send_initial_subscription(
+        self, stream: Any, response: Mapping[str, Any]
+    ) -> None:
+        with self._lock:
+            self._seq += 1
+            event = {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                    "seq": self._seq,
+                    "terminal": self.initial_subscription_event.get("terminal"),
+                    "type": self.initial_subscription_event.get("type"),
+                    "data": self.initial_subscription_event.get("data", {}),
+                },
+            }
+        payload = b"".join(
+            json.dumps(frame, separators=(",", ":")).encode() + b"\n"
+            for frame in (response, event)
+        )
+        stream.sendall(payload)
 
     def _receive_frame(self, stream: Any) -> Mapping[str, Any] | None:
         buffer = bytearray()
