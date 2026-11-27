@@ -13,6 +13,7 @@ from collections.abc import Iterable
 
 from hyprial.kernel import create_relative_file_symlink
 from hyprial.kernel import hc_bin_root
+from hyprial.kernel import file_modes_are_significant
 from hyprial.kernel import hc_version_root
 from hyprial.kernel import host_hc_release_target
 from hyprial.kernel import mark_executable
@@ -98,6 +99,7 @@ def _ensure_parent(root: Path, path: Path) -> None:
 
 
 def _write_tar_members(archive: tarfile.TarFile, members: Iterable[tarfile.TarInfo], root: Path, target: str) -> None:
+    directory_modes: list[tuple[Path, int]] = []
     for member in members:
         path = _archive_member_path(member.name)
         if not _selected_path(path, target):
@@ -106,6 +108,7 @@ def _write_tar_members(archive: tarfile.TarFile, members: Iterable[tarfile.TarIn
         if member.isdir():
             _ensure_parent(root, destination / "placeholder")
             destination.mkdir(exist_ok=True)
+            directory_modes.append((destination, member.mode & 0o7777))
             continue
         _ensure_parent(root, destination)
         if destination.exists() or destination.is_symlink():
@@ -119,9 +122,13 @@ def _write_tar_members(archive: tarfile.TarFile, members: Iterable[tarfile.TarIn
         with source, destination.open("wb") as output:
             shutil.copyfileobj(source, output)
         destination.chmod(member.mode & 0o7777)
+    if file_modes_are_significant():
+        for directory, mode in reversed(directory_modes):
+            directory.chmod(mode)
 
 
 def _write_zip_members(archive: zipfile.ZipFile, root: Path, target: str) -> None:
+    directory_modes: list[tuple[Path, int]] = []
     for info in archive.infolist():
         path = _validate_zip_member(info)
         if not _selected_path(path, target):
@@ -131,6 +138,10 @@ def _write_zip_members(archive: zipfile.ZipFile, root: Path, target: str) -> Non
         if info.is_dir():
             _ensure_parent(root, destination / "placeholder")
             destination.mkdir(exist_ok=True)
+            directory_mode = (info.external_attr >> 16) & 0o7777
+            directory_type = (info.external_attr >> 16) & 0o170000
+            if directory_type == stat.S_IFDIR or directory_mode:
+                directory_modes.append((destination, directory_mode))
             continue
         _ensure_parent(root, destination)
         if destination.exists() or destination.is_symlink():
@@ -145,6 +156,10 @@ def _write_zip_members(archive: zipfile.ZipFile, root: Path, target: str) -> Non
         permission = (info.external_attr >> 16) & 0o7777
         if permission:
             destination.chmod(permission)
+    if file_modes_are_significant():
+        for directory, mode in reversed(directory_modes):
+            if mode:
+                directory.chmod(mode)
 
 
 def _has_expected_executable(root: Path, target: str) -> bool:

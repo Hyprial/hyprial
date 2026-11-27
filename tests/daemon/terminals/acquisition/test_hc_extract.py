@@ -1,4 +1,5 @@
 import io
+import stat
 import tarfile
 import zipfile
 from pathlib import Path
@@ -15,7 +16,10 @@ def tar_archive(path: Path, members: list[tuple[str, bytes, int, str | None]]) -
         for name, body, mode, link in members:
             info = tarfile.TarInfo(name)
             info.mode = mode
-            if link is not None:
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            elif link is not None:
                 info.type = tarfile.SYMTYPE
                 info.linkname = link
                 archive.addfile(info)
@@ -44,6 +48,37 @@ def test_macos_extract_keeps_signed_bundle_only(tmp_path: Path) -> None:
     assert link.is_symlink()
     assert link.readlink() == Path("_CodeSignature/CodeResources")
     assert not (version_root / "herdr-core").exists()
+
+
+def test_tar_directory_modes_are_preserved(tmp_path: Path) -> None:
+    archive = tmp_path / "tar-modes.tar.gz"
+    tar_archive(
+        archive,
+        [
+            ("Herdr Core.app/Contents/MacOS/herdr-core", b"signed", 0o755, None),
+            ("Herdr Core.app/", b"", 0o750, None),
+            ("Herdr Core.app/Contents/", b"", 0o751, None),
+            ("Herdr Core.app/Contents/MacOS/", b"", 0o752, None),
+        ],
+    )
+    root = extract_hc_archive(archive, "macos-aarch64", tmp_path, "0.1.22")
+    assert stat.S_IMODE((root / "Herdr Core.app").stat().st_mode) == 0o750
+    assert stat.S_IMODE((root / "Herdr Core.app/Contents").stat().st_mode) == 0o751
+    assert stat.S_IMODE((root / "Herdr Core.app/Contents/MacOS").stat().st_mode) == 0o752
+
+
+def test_zip_directory_modes_are_preserved(tmp_path: Path) -> None:
+    archive = tmp_path / "zip-modes.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("herdr-core.exe", b"windows")
+        output.writestr("conpty/x64/OpenConsole.exe", b"console")
+        for name, mode in (("conpty/", 0o750), ("conpty/x64/", 0o751)):
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (stat.S_IFDIR | mode) << 16
+            output.writestr(info, b"")
+    root = extract_hc_archive(archive, "windows-x86_64", tmp_path, "0.1.22")
+    assert stat.S_IMODE((root / "conpty").stat().st_mode) == 0o750
+    assert stat.S_IMODE((root / "conpty/x64").stat().st_mode) == 0o751
 
 
 def test_linux_extract_marks_executable(tmp_path: Path) -> None:
