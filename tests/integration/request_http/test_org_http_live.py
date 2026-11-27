@@ -20,6 +20,11 @@ Decision record (org lifecycle batch 2, 2026-11-02)
 - ``org.join`` success needs a redeemable invite and an online holder; neither
   exists inside one isolated daemon, so the live cases pin parameter rejection
   and the real pre-redemption domain errors instead of faking a join.
+
+Decision record (OrgFS package D4b, 2026-11-25)
+- ``orgfs.restore`` lost its ``version`` (design §1.1), so the domain error
+  that keeps its data through the registry and HTTP is now the restore of a
+  node removed with ``permanent: true``: ``unknown-doc`` naming the node.
 """
 
 from __future__ import annotations
@@ -336,31 +341,36 @@ def test_org_fetch_candidate_enumeration_surfaces_invalid_argument(
     assert "data" not in payload
 
 
-def test_orgfs_unban_invalid_sha_keeps_data_through_registry_and_http(
+def test_orgfs_domain_error_keeps_data_through_registry_and_http(
     http_server, isolation: Isolation
 ) -> None:
-    space_id = _create_space(isolation, "unban-data-team")
-    sha = "z" * 64
+    space_id = _create_space(isolation, "error-data-team")
+    written = _write_text(isolation, space_id, "note.md", "body\n")
+    daemon_request_once(
+        "orgfs.remove",
+        {"spaceId": space_id, "path": "note.md", "permanent": True},
+        socket_path=isolation.socket_path,
+        timeout=15,
+    )
+    params = {"spaceId": space_id, "node": f"id:{written['node_id']}"}
 
     with pytest.raises(RequestPortError) as direct:
         daemon_request_once(
-            "orgfs.unban",
-            {"spaceId": space_id, "sha": sha},
+            "orgfs.restore",
+            params,
             socket_path=isolation.socket_path,
             timeout=15,
         )
-    assert direct.value.code == "INVALID_ARGUMENT"
-    assert direct.value.data == {"sha": sha}
+    assert direct.value.code == "unknown-doc"
+    assert direct.value.data == {"node": f"id:{written['node_id']}"}
 
     status, _, payload = http_server.request(
-        "POST",
-        "/daemon/request/orgfs.unban",
-        body={"spaceId": space_id, "sha": sha},
+        "POST", "/daemon/request/orgfs.restore", body=params
     )
-    assert status == 400, payload
+    assert status >= 400, payload
     assert payload["dispatch"] == "dispatched"
-    assert payload["code"] == "INVALID_ARGUMENT"
-    assert payload["data"] == {"sha": sha}
+    assert payload["code"] == direct.value.code
+    assert payload["data"] == direct.value.data
 
 
 def test_org_fetch_ambiguous_candidate_path_keeps_the_domain_code(

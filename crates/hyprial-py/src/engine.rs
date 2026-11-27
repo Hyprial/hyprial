@@ -32,7 +32,7 @@ use crate::events::{emit, EventValues};
 use crate::handlers::{lookup_native_factory, NativeHandlerFactoryHandle};
 use crate::lifecycle;
 use crate::pool::{Pool, PoolAdmission};
-use crate::pump::{AskOutcome, PumpMsg};
+use crate::pump::AskOutcome;
 use crate::spawn::{validate_and_classify_factory, validate_key_pair, KeySlot, SpawnResult};
 use crate::supervisor::{SupervisorActor, SupervisorMsg};
 use crate::timers::TimerTable;
@@ -70,6 +70,7 @@ pub(crate) struct EngineInner {
     pub policies: PolicyTable,
     pub rng: Mutex<Jitter>,
     pub engine_sink: Py<PyAny>,
+    pub command_completed_enabled: Mutex<Option<Py<PyAny>>>,
     pub expected_error: Py<PyAny>,
     pub native_handle_type: Py<PyAny>,
 
@@ -207,51 +208,21 @@ impl EngineInner {
         err.value(py).is_instance(expected).unwrap_or(false)
     }
 
-    pub(crate) fn emit_child_stopped(&self, py: Python<'_>, cell: &Cell) {
-        let (generation, sinks) = {
-            let inner = lock(&cell.inner);
-            (inner.generation, cell.sinks.clone())
-        };
-        let (group, key) = cell
-            .keyed()
-            .map_or((None, None), |(g, k)| (Some(g), Some(k)));
-        emit(
-            py,
-            &sinks,
-            EventValues {
-                kind: "child_stopped",
-                actor_id: &cell.id,
-                name: &cell.name,
-                generation,
-                command: None,
-                command_type_override: None,
-                code: None,
-                detail: None,
-                restart_delay: None,
-                group,
-                key,
-            },
-        );
+    pub(crate) fn command_completed_enabled(&self, py: Python<'_>) -> bool {
+        let predicate = lock(&self.command_completed_enabled)
+            .as_ref()
+            .map(|predicate| predicate.clone_ref(py));
+        predicate.is_none_or(|predicate| {
+            predicate
+                .bind(py)
+                .call0()
+                .and_then(|value| value.extract::<bool>())
+                .unwrap_or(true)
+        })
     }
 
-    pub(crate) fn emit_child_stopped_for_pool(&self, py: Python<'_>, pool: &Pool) {
-        emit(
-            py,
-            &pool.sinks,
-            EventValues {
-                kind: "child_stopped",
-                actor_id: &pool.id,
-                name: &pool.name,
-                generation: 1,
-                command: None,
-                command_type_override: None,
-                code: None,
-                detail: None,
-                restart_delay: None,
-                group: None,
-                key: None,
-            },
-        );
+    pub(crate) fn set_command_completed_enabled(&self, predicate: Py<PyAny>) {
+        *lock(&self.command_completed_enabled) = Some(predicate);
     }
 
     pub(crate) fn notify_activity(&self) {
@@ -291,7 +262,7 @@ impl EngineInner {
         if self.lifecycle() != Lifecycle::Active {
             return Admission::Closed;
         }
-        let pump = {
+        {
             let mut inner = lock(&cell.inner);
             match inner.state {
                 CellState::Stopping | CellState::Stopped | CellState::Quarantined => {
@@ -310,18 +281,15 @@ impl EngineInner {
                 return Admission::Overloaded;
             }
             inner.queue.push_back(QueueEntry { command, reply });
-            inner.pump.clone()
-        };
-        if let Some(pump) = pump {
-            let _ = pump.send_message(PumpMsg::Wake);
         }
+        cell.wake();
         Admission::Accepted
     }
 
     /// Engine-internal admission (completion custody, fired timer payloads):
     /// NOT refused by drain closure (DRN-09); otherwise identical outcomes.
     pub(crate) fn tell_internal(&self, cell: &Arc<Cell>, command: Py<PyAny>) -> Admission {
-        let pump = {
+        {
             let mut inner = lock(&cell.inner);
             match inner.state {
                 CellState::Stopping | CellState::Stopped | CellState::Quarantined => {
@@ -336,11 +304,8 @@ impl EngineInner {
                 command,
                 reply: None,
             });
-            inner.pump.clone()
-        };
-        if let Some(pump) = pump {
-            let _ = pump.send_message(PumpMsg::Wake);
         }
+        cell.wake();
         Admission::Accepted
     }
 
@@ -412,6 +377,7 @@ impl Engine {
             policies: table,
             rng: Mutex::new(Jitter::new(jitter_seed.map(|s| s as u64))),
             engine_sink: event_sink,
+            command_completed_enabled: Mutex::new(None),
             expected_error: expected_error_type,
             native_handle_type,
             cells: RwLock::new(HashMap::new()),
@@ -953,6 +919,11 @@ impl Engine {
     }
 
     // ----- native handler registry (4) -----
+
+    #[pyo3(name = "_set_command_completed_enabled")]
+    fn set_command_completed_enabled(&self, predicate: Py<PyAny>) {
+        self.inner.set_command_completed_enabled(predicate);
+    }
 
     fn native_handler_factory(&self, name: &str) -> PyResult<NativeHandlerFactoryHandle> {
         match lookup_native_factory(name) {

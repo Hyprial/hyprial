@@ -79,7 +79,7 @@ def test_ipc_membership_redial_and_mapping_draw_from_shared_deadline(monkeypatch
 
 
 @pytest.mark.parametrize("timeout,expected", [(7, 7), (None, 120)])
-@pytest.mark.parametrize("operation", ["join", "serve", "checkout", "open-mesh"])
+@pytest.mark.parametrize("operation", ["join", "checkout", "open-mesh"])
 def test_orgfs_lifecycle_bounds_wait_without_cancelling_accepted_operation(monkeypatch, timeout, expected, operation):
     from hyprial.daemon.impl.orgfs.api import OrgFsError
     from hyprial.daemon.impl.orgfs.composition import lifecycle
@@ -112,7 +112,6 @@ def test_orgfs_lifecycle_bounds_wait_without_cancelling_accepted_operation(monke
     ))
     command = {
         "join": lifecycle._JoinSpace("directory"),
-        "serve": lifecycle._ServeSpace("directory", "fs"),
         "checkout": lifecycle._CheckoutSpace("directory", True),
         "open-mesh": lifecycle._OpenSpaceMesh("directory"),
     }[operation]

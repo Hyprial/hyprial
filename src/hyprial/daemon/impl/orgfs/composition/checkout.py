@@ -1,5 +1,10 @@
+# Decision record (phase D, package D4b, 2026-11-25): a checkout first looks
+# the space up through the facade; a space the startup scan refused raises
+# ``ORGFS_LAYOUT_UNSUPPORTED`` with its data unchanged and no checkout
+# directory is created (design §2.7).  Every other lookup failure keeps the
+# existing path, so an unknown space still answers ``checkout-io`` from the
+# checkout authority (reported as a design issue in the D4b report).
 from __future__ import annotations
-
 
 
 import json
@@ -7,25 +12,12 @@ import json
 
 
 
-
-from typing import Any
-
-
-
-
-
-
+from hyprial.kernel import ipc_errors
 
 from hyprial.daemon.impl.orgfs.api  import OrgFsError
 
 
 from hyprial.daemon.impl.orgfs.projection.checkout_authority  import CheckoutAuthority
-
-
-
-
-
-
 
 
 from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace
@@ -35,23 +27,6 @@ class RuntimeCheckout:
 
     This class never constructs, copies, or persists an independent host.
     """
-
-    def purge_plan(self, space_id: str, targets: list[dict[str, Any]]) -> Any:
-        return self.facade.purge_plan(space_id, targets)
-
-
-    def purge(self, space_id: str, plan_id: str) -> Any:
-        result = self.facade.purge(space_id, plan_id)
-        self._reconcile_retirements(space_id)
-        return result
-
-
-    def purge_status(self, space_id: str, plan_id: str) -> Any:
-        return self.facade.purge_status(space_id, plan_id)
-
-
-    def unban(self, space_id: str, sha: str) -> None:
-        self.facade.unban(space_id, sha)
 
 
     def _write_checkout_config(self) -> None:
@@ -140,4 +115,9 @@ class RuntimeCheckout:
 
 
     def _checkout_sync(self, space_id: str, enabled: bool) -> dict[str, object]:
+        try:
+            self.facade.space_meta(space_id)
+        except OrgFsError as exc:
+            if exc.code == ipc_errors.ORGFS_LAYOUT_UNSUPPORTED:
+                raise
         return self._set_checkout(space_id, bool(enabled), persist=True)

@@ -167,8 +167,8 @@ hyprial org fs write "<space-id>" "work/<filename>" "<complete updated text>" \
 
 Preserve unrelated text and unknown fields; re-read and reconcile on a stale
 version. The document's owner, checklist, log and acceptance fields express the
-work plan, not access rights or cryptographic approval. Ordinary OrgFS history,
-rename and trash operations apply. No dedicated work writers or local approval
+work plan, not access rights or cryptographic approval. Ordinary OrgFS rename
+and trash operations apply. No dedicated work writers or local approval
 ledger are used. For creation guarantees and conflict/recovery commands, use
 `contract/work-items/README.md`; do not infer create-if-absent from CLI `write`.
 

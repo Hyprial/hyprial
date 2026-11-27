@@ -44,14 +44,7 @@ pub(crate) fn accept_stop(engine: &Arc<EngineInner>, cell: &Arc<Cell>) {
         }
     }
     engine.timers.cancel_cell(&cell.id);
-    let pump = lock(&cell.inner).pump.clone();
-    if let Some(pump) = pump {
-        // Wake an idle pump so it runs the confirmation path.
-        let _ = pump.send_message(crate::pump::PumpMsg::Wake);
-    } else {
-        // No live pump (restart_pending / quarantined): a waiting stopper
-        // claims the confirmation below.
-    }
+    cell.wake();
     cell.cv.notify_all();
     engine.notify_activity();
 }

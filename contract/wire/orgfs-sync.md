@@ -1,50 +1,130 @@
-# OrgFS sync wire contract
+# OrgFS sync wire contract (protocol 3)
 
-This contract covers queries on `hyprial/v1/org/fs/<space>/sync/<supplier>`.
-All messages retain `schemaVersion: 1`; peers must ignore unknown object fields.
+OrgFS nodes exchange the current state of a space, not a log. This contract
+covers the four exchanges between nodes. `<prefix>` is the transport key
+prefix. Design: `docs/design/orgfs-minimal-design-2026-11-25.md` §4.
 
-## Bounded stream exchange
+There is no compatibility with the earlier journal protocol: its keys have no
+subscriber and no supplier, and an announce without `"protocol": 3` is ignored.
 
-A current requester starts or resumes with:
+| Exchange | Key | Kind | `schemaVersion` |
+| --- | --- | --- | --- |
+| Pull | `<prefix>/org/fs3/sync/<spaceId>/<node>` | query | 3 |
+| Broadcast | `<prefix>/org/fs3/update/<spaceId>` | put / subscribe | 3 |
+| Announce | `<prefix>/org/fs/announce/<node>` | put / subscribe | 1 |
+| Blob | `<prefix>/org/fs/blob/<digest>` | query | 1 |
+
+Pull and broadcast frames are JSON objects. A decoder validates the whole
+frame before anything is applied, and refuses unknown top-level keys: the
+version field is the extension point.
+
+## Pull
+
+Request, sent to one supplier node:
 
 ```json
-{
-  "schemaVersion": 1,
-  "type": "orgfs-sync-stream",
-  "spaceId": "<space>",
-  "requester": {"node": "<node>", "author": "<principal>"},
-  "cursor": null,
-  "maxBytes": 1048576
-}
+{"schemaVersion": 3, "type": "sync", "spaceId": "<space>", "round": "<uuid>",
+ "requester": {"node": "<node>", "author": "<principal>"},
+ "vectors": {"meta": "<b64 state vector>", "tree": "<b64 state vector>",
+             "doc-…": "<b64 state vector>"},
+ "maxBytes": 1048576}
 ```
 
-The supplier answers with `orgfs-sync-stream-page`, its node ID, a base64
-`envelopes` array, and nullable opaque `next`. The encoded response must not
-exceed `maxBytes`. One handler invocation scans no more than the product's
-fixed document limit. It can include envelopes from multiple documents.
+`vectors` always holds `meta` and `tree`, plus at most 128 content documents;
+a document the requester does not hold carries an empty vector.
 
-After page one, the requester sends only the opaque `cursor` plus the stable
-query envelope (`schemaVersion`, `type`, `spaceId`, `requester`, and
-`maxBytes`). It does not repeat `docIds` or `versionVectors`. The requester
-persists an acknowledged non-null cursor per `(space, supplier)` only after it
-has durably admitted that page. A timeout retains the cursor, so a later
-scheduled pass or requester restart resumes. Applying a page before persisting
-its cursor is safe because journal envelopes are idempotent.
+Reply:
 
-When the supplier returns `next: null`, that scan is complete and the requester
-removes the durable cursor. A clipped final query that returns no reply is
-reported as `deadline-expired-mid-sync`, not `no-reply`.
+```json
+{"schemaVersion": 3, "type": "sync-reply", "spaceId": "<space>", "round": "<uuid>",
+ "supplier": "<node>",
+ "updates": [{"docId": "meta", "update": "<b64>", "vector": "<b64 state vector>"},
+             {"docId": "doc-…", "blob": "<sha256>", "size": 123456,
+              "vector": "<b64 state vector>"}],
+ "vectors": {"meta": "<b64 state vector>", "tree": "<b64 state vector>"},
+ "omitted": ["doc-…"]}
+```
 
-## Compatibility
+- For each requested document the supplier returns the update the requester
+  lacks together with the supplier's current vector of that document. A
+  document the requester already covers is not returned.
+- An update larger than half the page budget is not inlined. The reply names
+  a temporary blob (`blob`, `size`) that the requester fetches over the blob
+  exchange and checks against the digest.
+- Documents that did not fit are listed in `omitted`; the requester asks again.
+- `vectors` are the supplier's `meta` and `tree` vectors. One round does not
+  carry updates in both directions. A supplier that sees request vectors it
+  does not cover starts its own pull from the requester.
 
-Suppliers continue to accept the older `orgfs-sync` request and return
-`orgfs-sync-page` or `orgfs-sync-snapshot`; this is the expand-first side of a
-rolling upgrade. A current requester detects an old supplier from an
-`invalid-argument` response to `orgfs-sync-stream`.
+Refusal:
 
-Fallback never sends the old unbounded full-space request. It sends only the
-bounded set of documents already known locally and refuses local spaces above
-`ORGFS_LEGACY_SYNC_DOCUMENT_LIMIT` with reason `legacy-peer-large-space`.
-Requests that exceed `ORGFS_PAGE_BYTES` are refused with
-`legacy-request-too-large`. This can delay discovery of documents known only
-to an old supplier; it cannot recreate unbounded supplier work.
+```json
+{"schemaVersion": 3, "type": "sync-error", "spaceId": "<space>", "round": "<uuid>",
+ "supplier": "<node>", "code": "<code>", "message": "<text>"}
+```
+
+`round` is the empty string when the request could not be parsed.
+
+Who is served:
+
+| `requester.author` | Served |
+| --- | --- |
+| Current member of the space | Every requested document |
+| Removed member (its member row remains, marked removed) | `meta` only, so it learns of its removal |
+| Never a member | Nothing; `not-a-member` |
+
+`requester.node` and `requester.author` are self-reported. These rules bind
+unmodified nodes; they are not cryptographic isolation.
+
+## Broadcast
+
+After a local commit is durable, the node publishes one frame per changed
+document:
+
+```json
+{"schemaVersion": 3, "type": "update", "spaceId": "<space>", "node": "<node>",
+ "docId": "<doc>", "update": "<b64>", "vector": "<b64 state vector after the commit>"}
+```
+
+A frame that would exceed 2 MiB is sent without `update`; the other fields
+stay. A receiver that gets such a frame, or whose admission answers that a
+predecessor is missing, pulls from `node`.
+
+A receiver applies a broadcast only when the sending node belongs to a current
+member. A receiver that is itself a removed member applies `meta` broadcasts
+only. Broadcasts are not acknowledged and can be lost; pulls repair the loss.
+
+## Announce
+
+```json
+{"schemaVersion": 1, "type": "orgfs-announce", "protocol": 3, "node": "<node>",
+ "durable": true,
+ "spaces": [{"spaceId": "<space>", "roles": ["member"], "mode": "rw"}]}
+```
+
+When the frame would exceed 2 MiB, each entry of `spaces` carries `spaceId`
+only.
+
+## Blob
+
+Request for one chunk of a binary content or of a temporary sync blob:
+
+```json
+{"schemaVersion": 1, "type": "orgfs-blob", "spaceId": "<space>", "digest": "<sha256>",
+ "requester": {"node": "<node>", "author": "<principal>"},
+ "offset": 0, "length": 768000}
+```
+
+`requester` is required. `offset` defaults to 0 and must be a multiple of
+768000; `length` defaults to 768000 and may not exceed it.
+
+Reply:
+
+```json
+{"schemaVersion": 1, "type": "orgfs-blob-chunk", "digest": "<sha256>",
+ "offset": 0, "length": 768000, "total": 123456789, "data": "<b64>"}
+```
+
+A supplier answers only a requester whose author is a current member of
+`spaceId`; any other requester gets an `orgfs-error` frame with code
+`not-a-member`. The requester verifies the digest of the assembled bytes.

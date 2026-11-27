@@ -1,3 +1,6 @@
+# Decision record (OrgFS package D4b, 2026-11-25, design §1.1 / §1.2):
+# ``orgfs_remove`` takes ``permanent`` (default false, a soft removal) and
+# always forwards it; ``orgfs_restore`` takes no ``version``.
 """Official MCP Python SDK facade for Harness daemon operations.
 
 Decision (2026-11-19, slice GH): an agent reads a conversation's history,
@@ -449,55 +452,32 @@ def create_mcp_server(
             mutation=True,
         )
 
-    @server.tool(description="Soft-delete an orgfs node; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_remove(spaceId: NonEmpty, node: NonEmpty, ctx: Context) -> dict[str, Any]:
-        return await invoke(ctx, "orgfs.remove", {"spaceId": spaceId, "node": node}, mutation=True)
-
-    @server.tool(description="Read attributed orgfs history; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_history(
-        spaceId: NonEmpty,
-        node: NonEmpty,
-        ctx: Context,
-        limit: int = 50,
-        before: str | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {"spaceId": spaceId, "node": node, "limit": limit}
-        if before is not None:
-            params["before"] = before
-        return await invoke(ctx, "orgfs.history", params, mutation=False)
-
-    @server.tool(description="Read bytes at one orgfs version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_read_at(
-        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
+    @server.tool(description="Remove an orgfs node into the trash, or delete it for good with permanent=true; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
+    async def orgfs_remove(
+        spaceId: NonEmpty, node: NonEmpty, ctx: Context, permanent: bool = False
     ) -> dict[str, Any]:
         return await invoke(
-            ctx, "orgfs.read_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
-        )
-
-    @server.tool(description="Stat one orgfs node at a historical version; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
-    async def orgfs_stat_at(
-        spaceId: NonEmpty, node: NonEmpty, version: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        return await invoke(
-            ctx, "orgfs.stat_at", {"spaceId": spaceId, "node": node, "version": version}, mutation=False
+            ctx,
+            "orgfs.remove",
+            {"spaceId": spaceId, "node": node, "permanent": permanent},
+            mutation=True,
         )
 
     @server.tool(description="List soft-deleted orgfs nodes.")
     async def orgfs_trash(spaceId: NonEmpty, ctx: Context, limit: int = 100) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.trash", {"spaceId": spaceId, "limit": limit}, mutation=False)
 
-    @server.tool(description="Restore an orgfs node as a new attributed operation; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
+    @server.tool(description="Restore a removed orgfs node from the trash as a new attributed operation; node may be id:<nodeId> or a full orgfs:<owner>:<spaceId>:<nodeId> URI (must match spaceId).")
     async def orgfs_restore(
         spaceId: NonEmpty,
         node: NonEmpty,
-        version: NonEmpty,
         ctx: Context,
         recursive: bool = True,
     ) -> dict[str, Any]:
         return await invoke(
             ctx,
             "orgfs.restore",
-            {"spaceId": spaceId, "node": node, "version": version, "recursive": recursive},
+            {"spaceId": spaceId, "node": node, "recursive": recursive},
             mutation=True,
         )
 
@@ -510,20 +490,9 @@ def create_mcp_server(
             params["sinceVersion"] = sinceVersion
         return await invoke(ctx, "orgfs.watch", params, mutation=False)
 
-    @server.tool(description="Show orgfs holders and unconfirmed commits.")
+    @server.tool(description="Show orgfs sync state, online holders, pending content and rejected updates.")
     async def orgfs_status(spaceId: NonEmpty, ctx: Context) -> dict[str, Any]:
         return await invoke(ctx, "orgfs.status", {"spaceId": spaceId}, mutation=False)
-
-    @server.tool(description="Show acknowledged and pending orgfs purge participants.")
-    async def orgfs_purge_status(
-        spaceId: NonEmpty, planId: NonEmpty, ctx: Context
-    ) -> dict[str, Any]:
-        return await invoke(
-            ctx,
-            "orgfs.purge_status",
-            {"spaceId": spaceId, "planId": planId},
-            mutation=False,
-        )
 
     @server.tool(description="Invite a user into an orgfs space; inbox notification is a separate send.")
     async def orgfs_invite(

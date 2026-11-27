@@ -165,7 +165,6 @@ def test_org_ipc_create_is_the_internal_acl_creation_path(application) -> None:
     [
         ("orgfs.invite", {"user": "user:bob@example.com", "mode": "rw"}),
         ("orgfs.remove_member", {"user": "user:bob@example.com"}),
-        ("orgfs.serve", {}),
     ],
 )
 def test_acl_lifecycle_mutations_stay_internal_even_for_the_operator(

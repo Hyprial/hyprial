@@ -136,6 +136,7 @@ def test_no_changed_product_file_needs_no_pyright(repo: Path) -> None:
         (f"{shlex.quote(sys.executable)} -c 'print(1)'", "not a JSON report"),
         (f"{shlex.quote(sys.executable)} -c 'print(\"{{\")'", "not JSON"),
     ],
+    ids=["missing-binary", "nonzero-exit", "json-but-not-a-report", "invalid-json"],
 )
 def test_pyright_failing_to_run_fails_closed(repo: Path, pyright: str, error: str) -> None:
     _head(repo, {A: "import os\nos.getuid()\nos.getuid()\n"})

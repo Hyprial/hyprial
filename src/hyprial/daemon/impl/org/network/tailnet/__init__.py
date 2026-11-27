@@ -1,3 +1,8 @@
+# Decisions:
+# - 2026-11-25, orgfs-minimal design section 5 (C5): a self-leave request
+#   records memberAddedAt from the requester's current member row.  When the
+#   member table cannot be read the field is omitted rather than failing the
+#   leave; the owner's sweep then treats the request as stale.
 """Org lifecycle operations over the sidecar's explicit membership API."""
 from __future__ import annotations
 
@@ -125,6 +130,15 @@ class TailnetLifecycle:
         status = self._tailnet_call('membership-status', {'tailnetId': tailnet_id} if tailnet_id else {})
         return candidates(status, master_public=record.client_public, device_id=record.device_id)
 
+    def _own_member_added_at(self, space_id):
+        """``addedAt`` of this user's member row; ``None`` when unreadable."""
+        from hyprial.daemon.impl.orgfs.api import OrgFsError
+        from ..directory import current_member_added_at
+        try:
+            return current_member_added_at(self._fs.members(space_id), self._owner)
+        except OrgFsError:
+            return None
+
     def _removal(self, org, user, *, confirmed=False, self_leave=False, casdoor=False,
                  operation_id=None, device_ids=None, process_leave=False):
         from ..create.sub_org import effective_tailnet_id, sub_org_binding, sub_org_removal
@@ -135,10 +149,14 @@ class TailnetLifecycle:
                                  local_device=self._node_id, operator=self._owner)
         def upper():
             if self_leave:
-                self._store.remove_device(org, self._node_id, owner=self._owner)
-                self._store.put_leave_request(org, self._owner, {
+                request = {
                     'org': org, 'user': self._owner, 'deviceId': self._node_id,
-                    'requestedAt': self._now().isoformat()})
+                    'requestedAt': self._now().isoformat()}
+                added_at = self._own_member_added_at(space.space_id)
+                if added_at:
+                    request['memberAddedAt'] = added_at
+                self._store.remove_device(org, self._node_id, owner=self._owner)
+                self._store.put_leave_request(org, self._owner, request)
             else:
                 if not casdoor:
                     self._casdoor_remove(org, user)

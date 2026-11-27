@@ -89,7 +89,6 @@ def test_network_reports_directory_rows_that_have_not_arrived(home: Path) -> Non
     )
     OrgFsDirectoryStore(fs).put_device("group-acme", carol)
     fs.content_pending.add("node-carol.json")
-    fs.parked = (("user:carol@example", 2),)
 
     view = service.network("group-acme")
 
@@ -110,40 +109,34 @@ def test_network_reports_directory_rows_that_have_not_arrived(home: Path) -> Non
                 "reason": "content-pending",
             }
         ],
-        "parkedCommits": [{"author": "user:carol@example", "commits": 2}],
         "dataProblems": [problem],
     }
     assert view["dataProblems"] == [problem]
 
 
-def test_network_keeps_the_device_listing_when_parked_status_fails(home: Path) -> None:
-    """A failing status read leaves parkedCommits unknown, never the devices."""
+def test_directory_status_carries_no_parked_commits_and_never_reads_space_status(
+    home: Path,
+) -> None:
+    """``parkedCommits`` is gone: the pane reads no OrgFS status at all.
+
+    Held-back updates are diagnosed through ``orgfs.status``
+    (``rejected_updates``), not through ``org.network``; a failing space
+    status therefore cannot touch the device listing.
+    """
 
     fs = FakeFs()
     service = _service(fs, home)
     service.create("group-acme")
 
-    def broken_parked(_space_id: str) -> tuple[tuple[str, int], ...]:
-        raise OrgFsError("internal", {"message": "parked unavailable"})
+    def broken_status(_space_id: str) -> object:
+        raise OrgFsError("internal", {"message": "status unavailable"})
 
-    fs.parked_commits = broken_parked  # type: ignore[method-assign]
+    fs.status = broken_status  # type: ignore[method-assign]
+    logged: list[str] = []
+    store = OrgFsDirectoryStore(fs, logger=lambda *args, **_fields: logged.append(args[2]))
     view = service.network("group-acme")
 
     assert NODE_ID in {d["deviceId"] for d in view["directory"]["group-acme"]}
-    assert view["directoryPending"]["group-acme"] == {
-        "contentPending": [],
-        "parkedCommits": None,
-    }
-
-
-def test_network_names_an_unknown_parked_author(home: Path) -> None:
-    fs = FakeFs()
-    service = _service(fs, home)
-    service.create("group-acme")
-    fs.parked = (("", 3),)
-
-    view = service.network("group-acme")
-
-    assert view["directoryPending"]["group-acme"]["parkedCommits"] == [
-        {"author": "unknown", "commits": 3}
-    ]
+    assert view["directoryPending"]["group-acme"] == {"contentPending": []}
+    assert store.scan_devices("group-acme")[1] == {"contentPending": []}
+    assert logged == []

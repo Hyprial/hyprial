@@ -21,6 +21,7 @@ from typing import Any
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.daemon.impl.org.network.casdoor import CasdoorGroups, CasdoorMembershipMixin, casdoor_group
 from hyprial.daemon.impl.org.network.binding import (
+    await_org_join_bodies,
     find_org_space,
     require_org_acl_space,
     require_org_space,
@@ -722,6 +723,7 @@ class OrgNetworkService(TailnetLifecycle, CasdoorMembershipMixin):
         if kind == "join-org":
             self._join_with_retry(link.space_id)
             self._join_with_retry(link.acl_space_id)
+            await_org_join_bodies(self, link.space_id, link.acl_space_id, org=link.org)
             return "joined the org directory and ACL spaces"
         if kind == "register-device":
             try:

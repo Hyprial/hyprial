@@ -94,7 +94,7 @@ def test_paths_are_the_explicit_http_projection_only() -> None:
         "/daemon/request/org.invites.list",
         "/daemon/request/orgfs.spaces",
         "/daemon/request/orgfs.read",
-        "/daemon/request/orgfs.purge_status",
+        "/daemon/request/orgfs.status",
         "/daemon/request/conversations.history",
         "/daemon/request/conversations.list",
     } <= set(document["paths"])

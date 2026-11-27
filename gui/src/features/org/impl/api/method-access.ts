@@ -41,7 +41,6 @@ const CATALOG_METHODS: Readonly<Partial<Record<OrgGuardKey, readonly string[]>>>
   createFile: ['orgfs.write'],
   moveEntry: ['orgfs.move'],
   deleteEntry: ['orgfs.remove'],
-  loadHistory: ['orgfs.history'],
   restoreEntry: ['orgfs.restore'],
 };
 

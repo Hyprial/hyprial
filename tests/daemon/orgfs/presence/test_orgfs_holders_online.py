@@ -1,4 +1,4 @@
-"""holders_online regressions: live serving/presence union, not probe cache."""
+"""holders_online regressions: live presence of announced holders, not probe cache."""
 
 from __future__ import annotations
 
@@ -61,20 +61,6 @@ def _loopback_pair(tmp_path):
     return owner, peer, owner_transport, peer_transport
 
 
-def test_serving_owner_is_listed_in_holders_online(tmp_path) -> None:
-    owner = OrgFsRuntime(tmp_path / "owner", node_id="node-owner", author="user:owner")
-    try:
-        space = owner.facade.create_space("holders online self")
-        assert "node-owner" not in owner.status(space.space_id).holders_online
-
-        owner.serve(space.space_id, "memory")
-
-        status = owner.status(space.space_id)
-        assert "node-owner" in status.holders_online
-    finally:
-        owner.close()
-
-
 def test_online_holding_peer_is_listed_and_drops_when_offline(tmp_path) -> None:
     owner, peer, owner_transport, peer_transport = _loopback_pair(tmp_path)
     peer_token = peer_transport.declare_liveliness(
@@ -85,7 +71,6 @@ def test_online_holding_peer_is_listed_and_drops_when_offline(tmp_path) -> None:
         owner.facade.invite(space.space_id, "user:peer", "rw")
         owner._announce_all()
         _eventually(lambda: peer.facade.join(space.space_id))
-        peer.serve(space.space_id, "memory")
         peer._announce_all()
 
         _eventually(
@@ -116,14 +101,12 @@ def test_peer_that_never_announced_the_space_is_not_listed(tmp_path) -> None:
     peer_transport.declare_liveliness(KeySpace().actor_liveliness("node-peer"))
     try:
         space = owner.facade.create_space("holders online non-holder")
-        owner.serve(space.space_id, "memory")
         owner._announce_all()
         # The peer is alive and online but never joins or announces the space.
         _eventually(lambda: _assert_equal("node-peer" in owner._lively_peers, True))
 
         status = owner.status(space.space_id)
         assert "node-peer" not in status.holders_online
-        assert "node-owner" in status.holders_online
     finally:
         peer.close()
         owner.close()
@@ -166,7 +149,6 @@ def test_late_announce_after_liveliness_delete_does_not_resurrect_peer(
         owner.facade.invite(space.space_id, "user:peer", "rw")
         owner._announce_all()
         _eventually(lambda: peer.facade.join(space.space_id))
-        peer.serve(space.space_id, "memory")
         peer._announce_all()
         _eventually(
             lambda: _assert_equal(
