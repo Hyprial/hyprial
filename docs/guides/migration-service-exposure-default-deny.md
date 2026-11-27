@@ -78,7 +78,7 @@ hyprial org service grant <PORT> --org <org> --device '<owner>/<deviceId>'
 | `service.grant.admission_unavailable` | 一次派生在读授权、取名册之外的地方抛了未预期的异常（字段 `errorType`）。该次不下发任何变更，下一个节流的派生重试。**目录读不到不属于这一种**，见上一行 | 看 `errorType` 与同时间的其它日志 |
 | `network.exposure.admission_rejected` | 一次 `expose` 没有得到 sidecar 的确认（字段 `port`、`code`）。`code` 为 sidecar 给出的错误码（如 `INTERNAL`，常见于 sidecar 还没 up）表示它拒绝了这次下发，端口保持原有的集合；`code` 为 `FORWARD_PROTOCOL` 表示没等到应答——命令可能没被执行（端口保持原有的集合），也可能已执行只是应答丢了（端口已是新集合）。三种情况**实测**都会在下一个节流的派生重新下发（默认每 30 秒最多派生一次），无需操作 | 偶发可忽略。持续出现时看 `code`：`INTERNAL` 确认 sidecar 已 up；`FORWARD_PROTOCOL` 确认 sidecar 进程在应答 |
 | `service.grant.unexpose_revoke_failed` | unexpose 之后撤销该端口的授权失败。**unexpose 本身已成功** | 按字段 `port`、`org`、`code` 手动撤销：`hyprial org service grants --port <PORT>` 列出后逐条 `hyprial org service revoke <GRANT_ID> --org <org>` |
-| `service.grant.admission_trigger_failed` | 授权或撤销**已成功写盘**，但没能在当时安排一次立即重新派生。字段：`method`（`service.grant` 或 `service.revoke`）、`reason`（`failed` 表示安排这一步本身抛了异常；`unscheduled` 表示派生队列已满、正在关闭或不存在）。不含 org、端口、授权或设备信息 | 无需紧急处理：改动已持久化，维护周期（约 30 秒内）会自动重新派生。持续出现说明派生队列长期不可用 |
+| `service.grant.admission_trigger_failed` | 一次改动**已经生效**（授权或撤销已写盘、新暴露已登记、sidecar 已启动），但没能在当时安排一次立即重新派生。字段：`method`（`service.grant`、`service.revoke`、`network.expose` 或 `sidecar-installed`）、`reason`（`failed` 表示安排这一步本身抛了异常；`unscheduled` 表示派生队列已满、正在关闭或不存在）；`reason` 为 `failed` 时另有 `errorType`（异常的类名，**不含异常消息**）。不含 org、端口、授权或设备信息 | 无需紧急处理：改动已持久化，维护周期（约 30 秒内）会自动重新派生。持续出现说明派生队列长期不可用；`reason` 为 `failed` 时看 `errorType` 与同时间的其它日志 |
 | `service.grant.admission_tick_deferred` | 维护周期没能把一次派生交给执行队列（队列满或正在关闭） | 同上，下一个维护周期重试 |
 
 `service.grant.key_unavailable` 的 `reason`（共 4 种）：
