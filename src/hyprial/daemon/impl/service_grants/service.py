@@ -44,7 +44,9 @@
 #   never answers "no grant" for what the daemon could not read either. The
 #   caller's own grants are listed whole. documentCount gives each org's
 #   document count under the caller, beside documentLimit, the per-grantor
-#   bound recipients read by.
+#   bound recipients read by. Without org, an org whose grants cannot be read
+#   is left out of every other key and named in unreadableOrgs, so it is
+#   never reported as "no grant"; asked for that one org, the request refuses.
 """Service-grant domain service: ``service.grant``, ``service.revoke``, ``service.grants``."""
 
 from __future__ import annotations
@@ -598,6 +600,7 @@ class ServiceGrantService:
         received_items: list[StoredServiceGrant] = []
         document_count: dict[str, int] = {}
         limited: list[dict[str, Any]] = []
+        unreadable: list[str] = []
 
         for target_org in orgs:
             try:
@@ -610,6 +613,7 @@ class ServiceGrantService:
                     raise _translate_orgfs_error(
                         error, context="list service grants"
                     ) from None
+                unreadable.append(target_org)
                 continue
             limited.extend(org_limited)
 
@@ -665,6 +669,7 @@ class ServiceGrantService:
             "documentCount": document_count,
             "documentLimit": MAX_GRANTOR_GRANT_DOCUMENTS,
             "limitedGrantors": limited,
+            "unreadableOrgs": sorted(unreadable),
         }
 
     def _read_org(

@@ -147857,6 +147857,12 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "unreadableOrgs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -147864,7 +147870,8 @@
           "received",
           "documentCount",
           "documentLimit",
-          "limitedGrantors"
+          "limitedGrantors",
+          "unreadableOrgs"
         ],
         "type": "object"
       },
@@ -147909,7 +147916,8 @@
               }
             ],
             "limitedGrantors": [],
-            "received": []
+            "received": [],
+            "unreadableOrgs": []
           }
         },
         {
@@ -147927,7 +147935,8 @@
             "documentLimit": 256,
             "granted": [],
             "limitedGrantors": [],
-            "received": []
+            "received": [],
+            "unreadableOrgs": []
           }
         },
         {

@@ -119,5 +119,6 @@ RESULTS = {
             "grantor": NSTR,
             "reason": {"enum": ["documents", "bytes", "grantors", "deadline"]},
         })},
+        "unreadableOrgs": {"type": "array", "items": STR},
     }),
 }

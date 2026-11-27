@@ -156,6 +156,7 @@ SERVICE_EXAMPLES = (
                     "documentCount": {"group-acme": 1},
                     "documentLimit": 256,
                     "limitedGrantors": [],
+                    "unreadableOrgs": [],
                 },
             ),
             case(
@@ -168,6 +169,7 @@ SERVICE_EXAMPLES = (
                     "documentCount": {"group-acme": 0},
                     "documentLimit": 256,
                     "limitedGrantors": [],
+                    "unreadableOrgs": [],
                 },
                 reason="No effective service grants exist for caller.",
             ),

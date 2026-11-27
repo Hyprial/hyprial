@@ -10,6 +10,8 @@
 #   instead of "Granted" and there is no superseded list any more. A grant
 #   without --name only admits: the human view says the recipient gets no
 #   service entry, and --credential needs --name (the daemon refuses it).
+#   The listing says which orgs it could not read (unreadableOrgs): their
+#   grants are unknown, not absent.
 """Service-grant CLI leaves mounted under ``hyprial org service``."""
 
 from __future__ import annotations
@@ -131,6 +133,13 @@ def _render_grants(data: Mapping[str, Any]) -> str:
                 f"  Not read: {who} in {item.get('org', '-')} is over a read limit "
                 f"({item.get('reason', '-')}); grants from it are unknown, not absent."
             )
+    unreadable = data.get("unreadableOrgs")
+    if isinstance(unreadable, list):
+        lines.extend(
+            f"  Not read: {org} could not be read; its grants are unknown, not absent."
+            for org in unreadable
+            if isinstance(org, str)
+        )
     counts = data.get("documentCount")
     limit = data.get("documentLimit")
     if isinstance(counts, Mapping) and counts:
