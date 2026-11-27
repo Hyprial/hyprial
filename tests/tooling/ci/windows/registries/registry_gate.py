@@ -1,7 +1,7 @@
 """Checks for the Windows test registries under ``scripts/ci/windows``.
 
 This module holds every check; the ``test_*.py`` files beside it are the gate that
-runs them.  Split out of one 999-line file so that each check has room to grow.
+runs them.
 
 Decision (2026-11-26): one gate for every data file that decides what a Windows
 run does not execute.  ``posix-only.json`` names whole directories and whole
@@ -328,9 +328,170 @@ def mapping_lookups(tree: ast.AST) -> dict[str, str]:
     return lookups
 
 
-def marker_problems(tree: ast.Module) -> list[tuple[int, str]]:
-    """``(line, problem)`` for every ``posix_only(...)`` call whose reason is not a known valid one."""
+OFF_PLACE = (
+    "posix_only is allowed only as the call that decorates a def or async def, or in marks= of pytest.param, spelled pytest.param; "
+    "written anywhere else it can reach more than one test case.  The rule goes by the attribute name alone, on any object"
+)
+IN_PARAMETRIZE = (
+    "posix_only in a parametrize that does not decorate a def or async def reaches every test it is applied to: "
+    "those of a module or a class, or every test that pytest_generate_tests parametrises; put the parametrize on the single test function instead"
+)
+ON_PYTESTMARK = "posix_only on pytestmark skips every test of a module or a class; mark the single test cases instead, or register the file in posix-only.json, which needs approval"
+IN_CLASS = "posix_only on pytestmark in a class body skips every test in the class; mark the single test cases instead"
+ON_CLASS = "posix_only in a class decorator reaches every test in the class, inside pytest.param as well; mark the single test methods instead"
+IN_FIXTURE = "posix_only in pytest.fixture reaches every test that uses the fixture, and every test of the module when it is autouse; mark the single test cases instead"
+IN_CONFTEST = "posix_only in conftest.py can skip every test of a directory; mark the single test cases in their own files instead, or register the directory in posix-only.json, which needs approval"
+COMPOUND = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.ClassDef,
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    ast.TryStar,
+    ast.Match,
+)
 
+
+def ancestors(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> list[tuple[ast.AST, ast.AST]]:
+    """``[(child, parent), ...]`` from ``node`` up to the module, ``node`` itself as the first child."""
+
+    chain = []
+    while node in parents:
+        chain.append((node, parents[node]))
+        node = parents[node]
+    return chain
+
+
+def last_name(node: ast.expr) -> str | None:
+    """``fixture`` for both ``pytest.fixture`` and ``fixture``; ``None`` for an expression that is not a name."""
+
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def mentions_pytestmark(statement: ast.stmt) -> bool:
+    """Whether ``statement`` names ``pytestmark``: as a name, as an attribute, or as a string."""
+
+    return any(
+        (isinstance(node, ast.Name) and node.id == "pytestmark")
+        or (isinstance(node, ast.Attribute) and node.attr == "pytestmark")
+        or (isinstance(node, ast.Constant) and node.value == "pytestmark")
+        for node in ast.walk(statement)
+    )
+
+
+def in_param_marks(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether ``call`` is the value of ``marks=`` of ``pytest.param(...)``, alone or as an element of a list or tuple."""
+
+    holder = parents.get(call)
+    if isinstance(holder, (ast.List, ast.Tuple)):
+        holder = parents.get(holder)
+    if not (isinstance(holder, ast.keyword) and holder.arg == "marks"):
+        return False
+    param = parents.get(holder)
+    return (
+        isinstance(param, ast.Call)
+        and isinstance(param.func, ast.Attribute)
+        and param.func.attr == "param"
+        and isinstance(param.func.value, ast.Name)
+        and param.func.value.id == "pytest"
+    )
+
+
+def decorates_def(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether ``node`` is one of the decorators of a ``def`` or ``async def``."""
+
+    holder = parents.get(node)
+    return isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)) and node in holder.decorator_list
+
+
+def placement_problem(attribute: ast.Attribute, parents: dict[ast.AST, ast.AST]) -> str | None:
+    """Why the attribute ``posix_only`` stands where it must not; ``None`` when it stands in one of the two allowed places."""
+
+    call = parents.get(attribute)
+    called = isinstance(call, ast.Call) and call.func is attribute
+    if called and decorates_def(call, parents):
+        return None
+    chain = ancestors(attribute, parents)
+    if any(isinstance(parent, ast.ClassDef) and child in parent.decorator_list for child, parent in chain):
+        return ON_CLASS
+    if any(isinstance(parent, ast.Call) and last_name(parent.func) in ("fixture", "yield_fixture") for _, parent in chain):
+        return IN_FIXTURE
+    statement = next(parent for _, parent in chain if isinstance(parent, ast.stmt))
+    if not isinstance(statement, COMPOUND) and mentions_pytestmark(statement):
+        owner = next(parent for _, parent in ancestors(statement, parents) if isinstance(parent, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)))
+        if isinstance(owner, ast.ClassDef):
+            return IN_CLASS
+        if isinstance(owner, ast.Module):
+            return ON_PYTESTMARK
+    if not (called and in_param_marks(call, parents)):
+        return OFF_PLACE
+    if any(isinstance(parent, ast.Call) and last_name(parent.func) == "parametrize" and not decorates_def(parent, parents) for _, parent in chain):
+        return IN_PARAMETRIZE
+    return None
+
+
+def placement_problems(tree: ast.Module) -> list[tuple[int, str]]:
+    """``(line, problem)`` for every attribute ``posix_only`` outside the two places where it marks single test cases.
+
+    The attribute may stand only as the call that directly decorates a
+    ``def`` or ``async def``, methods included, or in ``marks=`` of
+    ``pytest.param(...)``, alone or as an element of a list or tuple, provided
+    that ``pytest.param`` is not inside a ``pytestmark`` statement of a module
+    or class body, a class decorator, a ``fixture(...)`` or
+    ``yield_fixture(...)`` call, or a ``parametrize(...)`` call that does not itself decorate a ``def`` or
+    ``async def``.  Each of those reaches every test of a module, a class,
+    every user of a fixture, or every test a ``pytest_generate_tests`` hook
+    parametrises.  Everywhere else the attribute is refused, whatever it is
+    assigned to and whatever statement wraps it, so a marker bound to a name,
+    put into a list, or handed to ``add_marker`` is refused where it is
+    written, also when another file uses it.
+    """
+
+    attributes = [node for node in ast.walk(tree) if isinstance(node, ast.Attribute) and node.attr == "posix_only"]
+    if not attributes:
+        return []
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    return sorted({(node.lineno, problem) for node in attributes if (problem := placement_problem(node, parents)) is not None})
+
+
+def conftest_problems(tree: ast.Module) -> list[tuple[int, str]]:
+    """``(line, problem)`` for every reference to ``posix_only`` in a ``conftest.py``.
+
+    A ``conftest.py`` holds no test case, so the marker written there belongs
+    to no single test case, and one line in it can take every test of a
+    directory out of a run.  Every reference is refused: the attribute, and a
+    string that is exactly the marker's name.  The two places that
+    ``placement_problems`` allows elsewhere are refused here as well.
+    """
+
+    return sorted(
+        {
+            (node.lineno, IN_CONFTEST)
+            for node in ast.walk(tree)
+            if (isinstance(node, ast.Attribute) and node.attr == "posix_only") or (isinstance(node, ast.Constant) and node.value == "posix_only")
+        }
+    )
+
+
+def marker_problems(tree: ast.Module, *, conftest: bool = False) -> list[tuple[int, str]]:
+    """``(line, problem)`` for every ``posix_only`` marker that is misplaced or whose reason is not a known valid one.
+
+    The placement is judged by ``placement_problems``.  ``conftest`` leaves it
+    out: a ``conftest.py`` is refused for every reference to the marker by
+    ``conftest_problems``, which says so in its own words.
+    """
+
+    if not any(isinstance(node, ast.Attribute) and node.attr == "posix_only" for node in ast.walk(tree)):
+        return []
     mappings = string_mappings(tree)
     lookups = mapping_lookups(tree)
     problems: list[tuple[int, str]] = []
@@ -369,24 +530,33 @@ def marker_problems(tree: ast.Module) -> list[tuple[int, str]]:
                     problems.extend((node.lineno, problem) for problem in reason_problems(value, LOCKED_REASONS))
         else:
             problems.append((node.lineno, f"reason is {ast.unparse(argument)}, which is not a string literal or a mapping lookup"))
-    return problems
+    return sorted([*([] if conftest else placement_problems(tree)), *problems], key=lambda problem: problem[0])
 
 
 GATE = Path(__file__).resolve().parent
 
 
-def suite_marker_problems(tests: Path = TESTS) -> list[tuple[str, int, str]]:
-    """``(file, line, problem)`` for every ``posix_only`` marker under ``tests`` that a test file carries."""
+def suite_marker_problems(tests: Path = TESTS, *, root: Path = ROOT) -> list[tuple[str, int, str]]:
+    """``(file, line, problem)`` for every ``posix_only`` marker under ``tests`` that is misplaced or has no valid reason.
+
+    Every file is parsed, ``conftest.py`` included: no text search decides
+    which files to read, so no spelling that Python reads as ``posix_only``
+    can keep a file out of the scan.  The gate's own directory is left out:
+    its files write the marker into source strings and call it to build test
+    input.
+    """
 
     found: list[tuple[str, int, str]] = []
     for path in sorted(tests.rglob("*.py")):
         if path.is_relative_to(GATE):
             continue
-        source = path.read_text(encoding="utf-8")
-        if "posix_only(" not in source:
-            continue
-        name = path.relative_to(ROOT).as_posix()
-        found.extend((name, line, problem) for line, problem in marker_problems(ast.parse(source, filename=str(path))))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        name = path.relative_to(root).as_posix()
+        if path.name == "conftest.py":
+            found.extend((name, line, problem) for line, problem in marker_problems(tree, conftest=True))
+            found.extend((name, line, problem) for line, problem in conftest_problems(tree))
+        else:
+            found.extend((name, line, problem) for line, problem in marker_problems(tree))
     return found
 
 
