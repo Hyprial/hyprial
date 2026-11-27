@@ -46,6 +46,7 @@ CAROL_KEY = peer_key(CAROL_NODE, ALICE_NODE)
 EMPTY = AdmissionSet(admission="keys", keys=())
 ALLOW = AdmissionSet(admission="allow", keys=())
 ROSTER_UNAVAILABLE = "roster-unavailable"
+TAILNET_UNRESOLVED = "tailnet-unresolved"
 
 
 def _grant(
@@ -126,7 +127,9 @@ def _derive(
     *,
     now_ms: int = NOW_MS,
     tailnet_ids: dict | None = None,
+    tailnets_unresolved: tuple[str, ...] = (),
 ) -> dict:
+    extra: dict = {} if not tailnets_unresolved else {"tailnets_unresolved": tailnets_unresolved}
     return derive_admission(
         grants_by_org,
         rosters,
@@ -135,6 +138,7 @@ def _derive(
         device_id=LOCAL_DEVICE,
         server_public=SERVER_PUBLIC,
         now_ms=now_ms,
+        **extra,
     )
 
 
@@ -321,6 +325,49 @@ def test_every_grant_of_an_unreadable_org_is_reported_once() -> None:
         (BETA, _grant("a", BOB_NODE, org=BETA).grant.grant_id, BOB_NODE.owner, BOB_NODE.device_id),
         (BETA, _grant("b", CAROL_NODE, org=BETA).grant.grant_id, CAROL_NODE.owner, CAROL_NODE.device_id),
     ]
+
+
+def test_an_org_whose_tailnet_cannot_be_named_is_reported_as_that_and_not_as_an_unreadable_roster() -> None:
+    """The roster was read; the org's tailnet was not known. The reason says the second.
+
+    Such an org has no tailnet to read its rows by, so its grants contribute
+    nothing, exactly as for an unreadable roster, and it has no tailnet id to
+    give the derivation. What differs is what the operator is told:
+    ``roster-unavailable`` sends them to the sidecar, and the sidecar is
+    answering.
+    """
+
+    projection = _derive(
+        {
+            BETA: (
+                _grant("a", BOB_NODE, org=BETA),
+                _grant("b", CAROL_NODE, org=BETA),
+                _grant("m", ALL_MEMBERS, org=BETA),
+            )
+        },
+        {BETA: _roster(_row(BOB_NODE), _row(CAROL_NODE))},
+        tailnet_ids={},
+        tailnets_unresolved=(BETA,),
+    )
+
+    assert projection[PORT].admission == EMPTY
+    assert sorted((item.grant_id, item.reason) for item in projection[PORT].unresolved) == [
+        (_grant("a", BOB_NODE, org=BETA).grant.grant_id, TAILNET_UNRESOLVED),
+        (_grant("b", CAROL_NODE, org=BETA).grant.grant_id, TAILNET_UNRESOLVED),
+        (_grant("m", ALL_MEMBERS, org=BETA).grant.grant_id, TAILNET_UNRESOLVED),
+    ]
+
+
+def test_an_org_whose_tailnet_cannot_be_named_leaves_another_orgs_keys_untouched() -> None:
+    projection = _derive(
+        {ORG: (_grant("a", BOB_NODE),), BETA: (_grant("b", CAROL_NODE, org=BETA),)},
+        {ORG: _roster(_row(BOB_NODE)), BETA: _roster(_row(CAROL_NODE))},
+        tailnet_ids={ORG: "space-group-acme"},
+        tailnets_unresolved=(BETA,),
+    )
+
+    assert projection[PORT].admission == AdmissionSet(admission="keys", keys=(BOB_KEY,))
+    assert [item.reason for item in projection[PORT].unresolved] == [TAILNET_UNRESOLVED]
 
 
 def test_only_this_devices_grants_for_the_port_count() -> None:

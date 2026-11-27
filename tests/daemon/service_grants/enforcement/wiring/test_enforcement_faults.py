@@ -17,14 +17,24 @@ Three groups, each holding one rule:
 * a push the sidecar did not confirm keeps the set that was in force, is one
   event, and is pushed again by a later maintenance cycle with no new
   trigger; the enforcer does not remember a set the sidecar never confirmed;
-* a directory read that fails, at the org listing, at one org's grant
-  directory or at the tailnet binding, tightens the port to nobody and never
-  widens it; the grant stays on disk; no event names the grant, which is the
-  readers' stated decision and is held here as what it looks like;
+* a directory read that fails tightens the port to nobody and never widens
+  it, and the grant stays on disk. It is one ``directory_unavailable`` event
+  naming the org and the read that failed, with no grant and no path, and
+  it is logged once for as long as that read keeps failing: a later
+  derivation that fails the same way says nothing, and the next failure
+  after the read has recovered is logged again;
 * an unexpose asked while a maintenance derivation is stuck ends within its
   bound, leaves the port's unexpose as its last command on the wire, and
   revokes that port's grant and no other; and a second unexpose of a port
   whose first is still waiting fails at once and says which is so.
+
+Which read fails is measured, not assumed. An org whose directory is
+ambiguous loses its grants at the grant read, which resolves the directory
+itself, so it is reported as the grant read and not as the tailnet binding.
+The tailnet binding's own failure, with the grants read, is reached in one
+case by replacing the resolver and not by a damaged directory: on a real
+directory every read inside that resolver fails silently, so the state
+cannot be made there (the probe is s4py-fix-probe-tailnet-steps.txt).
 
 A failed push does not mark the sets stale, so the retry is the next
 throttled derivation, thirty seconds on a serving daemon. The push cases
@@ -43,6 +53,7 @@ import pytest
 
 from hyprial.daemon.impl.forwarding.controller import _DEFAULT_TIMEOUT as RESPONSE_TIMEOUT
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.service_grants.enforcement import enforcer as enforcer_module
 from hyprial.daemon.impl.service_grants.enforcement.enforcer import (
     DEFAULT_MEMBERSHIP_TIMEOUT as ROSTER_BUDGET,
 )
@@ -64,6 +75,9 @@ from tests.daemon.service_grants.enforcement._support import (
 from tests.daemon.service_grants.enforcement.wiring._app import Daemon
 
 PUSH_REJECTED = "network.exposure.admission_rejected"
+DIRECTORY_UNAVAILABLE = "service.grant.directory_unavailable"
+KEY_UNAVAILABLE = "service.grant.key_unavailable"
+TAILNET_UNRESOLVED = "tailnet-unresolved"
 LISTING = LocalOrgFs.listdir
 BOB_KEY = peer_key(BOB_NODE, ALICE_NODE)
 CAROL_KEY = peer_key(CAROL_NODE, ALICE_NODE)
@@ -172,15 +186,16 @@ def _remembered(daemon: Daemon, port: int) -> list[str] | None:
     return None if pushed is None else list(pushed.keys)
 
 
-def _break(daemon: Daemon, failure: str) -> None:
-    """Make one step of the derivation fail, and nothing above it.
+def _break(daemon: Daemon, failure: str) -> Any:
+    """Make one read of the derivation fail, and nothing above it; return how to undo it.
 
     The first two replace one method of the live OrgFS facade, so that the
     production readers, the service grant service and the application's own
-    input lookup all run as they do on a serving daemon. The third creates a
-    second directory space of the org's name: nothing is replaced, and the
-    org's tailnet binding cannot be resolved because the directory is
-    ambiguous.
+    input lookup all run as they do on a serving daemon, and the returned
+    function puts the facade's own method back. The third creates a second
+    directory space of the org's name: nothing is replaced. That one cannot
+    be undone, and it is the grant read that fails, because resolving the
+    grants resolves the directory.
     """
 
     facade = daemon.harness.fs
@@ -190,15 +205,23 @@ def _break(daemon: Daemon, failure: str) -> None:
             raise OrgFsError("io-error", {"message": "directory unavailable"})
 
         facade.spaces = spaces
-    elif failure == "grants":
+        return lambda: delattr(facade, "spaces")
+    if failure == "grants":
+
         def grant_directory(space_id: str, node: str, **options: Any) -> Any:
             if "service-grants" in node:
                 raise OrgFsError("io-error", {"message": "directory unavailable"})
             return LISTING(facade, space_id, node, **options)
 
         facade.listdir = grant_directory
-    else:
-        facade.create_space(ORG)
+        return lambda: delattr(facade, "listdir")
+    facade.create_space(ORG)
+    return lambda: None
+
+
+def _derive_again(daemon: Daemon) -> None:
+    daemon.app._service_admission_changed("service.grant")
+    daemon.settle(timeout=SETTLE)
 
 
 def _grant_documents(daemon: Daemon, owner: str) -> list[str]:
@@ -219,35 +242,34 @@ def _modes_pushed(daemon: Daemon) -> set[str]:
     return {push["admission"] for push in daemon.exposes(port=PORT)}
 
 
-def _grant_events(daemon: Daemon) -> list[str]:
-    return sorted({name for _l, _c, name, _f in daemon.events if name.startswith("service.grant.")})
+def _names(events: list[Any]) -> list[str]:
+    return [name for _level, _component, name, _fields in events]
 
 
 @pytest.mark.parametrize(
-    "failure",
+    ("failure", "org", "step"),
     [
-        pytest.param("orgs", id="the-org-listing-cannot-be-read"),
-        pytest.param("grants", id="one-orgs-grant-directory-cannot-be-read"),
-        pytest.param("tailnet", id="the-tailnet-binding-cannot-be-resolved"),
+        pytest.param("orgs", "", "orgs", id="the-org-listing-cannot-be-read"),
+        pytest.param("grants", ORG, "grants", id="one-orgs-grant-directory-cannot-be-read"),
+        pytest.param("ambiguous", ORG, "grants", id="the-orgs-directory-is-ambiguous"),
     ],
 )
-def test_a_directory_read_that_fails_closes_the_port_and_reports_no_grant(
-    make_daemon: Any, failure: str
+def test_a_directory_read_that_fails_closes_the_port_and_names_the_read(
+    make_daemon: Any, failure: str, org: str, step: str
 ) -> None:
-    """Each of the three directory steps can fail on its own; none widens the port.
+    """A read that fails tightens the port to nobody, and says which read it was.
 
-    The set is derived again with that one step failing, and it tightens to
+    The set is derived again with that one read failing, and it tightens to
     nobody: the port stops admitting the device it admitted a moment before.
     The grant itself is not touched, so the device is admitted again by the
-    derivation that follows once the step can be read.
+    derivation that follows once the read succeeds.
 
-    No event is logged for it. That is the readers' stated decision (an org
-    whose documents cannot be read has nothing that can be reported per
-    grant), and this case holds what that decision looks like on a serving
-    daemon: the operator sees a granted device refused with no line that
-    names the grant or the org. The migration guide's diagnostic table
-    describes ``service.grant.key_unavailable``; none of these three failures
-    produces it.
+    One event names the org and the read: ``directory_unavailable``, with
+    ``org`` and ``step`` and nothing else. When the orgs themselves cannot be
+    listed there is no org to name, and ``org`` is empty. It carries no
+    grant, because the grants are what could not be read, and no path and no
+    message from the directory, so it can be pasted into a ticket as it is.
+    It used to carry nothing at all: the port closed and no line said why.
     """
 
     daemon = make_daemon()
@@ -258,16 +280,102 @@ def test_a_directory_read_that_fails_closes_the_port_and_reports_no_grant(
 
     _break(daemon, failure)
     daemon.events.clear()
-    daemon.app._service_admission_changed("service.grant")
-    daemon.settle(timeout=SETTLE)
+    _derive_again(daemon)
 
     assert _last_keys(daemon) == []
     assert _admitted(daemon, BOB_NODE) is False
     assert _modes_pushed(daemon) == {"keys"}
-    assert _grant_events(daemon) == []
-    assert [name for _l, _c, name, _f in daemon.events] == []
+    assert daemon.logged(DIRECTORY_UNAVAILABLE) == [("warn", {"org": org, "step": step})]
+    assert _names(daemon.events) == [DIRECTORY_UNAVAILABLE]
+    assert grant_id not in str(daemon.events)
     assert BOB_KEY not in str(daemon.events)
     assert _grant_documents(daemon, ALICE_NODE.owner) == [f"{grant_id}.json"]
+
+
+def test_a_directory_that_stays_unreadable_is_reported_once_until_it_recovers(
+    make_daemon: Any,
+) -> None:
+    """The same failure is one event for as long as it lasts, and a new one after it heals.
+
+    A grant directory that cannot be read fails every derivation, and a
+    derivation runs at least every thirty seconds. An event per derivation
+    would be a line every thirty seconds for as long as the directory is
+    broken, which is how a real line gets lost. So a failure is logged when
+    it first appears; while the next derivation fails the same read for the
+    same org, nothing is logged; once a derivation has read it, the next
+    failure of it is a new one and is logged again.
+    """
+
+    daemon = make_daemon()
+    _grant(daemon, BOB_NODE)
+    assert _admitted(daemon, BOB_NODE)
+    heal = _break(daemon, "grants")
+    daemon.events.clear()
+
+    _derive_again(daemon)
+    for _ in range(3):
+        _derive_again(daemon)
+
+    assert len(daemon.logged(DIRECTORY_UNAVAILABLE)) == 1
+
+    heal()
+    _derive_again(daemon)
+
+    assert _admitted(daemon, BOB_NODE)
+    assert _last_keys(daemon) == [BOB_KEY]
+    assert len(daemon.logged(DIRECTORY_UNAVAILABLE)) == 1
+
+    _break(daemon, "grants")
+    _derive_again(daemon)
+
+    assert _admitted(daemon, BOB_NODE) is False
+    assert daemon.logged(DIRECTORY_UNAVAILABLE) == [
+        ("warn", {"org": ORG, "step": "grants"}),
+        ("warn", {"org": ORG, "step": "grants"}),
+    ]
+
+
+def test_a_tailnet_binding_that_cannot_be_resolved_is_reported_for_each_grant_it_did_read(
+    make_daemon: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The grants were read and the org's tailnet could not be named: each grant says so.
+
+    This is the one directory failure that knows the grants, so it is the one
+    that can report per grant. Each effective grant the derivation read is
+    one ``key_unavailable`` whose reason is ``tailnet-unresolved``, which
+    tells it from ``roster-unavailable``: the roster was read, and it is the
+    org's binding that is not known. The org is named once by
+    ``directory_unavailable`` as the tailnet step. The port tightens to
+    nobody, and the sets on the wire are ``keys`` only.
+
+    The resolver is replaced, with one that raises, because no damaged
+    directory reaches this state: every read inside the real one gives an
+    empty answer rather than raising. What is real in this case is
+    everything around that call.
+    """
+
+    def unresolvable(*_args: Any, **_options: Any) -> str:
+        raise OSError("a path the events must not carry")
+
+    daemon = make_daemon()
+    bob = _grant(daemon, BOB_NODE)
+    carol = _grant(daemon, CAROL_NODE)
+    assert _last_keys(daemon) == [BOB_KEY, CAROL_KEY]
+    assert _admitted(daemon, BOB_NODE)
+    monkeypatch.setattr(enforcer_module, "effective_tailnet_id", unresolvable)
+    daemon.events.clear()
+
+    _derive_again(daemon)
+
+    assert _last_keys(daemon) == []
+    assert _admitted(daemon, BOB_NODE) is False
+    assert _admitted(daemon, CAROL_NODE) is False
+    assert _modes_pushed(daemon) == {"keys"}
+    assert daemon.logged(DIRECTORY_UNAVAILABLE) == [("warn", {"org": ORG, "step": "tailnet"})]
+    assert sorted(
+        (fields["grantId"], fields["reason"]) for _level, fields in daemon.logged(KEY_UNAVAILABLE)
+    ) == [(bob, TAILNET_UNRESOLVED), (carol, TAILNET_UNRESOLVED)]
+    assert _grant_documents(daemon, ALICE_NODE.owner) == sorted([f"{bob}.json", f"{carol}.json"])
 
 
 OTHER_PORT = PORT + 1
