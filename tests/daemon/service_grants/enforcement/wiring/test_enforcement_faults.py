@@ -215,6 +215,13 @@ def _break(daemon: Daemon, failure: str) -> Any:
 
         facade.listdir = grant_directory
         return lambda: delattr(facade, "listdir")
+    if failure == "content":
+
+        def pending(space_id: str, node: str) -> Any:
+            raise OrgFsError("content-pending", {"spaceId": space_id, "nodeId": node})
+
+        facade.read_text = pending
+        return lambda: delattr(facade, "read_text")
     facade.create_space(ORG)
     return lambda: None
 
@@ -251,6 +258,7 @@ def _names(events: list[Any]) -> list[str]:
     [
         pytest.param("orgs", "", "orgs", id="the-org-listing-cannot-be-read"),
         pytest.param("grants", ORG, "grants", id="one-orgs-grant-directory-cannot-be-read"),
+        pytest.param("content", ORG, "grants", id="one-orgs-grant-content-is-pending"),
         pytest.param("ambiguous", ORG, "grants", id="the-orgs-directory-is-ambiguous"),
     ],
 )
@@ -386,6 +394,7 @@ LISTING_REFUSED = "org directory unavailable while attempting to"
     [
         pytest.param("orgs", "list orgs", id="the-org-listing-cannot-be-read"),
         pytest.param("grants", "", id="one-orgs-grant-directory-cannot-be-read"),
+        pytest.param("content", "", id="one-orgs-grant-content-is-pending"),
         pytest.param("ambiguous", "", id="the-orgs-directory-is-ambiguous"),
     ],
 )

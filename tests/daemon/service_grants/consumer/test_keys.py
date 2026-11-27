@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.service_grants.consumer import LEDGER_RELPATH, GrantConsumer, entry_id_for_grant
 from hyprial.daemon.impl.service_grants.consumer import keys as keys_module
 from hyprial.identity import SecretResolver, read_user_provider_value
@@ -152,6 +153,47 @@ def test_users_own_entry_with_the_same_id_is_never_overwritten_or_deleted(world:
     source.refresh()
 
     assert owned.read_bytes() == before
+    assert provider_ids(world["bob_home"]) == [entry_id]
+
+
+def test_content_pending_keeps_the_previous_key_until_the_body_arrives(
+    world: dict[str, Any],
+) -> None:
+    grant_id = grant_key(world)
+    entry_id = entry_id_for_grant(grant_id)
+    source = consumer(world)
+    source.refresh()
+    assert provider_ids(world["bob_home"]) == [entry_id]
+    raw = world["store"].read_service_grant(ORG, "alice", grant_id)
+    assert raw is not None
+    with as_author(world["runtime"], "alice"):
+        world["store"].put_service_grant(
+            ORG, "alice", grant_id, {**raw, "service": {**raw["service"], "note": "changed"}}
+        )
+    facade = world["runtime"].facade
+    space_id = world["store"]._space_id(ORG)
+    original = facade.read_text
+    path = f"directory/service-grants/alice/{grant_id}.json"
+    grant_node = facade.stat(space_id, path).node_id
+    calls: list[str] = []
+
+    def pending(space: str, node: str) -> tuple[str, str]:
+        if node == f"id:{grant_node}":
+            calls.append(node)
+            raise OrgFsError("content-pending")
+        return original(space, node)
+
+    object.__setattr__(facade, "read_text", pending)
+    try:
+        source.refresh()
+    finally:
+        object.__setattr__(facade, "read_text", original)
+
+    assert calls
+    assert provider_ids(world["bob_home"]) == [entry_id]
+    assert source.entries()
+    assert source.owns_entry(entry_id)
+    source.refresh()
     assert provider_ids(world["bob_home"]) == [entry_id]
 
 
