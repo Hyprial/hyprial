@@ -313,8 +313,11 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         "disconnect",
         "expose",
         "exposures",
+        "grant",
+        "grants",
         "guide",
         "list",
+        "revoke",
         "unexpose",
         "whois",
     } == set(service.commands)
