@@ -142,3 +142,30 @@ def test_a_home_without_an_orgfs_runtime_is_not_rechecked(
     _settle(app)
 
     assert asked == [] and app._orgfs_runtime is None
+
+
+def test_the_recipient_side_shares_the_applications_device_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One quarantine per application: a bad device row is reported once, whoever reads it."""
+
+    from hyprial.daemon.impl.org.network.ipc import invalid_device_diagnostics
+    from hyprial.daemon.impl.service_grants import ipc as grant_ipc
+    from hyprial.daemon.impl.service_grants.consumer import startup as startup_module
+
+    app, _controller = _application(tmp_path)
+    runtime = app._require_orgfs_runtime()
+    quarantine = invalid_device_diagnostics(app)
+    assert grant_ipc.quarantine_for(app) is quarantine
+    assert app._grant_source()._store._invalid_device_quiet is quarantine.entries
+
+    built: list[object] = []
+    real = startup_module.OrgFsDirectoryStore
+
+    def recording(fs, **kwargs):
+        built.append(kwargs.get("invalid_devices"))
+        return real(fs, **kwargs)
+
+    monkeypatch.setattr(startup_module, "OrgFsDirectoryStore", recording)
+    app._held_grant(runtime)
+    assert built == [quarantine]
