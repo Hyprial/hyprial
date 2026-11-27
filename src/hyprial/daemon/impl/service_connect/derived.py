@@ -50,7 +50,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -74,6 +74,9 @@ class DerivedSource(Protocol):
 
     def devices(self) -> tuple[ProtectedDevice, ...]:
         """The protected devices this source currently contributes."""
+
+    def grant_status(self) -> dict[tuple[str, str], object]:
+        """Current grant-derived entries, read without refreshing."""
 
     def connected(self, name: str) -> None:
         """A connection now maps the derived entry called ``name``."""
@@ -118,6 +121,29 @@ def alternative_name(name: str, grantor: str) -> str:
         if shortened != name:
             return shortened
     return name[:-1] + ("0" if name[-1] != "0" else "1")
+
+
+def grant_statuses(
+    source: DerivedSource | None,
+    derived_names: Collection[str],
+    bindings: Mapping[str, object],
+) -> dict[tuple[str, str], dict[str, object]]:
+    """Current final names and live bindings, without deriving or refreshing."""
+
+    if source is None:
+        return {}
+    statuses = {}
+    for key, status in source.grant_status().items():
+        name = next(
+            (
+                candidate
+                for candidate in (status.name, alternative_name(status.name, status.grantor))
+                if candidate in derived_names
+            ),
+            None,
+        )
+        statuses[key] = {"serviceName": name, "connected": name in bindings}
+    return statuses
 
 
 def merge_entries(

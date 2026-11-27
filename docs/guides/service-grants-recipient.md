@@ -42,12 +42,15 @@ hyprial org service grants
 Granted:
   (none)
 Received:
-  sg.nubos7mltmaedzhx4eohns3aan	group-acme	alice	device-a:8447	magpie	bob/device-b	cred=yes	effective
+  sg.nubos7mltmaedzhx4eohns3aan	group-acme	alice	device-a:8447	magpie	bob/device-b	cred=yes	effective	keyStored=yes	entry=grant.nubos7mltmaedzhx4eohns3aan	connected=yes	service=magpie
 ```
 
-列依次是：授权 id、org、授权人、设备:端口、服务名、接收方、是否带 Key、状态。`--org <org>` 只看一个 org，`--include-revoked` 连已撤销和已过期的也列出。
+列依次是：授权 id、org、授权人、设备:端口、服务名、接收方、是否带 Key、状态，以及本机只读状态 `keyStored`、`entry`、`connected`、`service`。`--org <org>` 只看一个 org，`--include-revoked` 连已撤销和已过期的也列出。
 
-这一节目前**不显示** Key 是否已经存到本机、连接是否已建立；那要看 2.2 和 2.3。
+- `keyStored=yes` 表示接收方的所有权台账认领了这份授权的 Key 条目，而且对应普通条目文件仍存在；不读取 Key 的值。`entry` 是这时的 user-provider 条目名，可用于把它绑给 agent；未存好时为 `-`。
+- `connected=yes` 只表示当前有这份授权派生出的活映射；保存过连接意图但映射失败不算已连接。
+- `service` 是重名改名后 `service list` 里的最终服务名。没有派生条目或服务管理器未运行时为 `-`（JSON 为 `null`）。管理器未运行时 `connected` 必为 `no`；列表不会为了算服务名启动管理器或重新推导目录。
+- 这一读取不会开封 Key、写入条目、创建映射或启动 service-connect。
 
 读不到或超出读取上限的部分不会显示成“没有授权”，而是在列表后各打印一行 `Not read:`：
 

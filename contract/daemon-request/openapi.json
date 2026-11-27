@@ -147720,8 +147720,17 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "connected": {
+                  "type": "boolean"
+                },
                 "effective": {
                   "type": "boolean"
+                },
+                "entryId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "expiresAtMs": {
                   "minimum": 0,
@@ -147744,6 +147753,9 @@
                   "type": "string"
                 },
                 "hasCredential": {
+                  "type": "boolean"
+                },
+                "keyStored": {
                   "type": "boolean"
                 },
                 "org": {
@@ -147832,6 +147844,12 @@
                     }
                   ]
                 },
+                "serviceName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "updatedAtMs": {
                   "minimum": 0,
                   "type": [
@@ -147852,7 +147870,11 @@
                 "revokedAtMs",
                 "updatedAtMs",
                 "hasCredential",
-                "effective"
+                "effective",
+                "keyStored",
+                "entryId",
+                "connected",
+                "serviceName"
               ],
               "type": "object"
             },
@@ -147916,7 +147938,35 @@
               }
             ],
             "limitedGrantors": [],
-            "received": [],
+            "received": [
+              {
+                "connected": false,
+                "effective": true,
+                "entryId": "grant.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "expiresAtMs": null,
+                "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "grantedAtMs": 1700000000000,
+                "grantor": "alice",
+                "hasCredential": true,
+                "keyStored": true,
+                "org": "group-acme",
+                "recipient": {
+                  "deviceId": "device-b",
+                  "owner": "bob"
+                },
+                "revokedAtMs": null,
+                "schemaVersion": 1,
+                "service": {
+                  "deviceId": "device-a",
+                  "name": "magpie",
+                  "note": null,
+                  "port": 8447,
+                  "protocol": "http"
+                },
+                "serviceName": "magpie",
+                "updatedAtMs": null
+              }
+            ],
             "unreadableOrgs": []
           }
         },

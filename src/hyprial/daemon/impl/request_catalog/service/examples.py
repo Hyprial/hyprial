@@ -152,7 +152,15 @@ SERVICE_EXAMPLES = (
                 {"org": "group-acme", "port": 8447},
                 result={
                     "granted": [GRANT_VIEW],
-                    "received": [],
+                    "received": [
+                        {
+                            **GRANT_VIEW,
+                            "keyStored": True,
+                            "entryId": "grant.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "connected": False,
+                            "serviceName": "magpie",
+                        }
+                    ],
                     "documentCount": {"group-acme": 1},
                     "documentLimit": 256,
                     "limitedGrantors": [],

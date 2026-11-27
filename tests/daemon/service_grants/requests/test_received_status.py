@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
@@ -10,6 +11,9 @@ from typer.testing import CliRunner
 
 from hyprial.daemon.impl.service_grants import ServiceGrantService
 from hyprial.daemon.impl.service_grants.consumer import GrantConsumer
+from hyprial.daemon.impl.service_grants.consumer.keys import entry_path
+from hyprial.daemon.impl.service_grants.ipc import build_service
+from hyprial.identity import DeviceRecord, write_device_record
 from hyprial.shell.impl.cli.commands.service import commands, grants as cli_grants
 from tests.daemon.service_connect.support import FakeController, FakeStatePort
 from tests.daemon.service_grants.consumer.support import (
@@ -88,7 +92,7 @@ def test_received_status_reads_stored_key_without_starting_a_manager(world: dict
     assert row["entryId"] is None
     assert row["connected"] is False
     assert row["serviceName"] is None
-    assert not (world["bob_home"] / "state").exists()
+    assert not world["access"].exists()
 
     source = _consumer(world)
     source.refresh()
@@ -100,11 +104,22 @@ def test_received_status_reads_stored_key_without_starting_a_manager(world: dict
     assert stored["serviceName"] is None
 
 
+def test_received_status_stops_claiming_a_missing_key_file(world: dict[str, Any]) -> None:
+    source = _consumer(world)
+    source.refresh()
+    entry_path(world["bob_home"], "grant." + world["grant"]["grantId"].removeprefix("sg.")).unlink()
+
+    row = _received(world)
+
+    assert row["keyStored"] is False
+    assert row["entryId"] is None
+
+
 def test_received_status_uses_the_running_managers_derived_snapshot(world: dict[str, Any]) -> None:
     source = _consumer(world)
     service = _manager(world, source)
     world["managers"].append(service)
-    world["recipient"]._status = lambda: source.grant_status()
+    world["recipient"]._status = service.grant_status
     service.handle("service.guide", {"name": "magpie"})
     service.handle("service.connect", {"name": "magpie"})
 
@@ -120,7 +135,7 @@ def test_received_status_reports_the_renamed_service(world: dict[str, Any]) -> N
     source = _consumer(world)
     service = _manager(world, source)
     world["managers"].append(service)
-    world["recipient"]._status = lambda: source.grant_status()
+    world["recipient"]._status = service.grant_status
     service.handle("service.guide", {"name": "magpie-alice"})
 
     row = _received(world)
@@ -138,6 +153,38 @@ def test_received_status_does_not_derive_for_an_inactive_grant(world: dict[str, 
     assert row["entryId"] is None
     assert row["connected"] is False
     assert row["serviceName"] is None
+
+
+def test_ipc_status_reads_only_an_existing_manager(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    write_device_record(
+        home,
+        DeviceRecord(
+            device_id="device-b",
+            owner="bob",
+            server_public="nodekey:server-device-b",
+            client_public="nodekey:client-device-b",
+            key_generation=1,
+        ),
+    )
+    app = SimpleNamespace(
+        hyprial_home=home,
+        owner="bob",
+        _service_manager=None,
+        _orgfs_runtime=SimpleNamespace(facade=object()),
+    )
+    app._require_orgfs_runtime = lambda: app._orgfs_runtime
+
+    service = build_service(app)
+
+    assert service._status is None
+    assert app._service_manager is None
+    app._service_manager = SimpleNamespace(
+        grant_status=lambda: {("group-acme", "sg." + "a" * 26): {"serviceName": "magpie", "connected": True}}
+    )
+    with_manager = build_service(app)
+    assert with_manager._status is app._service_manager.grant_status
 
 
 def test_cli_received_row_shows_the_read_only_status(monkeypatch: pytest.MonkeyPatch) -> None:

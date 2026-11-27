@@ -72,6 +72,8 @@
 #   reported. A Key entry withdrawn after a restart is reported then; a
 #   mapping that came down while the daemon was stopped is not. A home that
 #   cannot prove who it is offers nothing and reports nothing.
+# - Received status (2026-11-27): grant_status is a locked snapshot read. It
+#   never refreshes, opens a credential or persists anything.
 """The recipient side of service grants: derive, keep and withdraw what grants give this device."""
 
 from __future__ import annotations
@@ -139,6 +141,16 @@ GRANTS_DIR = SERVICE_GRANTS_DIR
 PERIODIC_BUDGET_SECONDS = 2.0
 _COMPONENT = "service"
 _UNKNOWN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class GrantStatus:
+    """The current derived entry for one grant, without its credential state."""
+
+    org: str
+    grant_id: str
+    grantor: str
+    name: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,6 +496,17 @@ class GrantConsumer:
 
     def devices(self) -> tuple[ProtectedDevice, ...]:
         return self._snapshot.devices
+
+    def grant_status(self) -> dict[tuple[str, str], GrantStatus]:
+        """Read the effective grants' derived entries without refreshing anything."""
+
+        with self._lock:
+            return {
+                (grant.org, grant.grant_id): GrantStatus(
+                    grant.org, grant.grant_id, grant.grantor, grant.name
+                )
+                for grant in self._snapshot.grants
+            }
 
     def remembers(self, name: str) -> bool:
         return name in self._ledger.connections

@@ -47,6 +47,10 @@
 #   bound recipients read by. Without org, an org whose grants cannot be read
 #   is left out of every other key and named in unreadableOrgs, so it is
 #   never reported as "no grant"; asked for that one org, the request refuses.
+# - Received status (2026-11-27): the four added received-row fields are read
+#   from the existing Key ledger and an existing manager's snapshot/bindings.
+#   No listing starts service-connect. Without a manager, connected is false
+#   and serviceName is null because no new derivation is done for display.
 """Service-grant domain service: ``service.grant``, ``service.revoke``, ``service.grants``."""
 
 from __future__ import annotations
@@ -68,6 +72,7 @@ from hyprial.identity import (
 )
 from hyprial.kernel import DaemonRequestError, ipc_errors
 
+from .consumer.keys import stored_key
 from .models import (
     ALL_MEMBERS,
     GRANT_PROTOCOLS,
@@ -80,6 +85,7 @@ from .models import (
     grant_view,
     normalize_bare_owner,
     parse_device_target,
+    received_grant_view,
     validate_grant_id,
 )
 from .queries import (
@@ -193,6 +199,7 @@ class ServiceGrantService:
         exposed_ports: Callable[[], AbstractSet[int]],
         now_ms: Callable[[], int] | None = None,
         logger: Callable[..., None] | None = None,
+        status: Callable[[], Mapping[tuple[str, str], Mapping[str, Any]]] | None = None,
     ) -> None:
         self._store = store
         self._home = Path(home)
@@ -203,6 +210,23 @@ class ServiceGrantService:
         self._exposed_ports = exposed_ports
         self._now_ms = now_ms or _now_ms
         self._logger = logger
+        self._status = status
+
+    def _received_view(
+        self, item: StoredServiceGrant, now: int, statuses: Mapping[tuple[str, str], Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        entry_id = stored_key(self._home, item.org, item.grant.grant_id)
+        status = statuses.get((item.org, item.grant.grant_id), {})
+        service_name = status.get("serviceName")
+        return received_grant_view(
+            item,
+            now_ms=now,
+            effective=is_grant_effective(item.grant, now_ms=now),
+            key_stored=entry_id is not None,
+            entry_id=entry_id,
+            connected=status.get("connected") is True,
+            service_name=service_name if isinstance(service_name, str) else None,
+        )
 
     def grant(
         self,
@@ -649,6 +673,7 @@ class ServiceGrantService:
 
         granted_items.sort(key=lambda item: (item.org, item.grantor, item.grant.grant_id))
         received_items.sort(key=lambda item: (item.org, item.grantor, item.grant.grant_id))
+        statuses = {} if self._status is None else self._status()
         return {
             "granted": [
                 grant_view(
@@ -659,11 +684,7 @@ class ServiceGrantService:
                 for item in granted_items
             ],
             "received": [
-                grant_view(
-                    item,
-                    now_ms=now,
-                    effective=is_grant_effective(item.grant, now_ms=now),
-                )
+                self._received_view(item, now, statuses)
                 for item in received_items
             ],
             "documentCount": document_count,

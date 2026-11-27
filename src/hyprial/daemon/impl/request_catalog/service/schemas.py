@@ -52,6 +52,18 @@ GRANT_VIEW = obj({
     "hasCredential": {"type": "boolean"},
     "effective": {"type": "boolean"},
 })
+RECEIVED_GRANT_VIEW = {
+    **GRANT_VIEW,
+    "properties": {
+        **GRANT_VIEW["properties"],
+        "keyStored": {"type": "boolean"},
+        "entryId": NSTR,
+        "connected": {"type": "boolean"},
+        "serviceName": NSTR,
+    },
+    "required": [*GRANT_VIEW["required"], "keyStored", "entryId", "connected", "serviceName"],
+}
+
 CREDENTIAL_REF = {
     "anyOf": [
         {"type": "null"},
@@ -111,7 +123,7 @@ RESULTS = {
     "service.revoke": obj({"grantId": STR, "revoked": {"type": "boolean"}}),
     "service.grants": obj({
         "granted": {"type": "array", "items": GRANT_VIEW},
-        "received": {"type": "array", "items": GRANT_VIEW},
+        "received": {"type": "array", "items": RECEIVED_GRANT_VIEW},
         "documentCount": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "documentLimit": {"type": "integer", "minimum": 1},
         "limitedGrantors": {"type": "array", "items": obj({

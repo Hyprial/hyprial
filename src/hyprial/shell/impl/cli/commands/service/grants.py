@@ -84,6 +84,19 @@ def _render_grant_row(grant: Mapping[str, Any]) -> str:
     )
 
 
+def _render_received_grant_row(grant: Mapping[str, Any]) -> str:
+    key_stored = grant.get("keyStored") is True
+    entry_id = grant.get("entryId")
+    service_name = grant.get("serviceName")
+    return (
+        f"{_render_grant_row(grant)}\t"
+        f"keyStored={'yes' if key_stored else 'no'}\t"
+        f"entry={entry_id if isinstance(entry_id, str) else '-'}\t"
+        f"connected={'yes' if grant.get('connected') is True else 'no'}\t"
+        f"service={service_name if isinstance(service_name, str) else '-'}"
+    )
+
+
 def _render_grant_created(data: Mapping[str, Any]) -> str:
     grant = data.get("grant")
     label = "Updated" if data.get("updated") is True else "Granted"
@@ -119,7 +132,7 @@ def _render_grants(data: Mapping[str, Any]) -> str:
     received = data.get("received")
     if isinstance(received, list) and received:
         lines.extend(
-            f"  {_render_grant_row(item)}" for item in received if isinstance(item, Mapping)
+            f"  {_render_received_grant_row(item)}" for item in received if isinstance(item, Mapping)
         )
     else:
         lines.append("  (none)")

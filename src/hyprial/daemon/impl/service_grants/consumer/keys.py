@@ -58,6 +58,8 @@
 #   exact grant: the store rebuilds the header from the grant fields and
 #   refuses an envelope whose own header differs, which is what a copied or
 #   mis-addressed ciphertext always is.
+# - Received status (2026-11-27): a readonly query combines the ledger's
+#   ownership claim with a regular-file lstat; it never reads the Key value.
 """Write, keep and delete the user-provider entry of a granted Key."""
 
 from __future__ import annotations
@@ -336,6 +338,21 @@ def _key_still_ours(row: KeyRow, home: Path) -> bool:
         return False
 
 
+def stored_key(home: Path, org: str, grant_id: str) -> str | None:
+    """Return the owned entry name only while its regular entry file is present.
+
+    Ownership comes from the durable ledger; the file probe reads no Key value.
+    A missing or non-regular entry is not reported as stored.
+    """
+
+    ledger = Ledger(Path(home) / LEDGER_RELPATH)
+    row = ledger.rows.get((org, grant_id))
+    if row is None:
+        return None
+    state = _inspect(entry_path(Path(home), row.entry_id))
+    return row.entry_id if state.info is not None else None
+
+
 @dataclass(frozen=True, slots=True)
 class EntryState:
     """What the file at one entry path is, as far as a single lstat can tell."""
@@ -527,5 +544,6 @@ __all__ = [
     "entry_id_for_grant",
     "entry_path",
     "sync_entry",
+    "stored_key",
     "withdraw_entry",
 ]

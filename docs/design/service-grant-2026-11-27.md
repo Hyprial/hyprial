@@ -346,6 +346,18 @@ it does not show the previous answer the reconcile keeps for that grantor. The
 caller's own grants are always read in full, and `documentCount` gives the
 caller's document count per org next to `documentLimit`.
 
+Every `received` row also has four read-only local facts: `keyStored` says
+whether the recipient's ownership ledger names this grant's Key entry and its
+regular entry file is still present (the Key value is never read); `entryId`
+is that entry name when stored and otherwise null; `connected` says whether
+this grant currently has a live derived service mapping; and `serviceName` is
+the final derived service name after any collision rename. The listing uses
+only the ledger, the recipient's current derived snapshot, and current mapping
+bindings. It never opens a credential, writes a Key, creates a mapping, or
+starts service-connect. With no running service manager, `connected` is false
+and `serviceName` is null; the listing does not re-derive the name just to
+answer this question.
+
 What Bob still does by hand: `hyprial org service connect <name>`; binding the
 key to an agent; and, when the service is a model gateway, creating a model
 connection that points at the local mapping port. Creating model connections
@@ -370,7 +382,7 @@ sidecar-internal period that decides when a new member's key appears.
 
 | Item | Shape |
 | --- | --- |
-| Methods | `service.grant {org, port, device, expiresAtMs?, name?, protocol?, note?, credential?: {entryId, fieldName?}}` → `{grant, updated}`; `service.revoke {org, grantId}` → `{grantId, revoked}`; `service.grants {org?, port?, includeRevoked?}` → `{granted, received, documentCount: {<org>: n}, documentLimit, limitedGrantors: [{org, grantor, reason}], unreadableOrgs}`. All `local-operator` only, not HTTP-exposed. `org` is the full directory-space name (`group-<name>`); `device` is `<owner>/<deviceId>` or `@members`. |
+| Methods | `service.grant {org, port, device, expiresAtMs?, name?, protocol?, note?, credential?: {entryId, fieldName?}}` → `{grant, updated}`; `service.revoke {org, grantId}` → `{grantId, revoked}`; `service.grants {org?, port?, includeRevoked?}` → `{granted, received, documentCount: {<org>: n}, documentLimit, limitedGrantors: [{org, grantor, reason}], unreadableOrgs}`. Each `received` row adds `{keyStored, entryId, connected, serviceName}`: Key-entry ownership/presence without reading its value, live mapping state, and the final derived name after collision renaming. With no manager, `connected=false` and `serviceName=null`. All `local-operator` only, not HTTP-exposed. `org` is the full directory-space name (`group-<name>`); `device` is `<owner>/<deviceId>` or `@members`. |
 | CLI | `hyprial org service grant PORT --org --device [--name] [--protocol] [--note] [--expires-at-ms] [--credential ENTRY[:FIELD]] [--json]`; `hyprial org service revoke GRANT_ID --org [--json]`; `hyprial org service grants [--org] [--port] [--include-revoked] [--json]` |
 | Directory | device row keys `encryptionKeyId`, `encryptionPublicKey`; protected section `service-grants` with an owner-created parent directory |
 | Sidecar | stdio protocol v7: `expose` requires `admission`; `keys` mode with at most 4096 keys |

@@ -31,6 +31,7 @@ from hyprial.kernel import (
 
 from .derived import (
     derived_access,
+    grant_statuses,
     is_withdrawn,
     merge_entries,
     record_absent,
@@ -456,6 +457,9 @@ class ServiceManager:
             self._lock.release()
         return drained
 
+    def grant_status(self) -> dict[tuple[str, str], dict[str, object]]:
+        with self._lock:
+            return grant_statuses(self._derived, self._derived_names, self._bindings)
     def _require_open(self) -> None:
         if self._admission_closed.is_set() or self._closed:
             raise RuntimeError("service manager is closed")

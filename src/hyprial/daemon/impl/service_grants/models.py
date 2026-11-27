@@ -28,6 +28,9 @@
 #   always written, and a document without it reads as null, so documents
 #   written before the field existed still parse. Every other key stays
 #   closed. The schema version stays 1 because the field is optional.
+# - Received status (2026-11-27): only service.grants adds keyStored, entryId,
+#   connected and serviceName to a received view. The grant document view stays
+#   unchanged, including the grant and revoke replies.
 """Service-grant domain models, id generation, and boundary normalization."""
 
 from __future__ import annotations
@@ -436,6 +439,27 @@ def grant_view(stored: StoredServiceGrant, *, now_ms: int, effective: bool) -> d
     }
 
 
+def received_grant_view(
+    stored: StoredServiceGrant,
+    *,
+    now_ms: int,
+    effective: bool,
+    key_stored: bool,
+    entry_id: str | None,
+    connected: bool,
+    service_name: str | None,
+) -> dict[str, Any]:
+    """The non-secret grant view plus the recipient's current local facts."""
+
+    return {
+        **grant_view(stored, now_ms=now_ms, effective=effective),
+        "keyStored": key_stored,
+        "entryId": entry_id,
+        "connected": connected,
+        "serviceName": service_name,
+    }
+
+
 __all__ = [
     "bare_owner_or_none",
     "ALL_MEMBERS",
@@ -453,6 +477,7 @@ __all__ = [
     "normalize_bare_owner",
     "parse_device_target",
     "require_bare_owner",
+    "received_grant_view",
     "sealed_credential",
     "validate_grant_id",
 ]

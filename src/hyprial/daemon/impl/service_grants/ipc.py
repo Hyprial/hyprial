@@ -24,6 +24,8 @@
 # - Integration fix (2026-11-27): every service-grant directory store reads
 #   device rows through the application's one invalid-device quarantine,
 #   org.network.ipc.invalid_device_diagnostics; there is no second accessor.
+# - Received status (2026-11-27): only an existing service manager contributes
+#   its read-only grant projection; a listing never starts service-connect.
 """Daemon IPC wiring for ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
 from __future__ import annotations
@@ -101,7 +103,17 @@ def build_service(app: Any) -> ServiceGrantService:
         local_device_id=device_id,
         exposed_ports=lambda: _exposed_ports(app),
         logger=logger,
+        status=_recipient_status(app),
     )
+
+
+def _recipient_status(app: Any) -> Any:
+    """Read an existing manager only; listing never creates service-connect."""
+
+    manager = getattr(app, "_service_manager", None)
+    if manager is None:
+        return None
+    return manager.grant_status
 
 
 _TRIGGERS = frozenset({"service.grant", "service.revoke"})

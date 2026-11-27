@@ -16,6 +16,24 @@ admission in [contract/sidecar-tailcat](../sidecar-tailcat/README.md).
 There is no compatibility path for other document versions or other builds:
 a reader refuses anything that does not match this contract exactly.
 
+## Read-only received status
+
+`service.grants` adds four fields to each `received` row (not to `granted`,
+`service.grant`, or `service.revoke`):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `keyStored` | boolean | The recipient's private ownership ledger names this grant's Key entry and its regular entry file is present. The Key value is not read. |
+| `entryId` | string or null | The owned user-provider entry name when `keyStored` is true; otherwise null. The name is derived from the grant id and is not a secret. |
+| `connected` | boolean | A live mapping binding currently exists for this grant's derived service. A saved connection intention or a failed mapping is not connected. |
+| `serviceName` | string or null | The final derived service name after collision renaming. Null when no service entry exists or no running manager can answer from its current snapshot. |
+
+The listing only reads the ownership ledger, current derived snapshot and live
+mapping bindings. It does not open a credential, write an entry, create a
+mapping or start service-connect. With no running manager, `connected` is false
+and `serviceName` is null. `limitedGrantors` and `unreadableOrgs` retain their
+existing unknown-not-absent meaning.
+
 ## Grant document (schemaVersion 1)
 
 Path, in the org's directory space:
