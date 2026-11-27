@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from hyprial.daemon.impl.service_grants.enforcement import wiring
 from hyprial.daemon.impl.service_grants.service import ServiceGrantService
 from hyprial.kernel import AdmissionResult
 from tests.daemon.service_grants.enforcement._support import (
@@ -362,3 +363,62 @@ def test_a_trigger_whose_application_method_raised_names_the_exception(
     else:
         assert answer == {"grantId": granted, "revoked": True}
         assert _effective_grants(daemon) == []
+
+
+def test_a_new_exposure_whose_trigger_cannot_be_delivered_is_logged_under_its_own_name(
+    make_daemon: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exposure path's trigger is reported as the exposure's, not as a grant's.
+
+    More than one path asks for the same re-derivation. The event's
+    ``method`` says which one could not be delivered, so an operator reading
+    it does not go looking for a grant that was never made. The exposure
+    itself stands: it is registered and admits nobody, as a new exposure
+    must.
+    """
+
+    daemon = make_daemon()
+    monkeypatch.setattr(
+        daemon.app._service_admission_cadence, "submit", lambda _observed_at_ms: AdmissionResult.CLOSED
+    )
+    monkeypatch.setattr(daemon, "settle", lambda timeout: None)
+
+    answer = daemon.app.handle("network.expose", dict(OTHER_EXPOSURE))
+
+    assert answer["exposure"]["port"] == OTHER_PORT
+    assert OTHER_PORT in {
+        exposure["port"] for exposure in daemon.app.handle("network.exposures", {})["exposures"]
+    }
+    assert daemon.logged(TRIGGER_FAILED) == [
+        ("warn", {"method": "network.expose", "reason": "unscheduled"})
+    ]
+
+
+def test_the_start_up_trigger_names_the_sidecar_installation(
+    tmp_path: Path, harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first trigger of all is the sidecar's installation, and it is named so.
+
+    The sidecar comes up with every exposure admitting nobody, and the hook
+    that reports it is what asks for the first derivation. Its tick is
+    refused here for the whole start-up, so the one refusal is logged as
+    the installation's own. The cadence is created inside the start-up and
+    only then can a tick be refused, so the daemon is started here and not
+    by the fixture, with the refusal placed before the first tick is offered.
+    """
+
+    root = tmp_path / "daemon-start-up"
+    root.mkdir()
+    daemon = Daemon(root, harness)
+    offer_tick = wiring.offer_tick
+    monkeypatch.setattr(wiring, "offer_tick", lambda app: False)
+    try:
+        daemon.start()
+    finally:
+        monkeypatch.setattr(wiring, "offer_tick", offer_tick)
+    try:
+        assert daemon.logged(TRIGGER_FAILED) == [
+            ("warn", {"method": "sidecar-installed", "reason": "unscheduled"})
+        ]
+    finally:
+        daemon.close()

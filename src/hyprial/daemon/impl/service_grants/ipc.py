@@ -16,7 +16,9 @@
 #   trigger that cannot be delivered is not an error: the maintenance tick
 #   re-derives within its interval. It is logged, by the application for a
 #   tick that was not scheduled and here when the application's method itself
-#   failed, so that it never looks the same as a delivered one. The service
+#   failed, so that it never looks the same as a delivered one. Both reports
+#   are the same event, written by one function: the reason, and the class of
+#   what was raised when something raised, never its message. The service
 #   builder and the quarantine accessor are public because the admission
 #   wiring builds the same service and reads the same directory diagnostics;
 #   there is one implementation.
@@ -143,23 +145,22 @@ def _admission_changed(app: Any, method: str) -> None:
 
     The application logs a tick that could not be offered. It is reached
     through ``getattr`` because a host without admission enforcement has no
-    such method; one that has it and cannot even run it is reported here.
+    such method; one that has it and cannot even run it is reported here,
+    by the application's own logger when it has one, with the same event and
+    the class of what was raised.
     """
 
     trigger = getattr(app, "_service_admission_changed", None)
     try:
         if callable(trigger):
             trigger(method)
-    except Exception:  # noqa: BLE001 - the grant is already durable
-        log_fn = getattr(app, "_log", None)
-        if callable(log_fn):
-            log_fn(
-                "warn",
-                "service",
-                "service.grant.admission_trigger_failed",
-                method=method,
-                reason="failed",
-            )
+    except Exception as error:  # noqa: BLE001 - the grant is already durable
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
+            TRIGGER_RAISED,
+            trigger_failed,
+        )
+
+        trigger_failed(app, method, {"reason": TRIGGER_RAISED, "errorType": type(error).__name__})
 
 
 def _dispatch(app: Any, method: str, params: Mapping[str, Any]) -> dict[str, Any]:

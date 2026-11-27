@@ -146,9 +146,9 @@ class _ForwardingOpsMixin:
             trigger_failed,
         )
 
-        reason = mark_stale(self)
-        if reason is not None:
-            trigger_failed(self, method, reason)
+        failure = mark_stale(self)
+        if failure is not None:
+            trigger_failed(self, method, failure)
 
     def _service_port_unexposing(self, port: int, remove: Any) -> Any:
         """Take a port off the sidecar without a derivation exposing it again.

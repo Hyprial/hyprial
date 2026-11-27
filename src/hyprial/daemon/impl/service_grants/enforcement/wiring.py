@@ -36,8 +36,10 @@
 # - A trigger reports whether the tick it offered reached the cadence. It never
 #   raises, because the change that triggered it is already durable, but it
 #   returns what happened and the caller logs it: a grant whose re-derivation
-#   was not scheduled must not look exactly like one whose was. The stale mark
-#   is set whatever the outcome, so the maintenance tick still derives.
+#   was not scheduled must not look exactly like one whose was. The event
+#   keeps the ``errorType`` it had before the fix and gains the ``reason``;
+#   it names the class of what was raised and never its message. The stale
+#   mark is set whatever the outcome, so the maintenance tick still derives.
 # - When there is no supervisor there is no sidecar to push to and nothing is
 #   created: a daemon without forwarding has no exposures to admit anyone to.
 """Binding the admission enforcer to the daemon application."""
@@ -94,13 +96,14 @@ TRIGGER_RAISED = "failed"
 TRIGGER_UNSCHEDULED = "unscheduled"
 
 
-def mark_stale(app: Any) -> str | None:
+def mark_stale(app: Any) -> dict[str, str] | None:
     """A trigger: the inputs changed, so the next tick must derive.
 
     Returns ``None`` when the tick reached the cadence, and otherwise the
-    ``reason`` of the ``service.grant.admission_trigger_failed`` event the
-    caller is to log. Never raises: the change that triggered it is durable,
-    so the caller's own operation must succeed either way.
+    ``reason`` and whatever else describes it of the
+    ``service.grant.admission_trigger_failed`` event the caller is to log.
+    Never raises: the change that triggered it is durable, so the caller's
+    own operation must succeed either way.
 
     Runs on IPC threads and on the sidecar's relaunch path, so it does the
     least that is sufficient: one assignment under the enforcer's own lock,
@@ -108,6 +111,10 @@ def mark_stale(app: Any) -> str | None:
     tick that cannot be offered now is still owed to the maintenance tick.
     A daemon without a forwarding supervisor has no enforcer and nothing to
     push, so there is nothing to mark and nothing to report.
+
+    When a step raised, the event carries the class of what was raised and
+    never its message: the class is what tells two failures apart, and the
+    message is whatever the failing step chose to put in it.
     """
 
     try:
@@ -115,19 +122,19 @@ def mark_stale(app: Any) -> str | None:
         if enforcer is None:
             return None
         enforcer.invalidate()
-        return None if offer_tick(app) else TRIGGER_UNSCHEDULED
-    except Exception:  # noqa: BLE001 - reported by its return value
-        return TRIGGER_RAISED
+        return None if offer_tick(app) else {"reason": TRIGGER_UNSCHEDULED}
+    except Exception as error:  # noqa: BLE001 - reported by its return value
+        return {"reason": TRIGGER_RAISED, "errorType": type(error).__name__}
 
 
-def trigger_failed(app: Any, method: str, reason: str) -> None:
-    """Log one undeliverable trigger: the operation and the kind of failure, nothing else."""
+def trigger_failed(app: Any, method: str, failure: dict[str, str]) -> None:
+    """Log one undeliverable trigger: the operation and what ``mark_stale`` reported of it."""
 
     log_fn = getattr(app, "_log", None)
     if not callable(log_fn):
         return
     try:
-        log_fn("warn", "service", TRIGGER_FAILED, method=method, reason=reason)
+        log_fn("warn", "service", TRIGGER_FAILED, method=method, **failure)
     except Exception:  # noqa: BLE001 - logging must not fail the caller's operation
         pass
 
