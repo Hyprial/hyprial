@@ -70,14 +70,15 @@ hyprial org service grant <PORT> --org <org> --device '<owner>/<deviceId>'
 
 | 日志事件 | 含义 | 处置 |
 | --- | --- | --- |
-| （没有 `service.grant.*` 事件，端口连不上） | 没有有效授权 | 按第 4 节授权 |
+| （没有 `service.grant.*` 事件，端口连不上），且 `hyprial org service grants` 正常列出授权、列表里没有这个端口的授权 | 没有有效授权 | 按第 4 节授权 |
+| （没有 `service.grant.*` 事件，端口连不上），且 `hyprial org service grants` **报错** `org directory unavailable` | 目录读不到：列不出本机所在的 org、读不到某个 org 的授权目录，或该 org 的 tailnet 绑定无法确定。此时端口**收紧为谁也不放行**（即使授权文档还在），**并且不为这种情况记任何事件**（**实测**） | 不要重新授权，授权文档没有丢。修好目录（确认 org 目录空间唯一、OrgFS 可读）后，下一个维护周期自动恢复 |
 | `service.grant.key_unavailable` | **已授权**，但暂时取不到该设备的准入公钥。字段：`org`、`port`、`grantId`、`recipient`、`reason`，**不含任何密钥** | 看 `reason`（见下表）。多数情况等 sidecar 名册刷新（约 60 秒）后，下一个维护周期自动补齐，无需操作 |
 | `service.grant.roster_unreadable` | 读不到 sidecar 名册。此时所有依赖名册的授权都按取不到处理（端口收紧） | 确认 sidecar 在运行：`hyprial daemon status` |
 | `service.grant.admission_limit` | 某端口的准入公钥数超过 sidecar 上限（4096）。**该端口保持上一版集合不变**，没有下发新集合 | 减少该端口的授权数量（改用一条 `@members` 授权） |
-| `service.grant.admission_unavailable` | 一次派生整体失败（如目录读不到）。该次不下发任何变更，下一周期重试 | 看同时间的其它日志；通常随目录恢复自愈 |
-| `network.exposure.admission_rejected` | sidecar 拒绝了一次 `expose`。端口保持 sidecar 上现有的集合 | 看 `code` 字段；检查 sidecar 版本是否为 v7 |
+| `service.grant.admission_unavailable` | 一次派生在读授权、取名册之外的地方抛了未预期的异常（字段 `errorType`）。该次不下发任何变更，下一个节流的派生重试。**目录读不到不属于这一种**，见上一行 | 看 `errorType` 与同时间的其它日志 |
+| `network.exposure.admission_rejected` | 一次 `expose` 没有得到 sidecar 的确认（字段 `port`、`code`）。`code` 为 sidecar 给出的错误码（如 `INTERNAL`，常见于 sidecar 还没 up）表示它拒绝了这次下发，端口保持原有的集合；`code` 为 `FORWARD_PROTOCOL` 表示没等到应答——命令可能没被执行（端口保持原有的集合），也可能已执行只是应答丢了（端口已是新集合）。三种情况**实测**都会在下一个节流的派生重新下发（默认每 30 秒最多派生一次），无需操作 | 偶发可忽略。持续出现时看 `code`：`INTERNAL` 确认 sidecar 已 up；`FORWARD_PROTOCOL` 确认 sidecar 进程在应答 |
 | `service.grant.unexpose_revoke_failed` | unexpose 之后撤销该端口的授权失败。**unexpose 本身已成功** | 按字段 `port`、`org`、`code` 手动撤销：`hyprial org service grants --port <PORT>` 列出后逐条 `hyprial org service revoke <GRANT_ID> --org <org>` |
-| `service.grant.admission_trigger_failed` | 授权或撤销已成功，但没能通知到「重新派生」 | 无需紧急处理：维护周期（约 30 秒内）会自动重新派生 |
+| `service.grant.admission_trigger_failed` | 授权或撤销**已成功写盘**，但没能在当时安排一次立即重新派生。字段：`method`（`service.grant` 或 `service.revoke`）、`reason`（`failed` 表示安排这一步本身抛了异常；`unscheduled` 表示派生队列已满、正在关闭或不存在）。不含 org、端口、授权或设备信息 | 无需紧急处理：改动已持久化，维护周期（约 30 秒内）会自动重新派生。持续出现说明派生队列长期不可用 |
 | `service.grant.admission_tick_deferred` | 维护周期没能把一次派生交给执行队列（队列满或正在关闭） | 同上，下一个维护周期重试 |
 
 `service.grant.key_unavailable` 的 `reason`（共 4 种）：
@@ -88,6 +89,14 @@ hyprial org service grant <PORT> --org <org> --device '<owner>/<deviceId>'
 | `member-without-local-key` | 名册里有该设备，但它的行里没有针对本机的公钥条目（常见于设备刚加入，名册尚未补齐） |
 | `roster-unavailable` | 该 org 的名册读不到：整份名册读不到或为空、名册里没有这个 tailnet、或该 tailnet 在 sidecar 侧尚未就绪 |
 | `key-malformed` | 名册里的公钥不是规范的 `nodekey:<64 位小写十六进制>` |
+
+### unexpose 可能要等一会儿，也可能失败
+
+`hyprial org service unexpose <PORT>` 在取下端口之前，会先等**正在下发给这个端口的**那一次 `expose` 结束，这样端口的最后一条命令一定是 unexpose，不会被稍晚到达的下发重新打开。它只等这一个端口的下发，不等名册读取、目录读取或其它端口的下发。
+
+- 最多等 **15 秒**。超过这个时间 unexpose **失败**，返回 `FORWARDING_UNAVAILABLE`，消息以 `is being pushed to the sidecar` 开头。此时**什么都没变**：端口仍然暴露、sidecar 上是原来的集合、授权都还有效。稍后重试即可（**实测**：上界处三者一致）。
+- 取下端口这一步本身排在 sidecar 命令队列里，前面如果有一次没被应答的名册读取（最多 5 秒）或另一个端口的下发（最多 10 秒），unexpose 会跟着等，然后照常成功（**实测**：分别为 5 秒、10 秒）。这一段不受上面 15 秒的限制。
+- 同一个端口上一次 unexpose 还没结束时再发一次，第二次**立刻**失败，返回同样的 `FORWARDING_UNAVAILABLE`，消息以 `is already being unexposed` 开头。以第一次的结果为准。
 
 > [!TIP]
 > 被移出 org 的设备，即使它的授权文档还在，也**不会**进集合（**实测**：名册里该设备被标记为墓碑后，下一个维护周期它即被移出集合，日志原因为 `member-not-in-roster`）。要彻底清除，仍应撤销其授权。
