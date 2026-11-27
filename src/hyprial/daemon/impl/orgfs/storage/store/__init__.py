@@ -60,6 +60,7 @@ from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _b64 as _b64
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _changed_meta_entries as _changed_meta_entries
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _decode_state_vector as _decode_state_vector
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _doc_roots as _doc_roots
+from hyprial.daemon.impl.orgfs.storage.store.read_model import MetaDoc, MetaReadModel
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _empty_meta as _empty_meta
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _encode_state_vector as _encode_state_vector
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _json_bytes as _json_bytes
@@ -115,6 +116,7 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         self._incarnation = secrets.token_hex(16)
         self._lanes: dict[tuple[str, str | None], str] = {}
         self._docs: dict[str, Doc] = {}
+        self._meta_view = MetaReadModel()
         self._writer_docs: dict[tuple[str, str], Doc] = {}
         self._import_docs: dict[str, Doc] = {}
         self._reset_history_indexes()
@@ -300,6 +302,7 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                 getattr(self, "_meta_work", {}).clear()
                 self._meta_baseline = None
                 self.checkpoint()
+                self._meta_view.close()
                 self._db.close()
                 self._db = None  # type: ignore[assignment]
 
@@ -409,9 +412,17 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         return int.from_bytes(digest[:7], "big") >> (56 - PYCRDT_CLIENT_ID_BITS)
 
 
+    def _meta_root(self, name: str) -> Any:
+        """Return one root of the live meta from the read model; read-only."""
+
+        return self._meta_view.root(self._docs.get("meta"), name)
+
+
     def _new_doc(self, doc_id: str, *, client_id: int | None = None) -> Doc:
         if client_id is None:
             client_id = self._client_id(f"{self.node_id}.{self._incarnation}.store")
+        if doc_id == "meta":
+            return MetaDoc(client_id=client_id)
         return Doc(client_id=client_id)
 
 
@@ -456,8 +467,10 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             str(row[0])
             for row in self._db.execute("SELECT DISTINCT doc_id FROM commits")
         )
+        stale: list[str] = []
         for doc_id in ("meta", *sorted(known - {"meta"})):
             after = 0
+            trusted = False
             checkpoint = self._db.execute(
                 "SELECT rowid, version FROM doc_checkpoints WHERE doc_id = ?",
                 (doc_id,),
@@ -470,9 +483,10 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             if (
                 checkpoint is not None
                 and int(checkpoint["rowid"]) <= int(max_rowid)
-                and bytes(checkpoint["version"]) == doc.get_state()
+                and self._same_state(bytes(checkpoint["version"]), doc.get_state())
             ):
                 after = int(checkpoint["rowid"])
+                trusted = self._doc_path(doc_id).exists()
             rows = self._db.execute(
                 "SELECT envelope_bytes FROM commits "
                 "WHERE doc_id = ? AND rowid > ? ORDER BY rowid",
@@ -487,7 +501,27 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                     raise StoreError(
                         "invalid-argument", "journal update cannot be applied"
                     ) from exc
-        self._persist_all_documents()
+            if rows or not trusted:
+                stale.append(doc_id)
+        self._persist_documents(stale)
+        self._dirty_docs.clear()
+        self._commits_since_checkpoint = 0
+
+
+    @staticmethod
+    def _same_state(recorded: bytes, current: bytes) -> bool:
+        """Whether two state vectors are equal as clocks, not as bytes.
+
+        pycrdt does not encode the clients of one state vector in a fixed
+        order, so equal vectors can differ byte for byte.
+        """
+
+        if recorded == current:
+            return True
+        try:
+            return _decode_state_vector(recorded) == _decode_state_vector(current)
+        except StoreError:
+            return False
 
 
     def _persist_all_documents(self) -> None:
@@ -631,8 +665,7 @@ def assert_client_ids_registered(store: LocalSpaceStore) -> None:
             for doc in store._docs.values()
             for client_id in _decode_state_vector(doc.get_state())
         }
-        roots = _doc_roots(store._docs["meta"])
-        writers = roots.get("writers")
+        writers = store._meta_root("writers")
         registered = {
             client_id
             for details in (writers.values() if isinstance(writers, dict) else ())

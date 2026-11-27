@@ -248,6 +248,32 @@ def _doc_roots(doc: Doc) -> dict[str, Any]:
     return roots
 
 
+def _doc_root(doc: Doc, name: str) -> Any:
+    """Return one root exactly as ``_doc_roots(doc).get(name)`` would.
+
+    The cost follows that root alone; an absent root is not created.
+    """
+
+    if all(str(key) != name for key in doc.keys()):
+        return None
+    return _plain(doc.get(name, type=Map))
+
+
+def _retirement_record(doc_id: str, raw: Any) -> RetirementRecord | None:
+    """Parse one ``retirements`` entry; a malformed entry is not a record."""
+
+    if not isinstance(raw, dict):
+        return None
+    replacement = raw.get("replacementDocId")
+    plan_id = raw.get("planId")
+    snapshot_id = raw.get("snapshotId")
+    retired_at = raw.get("retiredAt")
+    values = (replacement, plan_id, snapshot_id, retired_at)
+    if not all(isinstance(item, str) for item in values):
+        return None
+    return RetirementRecord(doc_id, replacement, plan_id, snapshot_id, retired_at)
+
+
 def _empty_meta(doc: Doc) -> None:
     # These roots are part of the frozen P2 meta layout. Creating them in the
     # first meta transaction makes the genesis update self-contained.

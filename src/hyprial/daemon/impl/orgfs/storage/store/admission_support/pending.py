@@ -24,7 +24,6 @@ from hyprial.daemon.impl.orgfs.storage.store.vocabulary import (
     StoreError,
     _LOG,
     _MembershipBudgetExceeded,
-    _doc_roots,
     _now,
     _unb64,
 )
@@ -37,7 +36,7 @@ class StorePending:
         meta = self._docs.get("meta")
         if meta is None:
             meta = self._doc("meta")
-        space = _doc_roots(meta).get("space")
+        space = self._meta_root("space")
         name = space.get("name") if isinstance(space, dict) else None
         if not isinstance(name, str):
             return "-"

@@ -20,7 +20,7 @@ from typing import Any, Iterable, Mapping
 
 
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import RetirementRecord, StoreError, _decode_state_vector, _doc_roots, _now
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import RetirementRecord, StoreError, _decode_state_vector, _now
 
 class StoreRetirement:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -133,14 +133,7 @@ class StoreRetirement:
         """Return immutable retirement metadata in old-doc order."""
 
         with self._lock:
-            roots = _doc_roots(self._docs["meta"])
-            values = roots.get("retirements")
-            records: list[RetirementRecord] = []
-            for old_doc_id in sorted(values if isinstance(values, dict) else ()):
-                record = self.retired(str(old_doc_id))
-                if record is not None:
-                    records.append(record)
-            return tuple(records)
+            return tuple(self._meta_view.retirements(self._docs.get("meta")).values())
 
 
     def pending_replacements(self) -> tuple[RetirementRecord, ...]:
@@ -162,8 +155,7 @@ class StoreRetirement:
         """Return active purge-list digest to plan-id mappings."""
 
         with self._lock:
-            roots = _doc_roots(self._docs["meta"])
-            values = roots.get("purgeList")
+            values = self._meta_root("purgeList")
             return {
                 str(digest): str(raw["planId"])
                 for digest, raw in (values.items() if isinstance(values, dict) else ())

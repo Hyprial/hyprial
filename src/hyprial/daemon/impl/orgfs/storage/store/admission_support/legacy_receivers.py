@@ -36,7 +36,7 @@ from hyprial.identity import (
     parse_protected_directory_node_id,
 )
 
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _doc_roots
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import _doc_root
 
 _LEGACY_RECEIVERS_SECTION = "receivers"
 _LEGACY_RECEIVERS_PATH = "receivers.json"
@@ -70,7 +70,7 @@ class StoreLegacyReceivers:
     ) -> bool:
         """Whether this tree holds the space's legacy receivers row (one keyed lookup)."""
 
-        space = _doc_roots(meta).get("space")
+        space = _doc_root(meta, "space")
         space_id = space.get("spaceId") if isinstance(space, dict) else None
         if not isinstance(space_id, str) or not space_id or not space_owner:
             return False

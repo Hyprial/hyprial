@@ -36,7 +36,7 @@ from hyprial.identity import (
 
 from hyprial.daemon.impl.orgfs.storage.store.admission_support import StoreLegacyReceivers, StorePending
 from hyprial.daemon.impl.orgfs.storage.store.admission_support.legacy_receivers import _LEGACY_RECEIVERS_SECTION
-from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ImportResult, StoreError, _LOG, _b64, _changed_meta_entries, _decode_state_vector, _doc_roots, _now, _tree_node_operation_allowed, _unb64
+from hyprial.daemon.impl.orgfs.storage.store.vocabulary import AdmissionDecision, CommitRecord, ImportResult, StoreError, _LOG, _b64, _changed_meta_entries, _decode_state_vector, _doc_root, _doc_roots, _now, _tree_node_operation_allowed, _unb64
 
 class StoreAdmission(StorePending, StoreLegacyReceivers):
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -104,7 +104,7 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
     def _is_org_directory_space(meta: Doc) -> bool:
         """The one naming seam item 2 can change when org spaces are renamed."""
 
-        space = _doc_roots(meta).get("space")
+        space = _doc_root(meta, "space")
         name = space.get("name") if isinstance(space, dict) else None
         return isinstance(name, str) and org_from_space_name(name) is not None
 
@@ -418,7 +418,7 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
             return False
         if not self._is_org_directory_space(meta_baseline):
             return True
-        space = _doc_roots(meta_baseline).get("space")
+        space = _doc_root(meta_baseline, "space")
         space_id = space.get("spaceId") if isinstance(space, dict) else None
         if not isinstance(space_id, str) or not space_id:
             return False
@@ -604,7 +604,7 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
         probe = Doc()
         try:
             probe.apply_update(snapshot[2].get_update())
-            before = _doc_roots(probe).get("__orgfs__")
+            before = _doc_root(probe, "__orgfs__")
             prior_clock = before.get("c") if isinstance(before, dict) else None
             if (
                 isinstance(prior_clock, bool)
@@ -615,7 +615,7 @@ class StoreAdmission(StorePending, StoreLegacyReceivers):
             probe.apply_update(update)
         except (TypeError, ValueError):
             return False
-        after = _doc_roots(probe).get("__orgfs__")
+        after = _doc_root(probe, "__orgfs__")
         # Only a missing reserved clock can signal a causal prefix gap.
         # Explicit malformed values (bool, string, fractional number) are
         # semantic violations and must be rejected immediately by shape policy.

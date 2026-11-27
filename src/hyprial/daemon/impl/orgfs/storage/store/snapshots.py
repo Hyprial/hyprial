@@ -435,8 +435,7 @@ class StoreSnapshots:
             raise StoreError("invalid-argument", "max_bytes must be positive")
         with self._lock:
             self._raise_if_retired(doc_id)
-            roots = _doc_roots(self._docs["meta"])
-            snapshot_points = roots.get("snapshotPoints")
+            snapshot_points = self._meta_root("snapshotPoints")
             point = (
                 snapshot_points.get(doc_id)
                 if isinstance(snapshot_points, dict)
