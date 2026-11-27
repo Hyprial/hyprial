@@ -160,6 +160,13 @@
 | KP-172 | 持有方不在线或组织 actor 被占用时，加入组织约 30 秒后报 `DAEMON_ERROR` | 延后（owner 2026-11-27：OrgFS 精简合入后修） |
 | KP-173 | 加入组织后最初几毫秒，两篇必有文档之外的内容可能还没到 | 接受 |
 | KP-174 | Lark worker 的 `online` 与 stale 健康行在 ready 观测之间存在竞态，导致 exit 75 退避偶发失效 | 已修复（进程先消费缓冲健康行；测试使用单次原子写入） |
+| KP-175 | 服务授权没有在两台真实机器、真实 tailnet 与真实 sidecar 二进制上验证过 | 待测（发版前做一次两机验收） |
+| KP-176 | `org service unexpose` 排在其它 sidecar 命令后面，前一条不应答时多等约 5–10 秒 | 接受（只是晚成功，不失败） |
+| KP-177 | 被 sidecar 拒绝的准入下发要等下一次准入派生（默认至多 30 秒）才重试 | 接受 |
+| KP-178 | 服务授权到期由每台设备按自己的时钟判断，时钟不一致时到期时刻不一致 | 接受 |
+| KP-179 | 登出不从组织目录撤下本设备的加密公钥 | 接受（不属于服务授权这次改动） |
+| KP-180 | 授权人身份来自 OrgFS「作者等于路径主体」规则，作者没有签名 | 接受（与 `devices` 段同等强度） |
+| KP-181 | 接收方对某授权人的扫描超限时，看不到他其间的撤销 | 接受（「未知」不等于「没有授权」） |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -1895,3 +1902,66 @@
 - 决定：已修复。`LarkWorkerProcess._run_ready` 现在先消费同一读取批次中已完整缓冲的健康行，再解除 `wait_ready()`；测试假 worker 将 `online` 与 `health(streamHealth="stale")` 合并为一次原子管道写入。`handler.py` 保持不变，健康 worker 上线后立即清除失败与重试状态的既有契约仍由 `test_quarantine_retries_then_online_clears_all_failure_state` 固定。另有独立的产品语义候选：健康状态驻留一段时间后再执行 `_clear_failures`，该候选需要单独评审，不在本修复中实现。
 - 依据：`src/hyprial/daemon/impl/adapters/lark/worker/process.py` 的 ready 与健康流读取顺序；`src/hyprial/daemon/impl/adapters/lark/runtime/effects.py` 的 ready 后观测；本条新增的确定性回归测试与 exit 75 退避测试。
 - 负责人：Lark adapter 生命周期维护者 / CI 稳定性线。
+
+## KP-175 服务授权没有在两台真实机器、真实 tailnet 与真实 sidecar 二进制上验证过
+
+- 现象：服务授权的全部实测都在单机上：真实 OrgFS 存储、真实 daemon 应用与 supervisor、带名册的 stdio sidecar 夹具、真实加密信封。没有两个 daemon 通过真实网络复制授权文档，也没有真实 `hyprial-tailcat` 二进制在入站时按 `keys` 集合放行或拒绝。
+- 影响：以下几点只有读代码或读 sidecar 源码的依据：授权文档在两个 daemon 之间的复制与接收副本的作者校验；非 owner 成员在 owner 建的父目录下写自己的子目录；暴露方 sidecar 入站看到的对端公钥等于名册里的 `clientPublicByServer[暴露方 serverPublic]`；升级说明里端口不可用窗口的长度；回退后旧行为恢复、再次升级后授权立即生效。
+- 规避：第一次在生产 org 上升级前，先在一个可丢弃的两到三台设备的 org 上按 `docs/guides/migration-service-grants-upgrade.md` 走一遍，并做一次授权、连接、撤销。
+- 决定：待测。发版前做一次两机验收，结果更新到本条。
+- 依据：`docs/design/service-grant-2026-11-27.md`「Not verified on two real machines」一节；各迁移说明的「未验证」段。
+- 负责人：service grant 线。
+
+## KP-176 `org service unexpose` 排在其它 sidecar 命令后面，前一条不应答时多等约 5–10 秒
+
+- 现象：转发层一次只向 sidecar 发一条命令。unexpose 取下端口这一步排在它前面每一条命令后面；前一条迟迟不被应答时，unexpose 等它超时：名册读取约 5 秒，一次端口下发约 10 秒（实测）。前面排着多条不应答的命令时，等待按条累加（读代码推断）。
+- 影响：unexpose 晚几秒成功。这一段不受 unexpose 自己的 15 秒上限约束，也不会让它失败。
+- 规避：无需操作。sidecar 长期不应答时先看 `hyprial daemon status`。
+- 决定：接受。
+- 依据：`docs/guides/migration-service-exposure-default-deny.md` 第 5 节「已知限制」。
+- 负责人：service grant 线。
+
+## KP-177 被 sidecar 拒绝的准入下发要等下一次准入派生（默认至多 30 秒）才重试
+
+- 现象：一次 `expose` 准入下发被 sidecar 拒绝，或没等到应答，记 `network.exposure.admission_rejected`；daemon 不立即重试，而是在下一次准入派生时重新下发（实测会重推；30 秒是默认配置值，未实测）。
+- 影响：这段时间内端口保持上一版集合：新授权的设备暂时连不上，刚撤销的设备暂时还能连。
+- 规避：无需操作。持续出现时按迁移说明第 5 节查 `code`。
+- 决定：接受。
+- 依据：`docs/guides/migration-service-exposure-default-deny.md` 第 5 节。
+- 负责人：service grant 线。
+
+## KP-178 服务授权到期由每台设备按自己的时钟判断，时钟不一致时到期时刻不一致
+
+- 现象：授权文档的 `expiresAtMs` 由暴露方、接收方各自与本机时钟比较。暴露方据此收紧端口，接收方据此收回条目与 Key；授权时只检查 `expiresAtMs` 晚于授权人的时钟。
+- 影响：两台机器时钟相差多少，到期时刻就相差多少。端口上的放行以暴露方的时钟为准；接收方时钟偏快时会提前收回 Key，偏慢时会多保留一段时间的条目，但端口已经关闭。
+- 规避：保持设备时钟同步；需要准确的截止时刻时，到点由授权人撤销。
+- 决定：接受。
+- 依据：`contract/service-grants/README.md`「Meaning」。
+- 负责人：service grant 线。
+
+## KP-179 登出不从组织目录撤下本设备的加密公钥
+
+- 现象：登出后 daemon 不再给出加密钥，但它没有写目录的权限，刷新被拒绝，目录里原有的设备行（包括 `encryptionKeyId`、`encryptionPublicKey`）原样保留；本机的加密钥文件也不删除。
+- 影响：留在目录里的是公钥，不是私钥。授权人仍可以给这台已登出的设备授权并把 Key 封给它的公钥；这台设备登出期间不推导任何授权。
+- 规避：不再使用的设备，由授权人撤销给它的授权。
+- 决定：接受，不属于服务授权这次改动。是否在登出时撤下目录行另行决定。
+- 依据：`docs/guides/migration-device-encryption-key.md` 第 7 节。
+- 负责人：service grant 线。
+
+## KP-180 授权人身份来自 OrgFS「作者等于路径主体」规则，作者没有签名
+
+- 现象：`directory/service-grants/<owner>/...` 的创建与更新只在作者为 `user:<owner>` 时被副本接受。规则假定更新报文里的作者是真实的；授权文档与 OrgFS 更新都没有签名。
+- 影响：与 `devices` 段同等强度。能以他人身份向 OrgFS 写入的一方，也能伪造他名下的授权。密封的 Key 不受影响：它只封给接收设备的加密公钥，且绑定授权文档的 org、授权 id、授权人、端口与接收方。
+- 规避：无。
+- 决定：接受。
+- 依据：`docs/design/service-grant-2026-11-27.md`「Trust」；`contract/service-grants/README.md`「Protected section」。
+- 负责人：service grant 线。
+
+## KP-181 接收方对某授权人的扫描超限时，看不到他其间的撤销
+
+- 现象：接收方读授权有上限：每个授权人目录 256 份、按列举大小合计 512 KiB；每个 org 1024 个授权人目录、周期性扫描 2 秒预算。某授权人超限时他的授权按「未知」处理，周期性维护保留上一次的结果；整个 org 超限时，该 org 的所有授权人都如此。
+- 影响：保留上一次结果意味着其间被撤销的授权在接收方继续推导条目、保留 Key，直到目录回到上限以内。暴露方端口不受影响：它只读本机自己名下的授权。
+- 规避：授权人撤销不用的授权；已撤销或已过期超过 7 天的文档在他下一次授权或撤销时自动删除。
+- 决定：接受。「未知」既不放行也不收回，是有意的取舍。
+- 依据：`docs/guides/service-grants-recipient.md` 第 7 节；`contract/service-grants/README.md`「Limits」。
+- 负责人：service grant 线。
