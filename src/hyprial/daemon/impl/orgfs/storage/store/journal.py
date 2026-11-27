@@ -318,8 +318,12 @@ class StoreJournal:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._db.execute(
-                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (writer, seq, doc_id, envelope, version, _now()),
+                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, origin_node, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (writer, seq, doc_id, envelope, version, self.node_id, _now()),
+                )
+                self._db.execute(
+                    "UPDATE commit_stats SET local_total = local_total + 1 "
+                    "WHERE singleton = 1"
                 )
                 self._write_member_add_candidates(member_add_candidates)
             except BaseException:
@@ -327,6 +331,7 @@ class StoreJournal:
                 raise
             else:
                 self._db.commit()
+                self._note_covered_insert(doc_id, version)
             self._fault("after_journal")
             doc.apply_update(update)
             self._sync_doc_caches(doc_id, update, writer=writer)
@@ -572,10 +577,16 @@ class StoreJournal:
                     meta_frontier=self._meta_frontier_for_commit(),
                 )
                 self._db.execute(
-                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (writer, seq, doc_id, envelope, version, _now()),
+                    "INSERT INTO commits(writer, seq, doc_id, envelope_bytes, version, origin_node, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (writer, seq, doc_id, envelope, version, self.node_id, _now()),
                 )
                 prepared.append((doc_id, live, update, version, seq, envelope))
+            if prepared:
+                self._db.execute(
+                    "UPDATE commit_stats SET local_total = local_total + ? "
+                    "WHERE singleton = 1",
+                    (len(prepared),),
+                )
             self._db.commit()
         except BaseException:
             self._db.rollback()
@@ -584,6 +595,7 @@ class StoreJournal:
             raise
         self._fault("after_journal")
         for doc_id, live, update, version, seq, envelope in prepared:
+            self._note_covered_insert(doc_id, version)
             live.apply_update(update)
             self._sync_doc_caches(doc_id, update, writer=writer)
             records.append(CommitRecord(writer, seq, envelope, _b64(version)))

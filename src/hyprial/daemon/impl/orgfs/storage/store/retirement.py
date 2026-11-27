@@ -1,3 +1,10 @@
+# Decision record (2026-11-23): unconfirmed_commits is a materialized count.
+# - commit_stats.local_total moves in the same SQLite transaction as every
+#   local-origin journal insert and every retired-document delete.  Rows written
+#   before origin_node existed are classified once, by the node segment of the
+#   writer they were inserted under (see storage/store/__init__.py).
+# - Covered local rows are tracked in memory per document and change only when
+#   a holder frontier or its durability changes.  Status reads one stats row.
 from __future__ import annotations
 
 
@@ -21,6 +28,31 @@ from typing import Any, Iterable, Mapping
 
 
 from hyprial.daemon.impl.orgfs.storage.store.vocabulary import RetirementRecord, StoreError, _decode_state_vector, _doc_roots, _now
+
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _writer_belongs_to_node(writer: str, node_id: str) -> bool:
+    """Return whether ``writer`` is a lane writer created by ``node_id``.
+
+    Local writers are ``<node>.<32 hex incarnation>.lane-<n>``.  Splitting from
+    the right keeps a node id that contains dots intact and rejects another
+    node whose id merely extends this one.
+    """
+
+    prefix = node_id + "."
+    if not writer.startswith(prefix):
+        return False
+    incarnation, separator, lane = writer[len(prefix) :].partition(".")
+    if not separator or not lane.startswith("lane-"):
+        return False
+    if len(incarnation) != 32 or any(
+        character not in _HEX_DIGITS for character in incarnation
+    ):
+        return False
+    suffix = lane[len("lane-") :]
+    return suffix.isascii() and suffix.isdigit()
+
 
 class StoreRetirement:
     """Responsibility methods on the sole LocalSpaceStore state host.
@@ -96,18 +128,24 @@ class StoreRetirement:
                 with self._db:
                     self._db.execute(
                         "INSERT INTO commits"
-                        "(writer, seq, doc_id, envelope_bytes, version, committed_at, broadcast_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "(writer, seq, doc_id, envelope_bytes, version, origin_node, committed_at, broadcast_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             writer,
                             seq,
                             new_doc_id,
                             envelope,
                             replacement.get_state(),
+                            self.node_id,
                             _now(),
                             _now(),
                         ),
                     )
+                    self._db.execute(
+                        "UPDATE commit_stats SET local_total = local_total + 1 "
+                        "WHERE singleton = 1"
+                    )
+                self._note_covered_insert(new_doc_id, replacement.get_state())
             self._docs.pop(old_doc_id, None)
             self._invalidate_doc_caches(old_doc_id)
             self._persist_all_documents()
@@ -181,11 +219,28 @@ class StoreRetirement:
                 raise StoreError("invalid-argument", "document is not retired")
             inventory = self._inventory_rows(old_doc_id)
             with self._db:
+                retired_local = sum(
+                    1
+                    for row in self._db.execute(
+                        "SELECT writer, origin_node FROM commits WHERE doc_id = ?",
+                        (old_doc_id,),
+                    )
+                    if self._row_is_local_origin(row["writer"], row["origin_node"])
+                )
                 self._db.execute("DELETE FROM pending WHERE doc_id = ?", (old_doc_id,))
                 self._db.execute("DELETE FROM commits WHERE doc_id = ?", (old_doc_id,))
                 self._db.execute(
                     "DELETE FROM snapshots WHERE doc_id = ?", (old_doc_id,)
                 )
+                if retired_local:
+                    self._db.execute(
+                        "UPDATE commit_stats SET local_total = MAX(0, local_total - ?) "
+                        "WHERE singleton = 1",
+                        (retired_local,),
+                    )
+            covered = self._covered_by_doc.pop(old_doc_id, 0)
+            if covered:
+                self._covered_local = max(0, self._covered_local - covered)
             # Drop the live copy too, so no later checkpoint can rewrite the
             # retired document's state file from memory.
             self._docs.pop(old_doc_id, None)
@@ -339,29 +394,44 @@ class StoreRetirement:
         return tuple((str(row["author"]), int(row["n"])) for row in rows)
 
 
+    def _init_commit_stats(self) -> None:
+        """Classify pre-origin_node rows once and persist the local row count."""
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT initialized FROM commit_stats WHERE singleton = 1"
+            ).fetchone()
+            if row is None:
+                self._db.execute(
+                    "INSERT INTO commit_stats(singleton, local_total, initialized) "
+                    "VALUES (1, 0, 0)"
+                )
+            elif int(row["initialized"]):
+                return
+            total = 0
+            for counted in self._db.execute(
+                "SELECT writer, COUNT(*) AS n FROM commits GROUP BY writer"
+            ):
+                if _writer_belongs_to_node(str(counted["writer"]), self.node_id):
+                    total += int(counted["n"])
+            with self._db:
+                self._db.execute(
+                    "UPDATE commit_stats SET local_total = ?, initialized = 1 "
+                    "WHERE singleton = 1",
+                    (total,),
+                )
+
+
+    def _row_is_local_origin(self, writer: object, origin_node: object) -> bool:
+        if origin_node is not None:
+            return str(origin_node) == self.node_id
+        return _writer_belongs_to_node(str(writer), self.node_id)
+
+
     def unconfirmed_commits(self) -> int:
         with self._lock:
-            holders = [
-                frontiers for durable, frontiers in self._holders.values() if durable
-            ]
-            local_rows = []
-            for row in self._db.execute("SELECT * FROM commits ORDER BY rowid"):
-                try:
-                    origin = self._decode_envelope(bytes(row["envelope_bytes"]))[
-                        "origin"
-                    ]
-                except StoreError:
-                    continue
-                if str(origin.get("node")) == self.node_id:
-                    local_rows.append(row)
-            if not holders:
-                return len(local_rows)
-            count = 0
-            for row in local_rows:
-                doc_id = str(row["doc_id"])
-                if not any(
-                    self._covered(bytes(row["version"]), fronts.get(doc_id, b""))
-                    for fronts in holders
-                ):
-                    count += 1
-            return count
+            row = self._db.execute(
+                "SELECT local_total FROM commit_stats WHERE singleton = 1"
+            ).fetchone()
+            total = 0 if row is None else int(row[0])
+            return max(0, total - self._covered_local)

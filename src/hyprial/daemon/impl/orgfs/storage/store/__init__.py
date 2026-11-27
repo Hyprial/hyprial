@@ -1,6 +1,19 @@
 # Decision record (W1E-2, 2026-11-21):
 # - _fsync_directory delegates to manysys.fsync_directory instead of opening a
 #   directory descriptor directly with os.open(path, os.O_RDONLY).
+# Decision record (orgfs.status counting, 2026-11-23):
+# - unconfirmed_commits must not decode envelopes or read commit history.  Each
+#   row stores its envelope's origin node in origin_node at insert time, and a
+#   commit_stats singleton keeps the local-origin row count in the same
+#   transaction as the insert or delete.  NULL means a row written before this
+#   schema; those are classified once from the writer they were inserted under.
+#   A locally produced writer is "<node>.<32 hex incarnation>.lane-<n>" and an
+#   imported envelope keeps its origin writer, so the writer's node segment is
+#   the origin node.  The one-time legacy scan groups by the primary-key writer
+#   prefix and writes no commit row.
+# - Holder coverage stays in memory (holders themselves are memory-only and
+#   empty after restart) and is recomputed only for documents whose frontier or
+#   durability changed, never by status.
 from __future__ import annotations
 
 import hashlib
@@ -119,6 +132,8 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
         self._import_docs: dict[str, Doc] = {}
         self._reset_history_indexes()
         self._holders: dict[str, tuple[bool, dict[str, bytes]]] = {}
+        self._covered_local = 0
+        self._covered_by_doc: dict[str, int] = {}
         self._last_drained: tuple[bytes, ...] = ()
         self._pending_import_limit = _MAX_PENDING_IMPORTS
         # The supplier is the host-gated identity.  Authors are self-asserted
@@ -168,11 +183,17 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
                 doc_id TEXT NOT NULL,
                 envelope_bytes BLOB NOT NULL,
                 version BLOB NOT NULL,
+                origin_node TEXT,
                 committed_at TEXT NOT NULL,
                 broadcast_at TEXT,
                 PRIMARY KEY (writer, seq, doc_id)
             );
             CREATE INDEX IF NOT EXISTS commits_doc ON commits(doc_id);
+            CREATE TABLE IF NOT EXISTS commit_stats (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                local_total INTEGER NOT NULL DEFAULT 0,
+                initialized INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS pending (
                 writer TEXT NOT NULL,
                 seq INTEGER NOT NULL,
@@ -269,7 +290,16 @@ class LocalSpaceStore(StoreMembership, StoreJournal, StoreAdmission, StoreSnapsh
             ).fetchone()
             is not None
         )
+        if "origin_node" not in {
+            str(row[1]) for row in self._db.execute("PRAGMA table_info(commits)")
+        }:
+            self._db.execute("ALTER TABLE commits ADD COLUMN origin_node TEXT")
+        self._db.execute(
+            "INSERT OR IGNORE INTO commit_stats(singleton, local_total, initialized) "
+            "VALUES (1, 0, 0)"
+        )
         self._db.commit()
+        self._init_commit_stats()
         self._load_documents()
         self._rebuild_meta_frontiers()
         self._replay_journal()

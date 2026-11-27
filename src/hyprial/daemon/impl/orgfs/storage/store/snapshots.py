@@ -632,10 +632,68 @@ class StoreSnapshots:
         self, node: str, durable: bool, frontiers: Mapping[str, bytes]
     ) -> None:
         with self._lock:
-            self._holders[str(node)] = (
-                bool(durable),
-                {str(k): bytes(v) for k, v in frontiers.items()},
-            )
+            key = str(node)
+            durable = bool(durable)
+            previous = self._holders.get(key)
+            previous_frontiers = previous[1] if previous is not None else {}
+            current_frontiers = {str(k): bytes(v) for k, v in frontiers.items()}
+            self._holders[key] = (durable, current_frontiers)
+            affected = {
+                doc_id
+                for doc_id in set(previous_frontiers) | set(current_frontiers)
+                if previous_frontiers.get(doc_id) != current_frontiers.get(doc_id)
+            }
+            if previous is None or bool(previous[0]) != durable:
+                affected |= set(previous_frontiers) | set(current_frontiers)
+            if affected:
+                self._recompute_covered(affected)
+
+
+    def _note_covered_insert(self, doc_id: str, version: bytes) -> None:
+        with self._lock:
+            durable = [
+                frontiers
+                for is_durable, frontiers in self._holders.values()
+                if is_durable
+            ]
+            if any(
+                self._covered(version, frontiers.get(doc_id, b""))
+                for frontiers in durable
+            ):
+                self._covered_by_doc[doc_id] = (
+                    self._covered_by_doc.get(doc_id, 0) + 1
+                )
+                self._covered_local += 1
+
+
+    def _recompute_covered(self, doc_ids: set[str]) -> None:
+        with self._lock:
+            durable = [
+                frontiers
+                for is_durable, frontiers in self._holders.values()
+                if is_durable
+            ]
+            for doc_id in doc_ids:
+                covered = 0
+                if durable:
+                    for row in self._db.execute(
+                        "SELECT writer, origin_node, version FROM commits "
+                        "WHERE doc_id = ?",
+                        (doc_id,),
+                    ):
+                        if not self._row_is_local_origin(
+                            row["writer"], row["origin_node"]
+                        ):
+                            continue
+                        version = bytes(row["version"])
+                        if any(
+                            self._covered(version, frontiers.get(doc_id, b""))
+                            for frontiers in durable
+                        ):
+                            covered += 1
+                previous = self._covered_by_doc.get(doc_id, 0)
+                self._covered_by_doc[doc_id] = covered
+                self._covered_local += covered - previous
 
 
     def holders_seen(self) -> tuple[tuple[str, bool], ...]:
