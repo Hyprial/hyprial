@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 614,
+  "primedModuleCount": 615,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -722,6 +722,7 @@
     "hyprial.shell.impl.cli.commands.routine.commands",
     "hyprial.shell.impl.cli.commands.service",
     "hyprial.shell.impl.cli.commands.service.commands",
+    "hyprial.shell.impl.cli.commands.service.grants",
     "hyprial.shell.impl.cli.commands.service.network",
     "hyprial.shell.impl.cli.commands.service.presentation",
     "hyprial.shell.impl.cli.commands.socialware",
