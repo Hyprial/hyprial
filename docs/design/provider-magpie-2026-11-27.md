@@ -23,12 +23,13 @@
 10. 模型连接这串 PR 的后续开发由本线接手。原作者已于 2026-11-27 交接，交接说明在 PR #71 的正文和模型连接设计 §7.2、§7.3；九个 PR 的头提交与交接表一致，之后没有新提交。PR 保持打开，由本线继续开发。接手范围是 PR #59、#61、#81、#82、#83、#96、#84、#85、#86。其中 #59、#61、#81、#82、#83、#96 与本线的方向不冲突，本线不改它们的内容，只负责让它们通过检查，由负责人按原顺序合入。#84、#85、#86 保持打开不合入，本线设计定稿后在它们的分支上改成 Magpie 方案，或另开 PR 取代后关闭。PR #71 的收口也由本线承担。
 11. daemon 持有一把只限本机的 Magpie 管理 key，经 Magpie 的管理接口完成登录、录入 Key 以及第 9 条的登记和删除。这把 key 由 daemon 在首次需要时通过命令行在用户的 Magpie 里建立并设为本机管理，存在 hyprial 的私有目录，不进入 agent 的进程和终端。它不是模型 Key，第 7 条不受影响。模型 Key 不经过命令行参数。
 12. 一条绑定里的模型可以是本机 Magpie 网关列出的任何 ID，包括 `group/<档位>` 这样的分组。可选的 ID 来自网关，不在 hyprial 里写死。`hyprial agent model configure` 的 `--connection` 和 `--config-revision` 删除，绑定里不再有指向连接的字段。daemon 在配置时向网关核对这个 ID 是否存在。恢复会话时的模型一致性检查只比较绑定的 ID。
+13. `hyprial provider` 是一族顶层命令：`login <名字>`、`logout <名字>`、`list`。订阅登录和按 Key 接入的厂商都走它。可用的名字由 daemon 向 Magpie 查询，不在 hyprial 里写死。订阅类由 daemon 调用 Magpie 的登录流程，CLI 只显示链接和用户码并等待。Key 类由 CLI 用不回显的提示或标准输入读入 Key，交给 daemon 写进 Magpie。GUI 使用同一组 daemon 方法。命令行上的 `hyprial agent provider` 和 `hyprial user provider` 两族不再保留；按 agent 授权 Key 和轮换 Key 的功能随第 7、8 条取消。
 
 这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
 
 ## 2. 尚未决定
 
-- `hyprial provider login` 的命令形态。
+- 第 13 条有两点待定：daemon 一侧是改写现有的 `user.provider.*` 方法，还是另起方法名；一个 provider 下有多个账号或多把 Key 时，命令怎样表达。
 - PR #84、#85、#86 是在原分支上改，还是另开 PR 取代。
 - 第 12 条有一点尚未核实：分组在会话中途换了实际提供服务的模型之后，恢复检查和 thinking 签名是否受影响。实现前先测。
 - 第 9 条有一点尚未核实：授权方的网关是否校验交出的那把 key（流量经转发后从授权方本机回环进入网关时）。
