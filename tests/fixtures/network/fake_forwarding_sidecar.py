@@ -26,6 +26,18 @@
 # - "fixture-reload-roster" {} re-reads FAKE_FORWARD_ROSTER, the stand-in for
 #   the sidecar's own roster refresh, and closes connections the new roster no
 #   longer admits (a member that became a tombstone).
+# - FAKE_FORWARD_FAULT (S4-py fix, 2026-11-27) names a file a test writes while
+#   the sidecar runs; the sidecar's environment cannot change under it. Its
+#   JSON is {"op", "mode", "port"?, "once"?}. While it exists, the first
+#   command of that op, on that port when one is given, ends as "mode" says.
+#   For expose: "reject" answers the error the Go engine answers when it is
+#   not up (INTERNAL) and leaves the port's set alone; "drop" applies nothing
+#   and answers nothing, a command the sidecar never executed; "silent"
+#   applies the set and answers nothing, an executed command whose reply was
+#   lost. For membership-status only "drop", a request that is never answered.
+#   The unanswered ones end for the daemon in its own response timeout. With
+#   "once" the file is removed by the first command that acted on it. Without
+#   the variable nothing changes.
 """Protocol-v7 fixture pinned to sidecar/hyprial-tailcat's stdio JSON lines."""
 
 from __future__ import annotations
@@ -147,6 +159,28 @@ def _close_no_longer_admitted() -> None:
         }
 
 
+def _fault(op: str, port: int | None = None) -> dict[str, object] | None:
+    fault_path = os.environ.get("FAKE_FORWARD_FAULT")
+    if not fault_path:
+        return None
+    try:
+        fault = json.loads(Path(fault_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    modes = {"reject", "drop", "silent"} if op == "expose" else {"drop"}
+    if not isinstance(fault, dict) or fault.get("mode") not in modes or fault.get("op") != op:
+        return None
+    wanted = fault.get("port")
+    if isinstance(wanted, int) and wanted != port:
+        return None
+    if fault.get("once"):
+        try:
+            Path(fault_path).unlink()
+        except OSError:
+            pass
+    return fault
+
+
 def emit(command: dict[str, object] | None = None, **event: object) -> None:
     request_id = command.get("requestId") if command is not None else None
     if isinstance(request_id, str) and request_id:
@@ -264,6 +298,8 @@ for raw in sys.stdin:
         if code:
             raise SystemExit(code)
     elif op == 'membership-status':
+        if _fault(op) is not None:
+            continue
         tailnets = []
         if _roster[0]["members"] and _roster[0]["tailnetId"]:
             tailnets = [{
@@ -368,6 +404,17 @@ for raw in sys.stdin:
             )
             continue
         port = int(command["port"])
+        fault = _fault(op, port)
+        if fault is not None and fault["mode"] == "drop":
+            continue
+        if fault is not None and fault["mode"] == "reject":
+            emit(
+                command,
+                event="error",
+                code="INTERNAL",
+                message="expose refused by the fixture fault file",
+            )
+            continue
         previous = exposures.get(port)
         if previous is not None and previous["admission"] == "allow" and admission == "allow":
             emit(command, event="exposed", **previous)
@@ -383,6 +430,8 @@ for raw in sys.stdin:
         exposures[port] = exposure
         _keys[port] = list(command["keys"]) if admission == "keys" else []
         _close_no_longer_admitted()
+        if fault is not None:
+            continue
         emit(command, event="exposed", **exposure)
     elif op == "unexpose":
         port = int(command["port"])

@@ -42,6 +42,7 @@ class Daemon:
         self.receipt = root / "receipt.jsonl"
         self.roster_path = root / "roster.json"
         self.write_roster(members=members)
+        self.fault_file = root / "fault.json"
         (root / "state").mkdir()
         _device_key(harness.homes[ALICE_NODE.owner])
         self.events: list[tuple[str, str, str, dict[str, Any]]] = []
@@ -50,7 +51,9 @@ class Daemon:
             "HYPRIAL_FORWARDING_UP": json.dumps(_up(root)),
             "FAKE_FORWARD_RECEIPT": str(self.receipt),
             "FAKE_FORWARD_ROSTER": str(self.roster_path),
+            "FAKE_FORWARD_FAULT": str(self.fault_file),
         }
+
         self.app = DaemonApplication(
             state_dir=root / "state",
             socket_path=root / "state/daemon.sock",
@@ -76,6 +79,17 @@ class Daemon:
 
         self.app._start_forwarding_supervisor = started  # type: ignore[method-assign]
 
+    def arm_fault(self, op: str, mode: str, *, port: int | None = None) -> None:
+        """Make the sidecar's next ``op``, on ``port`` when one is given, end as ``mode`` says.
+
+        The fault is armed once: the sidecar removes the file when it acts on it.
+        """
+
+        fault: dict[str, Any] = {"op": op, "mode": mode, "once": True}
+        if port is not None:
+            fault["port"] = port
+        self.fault_file.write_text(json.dumps(fault), encoding="utf-8")
+
     def write_roster(self, *, members: tuple = MEMBERS, without_server_key: tuple = ()) -> None:
         document = roster_document(members, without_server_key=without_server_key)
         document["tailnetId"] = self.harness.space_id
@@ -99,19 +113,22 @@ class Daemon:
         """Wait until the admission cadence has finished every tick it was offered.
 
         A tick that the cadence's actor has accepted but not yet started is
-        not "active", so "not active" alone is not idle: the count of offered
-        ticks has to equal the count of finished ones. Without a cadence
-        there is nothing to wait for, which is itself the finding a test then
-        makes on its own assertion.
+        not "active", so "not active" alone is not idle: the projection has
+        to come to rest, with nothing active, and stay there for a moment.
+        The count of offered ticks equal to the count of finished ones is not
+        the test: ticks offered while one was running are coalesced into one,
+        so after a coalescing the two counts never meet again, though nothing
+        is owed. Without a cadence there is nothing to wait for, which is
+        itself the finding a test then makes on its own assertion.
         """
 
         cadence = getattr(self.app, "_service_admission_cadence", None)
         if cadence is None:
             return
         deadline = time.monotonic() + timeout
-        while not _settled(cadence) and time.monotonic() < deadline:
+        while not _at_rest(cadence, deadline) and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert _settled(cadence), "admission cadence did not settle"
+        assert _at_rest(cadence, deadline), "admission cadence did not settle"
 
     def exposes(self, *, port: int | None = None) -> list[dict[str, Any]]:
         if not self.receipt.exists():
@@ -122,6 +139,23 @@ class Daemon:
             for command in commands
             if command["op"] == "expose" and (port is None or command["port"] == port)
         ]
+
+    def wait_for_wire(self, op: str, *, timeout: float = 10.0) -> None:
+        """Wait until a command ``op`` reached the sidecar's wire."""
+
+        deadline = time.monotonic() + timeout
+        while not self.on_wire(op) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert self.on_wire(op), f"no {op} reached the sidecar's wire"
+
+    def on_wire(self, op: str) -> bool:
+        return bool(self.commands(op))
+
+    def commands(self, op: str) -> list[dict[str, Any]]:
+        if not self.receipt.exists():
+            return []
+        commands = [json.loads(line) for line in self.receipt.read_text().splitlines()]
+        return [command for command in commands if command["op"] == op]
 
     def wait_for_pushes(self, count: int, *, port: int | None = None, timeout: float = 10.0) -> list[dict[str, Any]]:
         """Wait until ``count`` exposes for ``port`` reached the sidecar's wire."""
@@ -169,9 +203,31 @@ class Daemon:
         self.app._agent_session_domains.close()
 
 
-def _settled(cadence: Any) -> bool:
-    projection = cadence.projection()
-    return projection.accepted == projection.completed and not projection.active
+QUIET = 0.1
+
+
+def _counts(projection: Any) -> tuple[int, ...]:
+    return (projection.accepted, projection.overloaded, projection.coalesced, projection.completed, projection.failed)
+
+
+def _at_rest(cadence: Any, deadline: float) -> bool:
+    """Whether the cadence is idle: nothing active, and the counts still for ``QUIET``.
+
+    A tick accepted by the actor but not started yet changes the counts when
+    it starts, so a projection that has not moved for that long and shows
+    nothing active has no tick left to run.
+    """
+
+    first = cadence.projection()
+    if first.active:
+        return False
+    until = min(deadline, time.monotonic() + QUIET)
+    while time.monotonic() < until:
+        time.sleep(0.01)
+        now = cadence.projection()
+        if now.active or _counts(now) != _counts(first):
+            return False
+    return True
 
 
 def _device_key(home: Path) -> None:
