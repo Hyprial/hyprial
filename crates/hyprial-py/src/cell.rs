@@ -16,14 +16,14 @@
 //!   next same-key spawn starts with an empty mailbox.
 
 use std::collections::VecDeque;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use hyprial_core::{CellState, RestartBudget, RestartPolicy};
 use pyo3::prelude::*;
 
 use crate::events::EventSinks;
 use crate::handlers::HandlerFactory;
-use crate::pump::{AskOutcome, PumpMsg};
+use crate::pump::{AskOutcome, PumpMsg, WakeSignal};
 
 /// Recover from a poisoned lock: a panic inside a critical section is an
 /// engine bug, but the engine must stay observable rather than cascade.
@@ -102,6 +102,8 @@ pub(crate) struct CellInner {
     pub budget: RestartBudget,
     /// Current generation's executor, if the actor is running.
     pub pump: Option<ractor::ActorRef<PumpMsg>>,
+    /// Current generation's direct executor wake signal.
+    pub wake: Option<Arc<WakeSignal>>,
     /// Pending restart-backoff timer handle (Ractor `send_after`), cancelled
     /// at stop acceptance (STP-03).
     pub restart_timer: Option<RestartTimerHandle>,
@@ -132,6 +134,13 @@ pub(crate) struct Cell {
 }
 
 impl Cell {
+    pub(crate) fn wake(&self) {
+        let wake = lock(&self.inner).wake.clone();
+        if let Some(wake) = wake {
+            wake.notify();
+        }
+    }
+
     /// The owned key pair, when this cell is keyed (for index operations).
     pub(crate) fn key_pair(&self) -> Option<(String, String)> {
         match (&self.group, &self.key) {
