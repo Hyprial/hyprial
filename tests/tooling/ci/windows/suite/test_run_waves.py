@@ -489,6 +489,7 @@ def test_run_waves_catches_duplicate_result_inside_rerun_loop(
     assert manifest["reportedFiles"] == []
     assert len(manifest["runs"]) == 3
     assert [run["status"] for run in manifest["runs"]] == ["unreported-files"] * 3
+    assert all(run["details"] for run in manifest["runs"])
     assert all(
         detail.startswith("duplicate-result:")
         for run in manifest["runs"]

@@ -4,8 +4,11 @@ Decision (2026-11-27, tier 2 full suite).  A testcase element can arrive with
 neither a classname nor a name, holding nothing but a time attribute.  Such a
 record names no test, so it is not a result: it is counted per run as
 nameless-testcases:N and never takes part in duplicate detection.  It cannot
-turn a run green.  A run that holds it keeps the state its exit code and its
-other evidence gave it, and a run that would otherwise pass is red instead.
+turn a run green.  A run that holds it keeps a hard state it already has, and
+a run that would otherwise pass or be failed is red instead.  The failed branch
+has its own test through the summary: failed is the one state a list of
+expected failures can offset, so a run with a real failure and a nameless
+record would otherwise end green there without a line naming the record.
 
 Decision (2026-11-27, tier 2 full suite).  A repeated nodeid inside one run is
 still rejected by read_junit and is still a hard red that nothing offsets, but
@@ -15,14 +18,28 @@ duplicate apart: duplicateRuns lists every run that raised inside the wave loop
 XMLs together raised.  duplicateResult is the first of the former, else the
 latter, so a union duplicate can no longer hide a run-time one.
 
-When the final read raises, the status is set to a hard red at that point.  No
-test here can fail on that line alone: a wave is rerun only after an attempt
-that left a file unfinished, and such an attempt is always a hard red, so on
-every input the runner can reach today the status is already a hard red when
-the final read raises.  The test for that branch therefore asserts what can be
-observed (hard red, not offsettable, the union duplicate recorded and no
-run-time one claimed), and on the code before this change it fails on the
-new manifest fields.
+The final read can raise while the status is passed: one attempt is classified
+on its own XML, so a record that resolves to no planned file raises nothing as
+long as each XML holds it once, and the final read sees it once per attempt.
+Two passing waves that each hold such a record are that case.  The runner then
+sets the manifest status to unreported-files; the summary is red on that input
+either way, because it rejects the duplicate in duplicateUnion on its own.
+That test fails without the assignment and passes with it.  Three tests reach
+the branch from an attempt that is already a hard red, where the assignment
+changes nothing: test_a_real_duplicate_keeps_the_later_waves_running_and_the_leg_red,
+test_union_duplicate_does_not_hide_a_run_time_duplicate and
+test_union_read_failure_leaves_the_leg_hard_red.  Each asserts the hard red and
+the union duplicate.  The first two also assert three run-time duplicates, and
+the first asserts that the leg is not offsettable; only the last asserts both
+that the leg is not offsettable and that no run-time duplicate is claimed.
+
+The final read catches a duplicate-result error only.  Any other ValueError is
+raised out of run_waves.  XML that declares a multi-byte encoding such as gbk,
+shift_jis or big5 makes read_junit raise one (measured by direct call on
+CPython 3.12.13; that the runner's Python does the same is an inference), but
+every attempt's XML is first read on its own in the wave loop and raises there,
+so it never reaches the final read.  That test replaces the read to reach the
+branch.
 
 Decision (2026-11-27, tier 2 full suite).  summarize.py applies the same rule to
 a nameless testcase: it is neither counted as a test nor taken for a duplicate.
@@ -45,11 +62,15 @@ import pytest
 
 from scripts.ci.windows import run_waves as run_waves_module
 from scripts.ci.windows.run_waves import HARD_STATES, run_waves
-from scripts.ci.windows.summarize import _collect_suite_cases, validate_waves
+from scripts.ci.windows.summarize import _collect_suite_cases, summarize_suite, validate_waves
 from scripts.ci.windows.wave_state import classify_run, read_junit
 from tests.tooling.ci.windows.suite.test_run_waves import write_events
 
 NAMED_PASS = '<testcase classname="tests.a" name="test_ok" time="0.010" />'
+REAL_FAILURE = (
+    '<testcase classname="tests.a" name="test_bad" time="0.010">'
+    '<failure message="assert 1 == 2">call trace</failure></testcase>'
+)
 NAMELESS = '<testcase time="0.001" />'
 
 
@@ -98,19 +119,47 @@ def plan(tmp_path: Path, waves: list[list[str]]) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("returncode", "interceptor_hit", "status", "details"),
+    ("returncode", "interceptor_hit", "real_failure", "nameless", "status", "details"),
     [
-        (0, False, "unreported-files", ("nameless-testcases:3",)),
-        (3, False, "worker-crash", ("unexpected-exit:3", "nameless-testcases:3")),
-        (3, True, "worker-self-terminated", ("interceptor-hits:1", "nameless-testcases:3")),
+        (0, False, False, 3, "unreported-files", ("nameless-testcases:3",)),
+        (3, False, False, 3, "worker-crash", ("unexpected-exit:3", "nameless-testcases:3")),
+        (3, True, False, 3, "worker-self-terminated", ("interceptor-hits:1", "nameless-testcases:3")),
+        (1, False, True, 1, "unreported-files", ("nameless-testcases:1",)),
+        (1, False, True, 2, "unreported-files", ("nameless-testcases:2",)),
     ],
-    ids=["exit-0-would-have-passed", "exit-3-unknown-exit-code", "exit-3-interceptor-hit"],
+    ids=[
+        "exit-0-would-have-passed",
+        "exit-3-unknown-exit-code",
+        "exit-3-interceptor-hit",
+        "exit-1-one-real-failure-one-nameless",
+        "exit-1-one-real-failure-two-nameless",
+    ],
 )
 def test_nameless_records_are_counted_and_never_pass(
-    tmp_path: Path, returncode: int, interceptor_hit: bool, status: str, details: tuple[str, ...]
+    tmp_path: Path,
+    returncode: int,
+    interceptor_hit: bool,
+    real_failure: bool,
+    nameless: int,
+    status: str,
+    details: tuple[str, ...],
 ) -> None:
-    junit = write_xml(tmp_path / "r.xml", NAMED_PASS, NAMELESS, NAMELESS, NAMELESS)
-    ledger = write_ledger(tmp_path / "ledger", ("tests/a.py::test_ok",))
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    cases = [NAMED_PASS]
+    events: list[dict[str, Any]] = [
+        {"event": "collect", "collected": 2 if real_failure else 1, "errors": []},
+        {"event": "start", "nodeid": "tests/a.py::test_ok"},
+        {"event": "end", "nodeid": "tests/a.py::test_ok", "outcome": "passed"},
+    ]
+    if real_failure:
+        cases.append(REAL_FAILURE)
+        events += [
+            {"event": "start", "nodeid": "tests/a.py::test_bad"},
+            {"event": "end", "nodeid": "tests/a.py::test_bad", "outcome": "failed"},
+        ]
+    write_events(ledger / "gw0.jsonl", events)
+    junit = write_xml(tmp_path / "r.xml", *cases, *([NAMELESS] * nameless))
     if interceptor_hit:
         write_events(
             ledger / "interceptor-hits.jsonl",
@@ -130,7 +179,54 @@ def test_nameless_records_are_counted_and_never_pass(
     assert outcome.status in HARD_STATES
     assert outcome.offsettable is False
     assert outcome.details == details
-    assert outcome.nameless_testcases == 3
+    assert outcome.nameless_testcases == nameless
+
+
+@pytest.mark.parametrize("nameless", [1, 2])
+def test_a_nameless_record_cannot_be_offset_by_expected_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nameless: int
+) -> None:
+    plan_path = plan(tmp_path, [["tests/a.py"]])
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace, run_number: int,
+        wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        junit = args.results / f"shard-0-wave-{wave_number}-run-{run_number}.xml"
+        ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
+        ledger.mkdir(parents=True)
+        write_events(
+            ledger / "gw0.jsonl",
+            [
+                {"event": "collect", "collected": 2, "errors": []},
+                {"event": "start", "nodeid": "tests/a.py::test_ok"},
+                {"event": "end", "nodeid": "tests/a.py::test_ok", "outcome": "passed"},
+                {"event": "start", "nodeid": "tests/a.py::test_bad"},
+                {"event": "end", "nodeid": "tests/a.py::test_bad", "outcome": "failed"},
+            ],
+        )
+        write_xml(junit, NAMED_PASS, REAL_FAILURE, *([NAMELESS] * nameless))
+        return 1, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    expected = tmp_path / "expected-failures.json"
+    expected.write_text(
+        json.dumps({"entries": [{"nodeid": "tests/a.py::test_bad", "kp": "KP-000"}]}), encoding="utf-8"
+    )
+
+    manifest = run_waves(wave_args(tmp_path, plan_manifest=plan_path), tmp_path)
+    ok, lines = summarize_suite(
+        plan_manifest_path=plan_path,
+        leg_roots={"shard-0": tmp_path / "results"},
+        expected_failures_path=expected,
+    )
+
+    assert manifest["runs"][0]["status"] == "unreported-files"
+    assert manifest["offsettable"] is False
+    assert any("matched=1 stale=0 unexpectedShape=0" in line for line in lines)
+    assert ok is False
+    assert "Overall status: **failed**" in "\n".join(lines)
 
 
 def test_one_nameless_record_is_not_in_the_nodeid_set(tmp_path: Path) -> None:
@@ -320,6 +416,66 @@ def test_union_read_failure_leaves_the_leg_hard_red(
     assert manifest["duplicateUnion"] == "duplicate-result: tests.a"
     assert manifest["duplicateResult"] == "duplicate-result: tests.a"
     assert manifest["reportedFiles"] == ["tests/b.py"]
+
+
+def test_union_read_failure_on_passing_waves_sets_the_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = plan(tmp_path, [["tests/a.py"], ["tests/b.py"]])
+    outside = '<testcase classname="plugin.check" name="session" time="0.001" />'
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace, run_number: int,
+        wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        junit = args.results / f"shard-0-wave-{wave_number}-run-{run_number}.xml"
+        ledger = write_ledger(
+            args.ledger_root / f"wave-{wave_number}-run-{run_number}",
+            (f"tests/{'ab'[wave_number - 1]}.py::test_ok",),
+        )
+        own = f'<testcase classname="tests.{"ab"[wave_number - 1]}" name="test_ok" time="0.010" />'
+        write_xml(junit, outside, own)
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+
+    manifest = run_waves(wave_args(tmp_path, plan_manifest=plan_path), tmp_path)
+
+    assert [(run["wave"], run["status"]) for run in manifest["runs"]] == [(1, "passed"), (2, "passed")]
+    assert manifest["status"] == "unreported-files"
+    assert manifest["status"] in HARD_STATES
+    assert manifest["offsettable"] is False
+    assert manifest["duplicateRuns"] == []
+    assert manifest["duplicateUnion"] == "duplicate-result: plugin.check::session"
+    assert manifest["duplicateResult"] == "duplicate-result: plugin.check::session"
+    assert manifest["reportedFiles"] == ["tests/a.py", "tests/b.py"]
+    assert not (tmp_path / "results" / "unreported.xml").exists()
+
+
+def test_union_read_error_that_is_no_duplicate_is_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = plan(tmp_path, [["tests/a.py"]])
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace, run_number: int,
+        wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        junit = args.results / f"shard-0-wave-{wave_number}-run-{run_number}.xml"
+        ledger = write_ledger(args.ledger_root / f"wave-{wave_number}-run-{run_number}", ("tests/a.py::test_ok",))
+        write_xml(junit, NAMED_PASS)
+        return 0, junit, ledger, None, []
+
+    def raising_read_junit(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("not-a-duplicate: boom")
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    monkeypatch.setattr(run_waves_module, "read_junit", raising_read_junit)
+
+    with pytest.raises(ValueError, match="^not-a-duplicate: boom$"):
+        run_waves(wave_args(tmp_path, plan_manifest=plan_path), tmp_path)
 
 
 @pytest.mark.parametrize("nameless", [1, 3])

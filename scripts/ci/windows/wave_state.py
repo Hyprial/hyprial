@@ -53,8 +53,12 @@ such record in a run raised duplicate-result with an empty nodeid and the wave
 loop stopped every later wave.  A nameless testcase is now counted per run as
 nameless-testcases:N before any resolution: it enters neither the nodeid set nor
 duplicate detection, and it counts as neither a pass nor a failure.  It never
-turns a run green.  A run keeps the state its exit code and its other evidence
-gave it, and a run that would otherwise pass is unreported-files instead.
+turns a run green.  A run that is already in a hard state keeps that state and
+gains the detail only.  A run that would otherwise pass or be failed is
+unreported-files instead.  The failed branch matters as much as the passed one:
+failed is the only state a list of expected failures can offset, so a run with
+a real failure and a nameless record would otherwise turn green in the summary
+without one line naming the nameless record.
 """
 
 from __future__ import annotations
@@ -524,7 +528,7 @@ def classify_run(
             status = "passed"
     if result.nameless_testcases:
         details.append(f"nameless-testcases:{result.nameless_testcases}")
-        if status == "passed":
+        if status not in HARD_STATES:
             status = "unreported-files"
     if strict_skips:
         if result.contract_skip_errors:

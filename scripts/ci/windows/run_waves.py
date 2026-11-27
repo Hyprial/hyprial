@@ -32,16 +32,18 @@ duplicateUnion holds what the final read of all attempt XMLs together raised.
 duplicateResult is the first entry of duplicateRuns, else duplicateUnion, so a
 union duplicate cannot hide a run-time one; summarize.py rejects each of the three.
 
-When the final read raises, the strict skip checks that follow it are skipped.
-They only ever turn a passed status into failed, and the status cannot be passed
-at that point: the raise itself sets it to unreported-files unless it is already
-a hard state.  That is the state in which they are skipped, and it is a hard
-red whatever they would have found.  The files still pending are reported
-through unreported.xml as in every other case.  The assignment is a guard, not
-a change of outcome: a wave is rerun only while one of its files is unfinished,
-and the attempt that leaves a file unfinished is always a hard red, so whenever
-the final read raises the status is already a hard red.  It is written down as
-code because that order is a property of the rerun rule, not of this branch.
+When the final read raises, the status is set to a hard red at that point unless
+it already is one.  The assignment is reachable: one attempt is classified on its
+own XML, so a record that resolves to no planned file raises nothing as long as
+each XML holds it once, while the final read of all attempt XMLs together sees
+it once per attempt and raises.  Two passing waves that each hold such a record
+arrive at that line with the status passed.  The assignment turns the manifest
+red on that input and leaves every other hard state as it is.  The strict skip
+checks that follow the read are skipped when it raises; they only ever turn a
+passed status into failed, so skipping them cannot turn the run green.  The
+files still pending are reported through unreported.xml as in every other
+case.  Only a duplicate-result error is caught here; any other ValueError is
+raised as it is inside the wave loop.
 """
 
 from __future__ import annotations
@@ -728,6 +730,8 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             if union_junit.other_skips and final_status == "passed":
                 final_status = "failed"
     except ValueError as error:
+        if not str(error).startswith("duplicate-result:"):
+            raise
         duplicate_union = str(error)
         if final_status not in HARD_STATES:
             final_status = "unreported-files"
