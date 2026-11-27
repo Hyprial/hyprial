@@ -28,11 +28,18 @@
 # - Without a source nothing changes: every function takes the source as an
 #   argument and answers "nothing to do" for None, so a manager constructed
 #   the old way behaves exactly as before.
+# - S5 fix (2026-11-27, critic 4): the alternative name always differs from
+#   the name and is a valid service name. ``<name>-<grantor slug>`` is kept
+#   when it fits; otherwise the name is shortened to make room for a suffix
+#   of at most 16 characters. A grantor with no slug character gets an
+#   8-hex-digit SHA-256 digest of its owner instead, and a shortened name
+#   that would read back as the name itself falls back to that digest.
 """Second source for service-connect: entries and devices derived from grants."""
 
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import re
 from collections.abc import Collection
 from pathlib import Path
@@ -43,6 +50,8 @@ from .models import AccessSnapshot, CatalogEntry, ProtectedDevice, RegistrySnaps
 
 _SLUG = re.compile(r"[^a-z0-9_-]+")
 _NAME_LIMIT = 63
+_SUFFIX_LIMIT = 16
+_DIGEST_LENGTH = 8
 
 
 class DerivedSource(Protocol):
@@ -83,13 +92,20 @@ class DerivedEntry:
 
 
 def alternative_name(name: str, grantor: str) -> str:
-    """``<name>-<grantor>`` reduced to a valid service name."""
+    """``<name>-<grantor>`` as a valid service name that always differs from ``name``."""
 
+    digest = hashlib.sha256(grantor.encode("utf-8", "surrogatepass")).hexdigest()[:_DIGEST_LENGTH]
     slug = _SLUG.sub("-", grantor.lower()).strip("-")
-    if not slug:
-        return name
-    room = max(_NAME_LIMIT - len(name) - 1, 1)
-    return f"{name}-{slug[:room]}"[:_NAME_LIMIT]
+    for suffix in (slug, digest):
+        if not suffix:
+            continue
+        if len(name) + 1 + len(suffix) <= _NAME_LIMIT:
+            return f"{name}-{suffix}"
+        suffix = suffix[:_SUFFIX_LIMIT].rstrip("-") or digest
+        shortened = f"{name[: _NAME_LIMIT - 1 - len(suffix)]}-{suffix}"
+        if shortened != name:
+            return shortened
+    return name[:-1] + ("0" if name[-1] != "0" else "1")
 
 
 def merge_entries(
