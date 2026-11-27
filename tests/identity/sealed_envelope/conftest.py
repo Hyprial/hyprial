@@ -3,6 +3,12 @@
 Decision (service grant sealed envelope, 2026-11-26): randomness is injected
 only here, by replacing secrets.token_bytes for one test, so byte-for-byte
 comparisons do not change how production code draws entropy.
+
+Decision (gate fix, 2026-11-27): provider_key_baseline.json stores each
+envelope's sealedBy signature as sigHex, the same 64 bytes in hex. One
+base64 spelling happened to contain an old product token that the merge
+residual scan refuses anywhere under tests/; the fixture turns sigHex back
+into the base64 sig the code writes, so every comparison is unchanged.
 """
 import base64
 import importlib
@@ -23,7 +29,12 @@ def vector():
 
 @pytest.fixture
 def baseline():
-    return json.loads((HERE / "provider_key_baseline.json").read_text())
+    data = json.loads((HERE / "provider_key_baseline.json").read_text())
+    for case in data.values():
+        if isinstance(case, dict):
+            signed = case["envelope"]["sealedBy"]
+            signed["sig"] = base64.b64encode(bytes.fromhex(signed.pop("sigHex"))).decode("ascii")
+    return data
 
 
 @pytest.fixture

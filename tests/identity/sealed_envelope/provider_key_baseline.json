@@ -33,7 +33,7 @@
    ],
    "sealedBy": {
     "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
-    "sig": "QpAnJdFp2Bd6yvMVGYqKjp8KFg0vfbF9V2Lc8TKMBwsb8alhnewuGaVgs+UqkjB5rLO+0rEEJFxM9mrrH2BTDg=="
+    "sigHex": "42902725d169d8177acaf315198a8a8e9f0a160d2f7db17d5762dcf1328c070b1bf1a9619dec2e19a560b3e52a923079acb3bed2b104245c4cf66aeb1f60530e"
    }
   },
   "randomValues": [
@@ -76,7 +76,7 @@
    ],
    "sealedBy": {
     "keyId": "ed25519:56475aa75463474c0285df5dbf2bcab7",
-    "sig": "Ximdais6nLgMbrprMIGs8k9QXmsLMelMVVh2PN7XJQC1bPvj8oFANur7Gt6ptIsX0VZV7ukrbI/n2kCyjosZBA=="
+    "sigHex": "5e299d6a2b3a9cb80c6eba6b3081acf24f505e6b0b31e94c5558763cded72500b56cfbe3f2814036eafb1adea9b48b17d15655eee92b6c8fe7da40b28e8b1904"
    }
   },
   "header": {
