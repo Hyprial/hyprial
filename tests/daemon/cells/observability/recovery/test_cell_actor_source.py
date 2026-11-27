@@ -124,3 +124,24 @@ def test_managed_execution_observed_inside_active_cell(facts, revision, stale, e
     view, entity, actors = _view({("pi:worker", "entity", revision): facts}, (), snap)
     row = run_states(view, {}, {}, now_ms=10, monotonic_ms=10, cell_actors=actors)[entity.uri]
     assert row["state"] == expected
+
+
+def test_only_a_receipt_for_this_unbound_incarnation_observes_it_stopped():
+    projection = AgentProjection(1, ACTOR, "worker", "owner", "node", "10" * 16)
+    uri = "agent:owner:node:" + projection.agent_id
+    projection = replace(projection, uri=uri)
+    snap = CellActorSnapshot(cell_id=projection.cell_id, epoch="epoch",
+                             state=CellActorState.ACTIVE,
+                             members=(CellActorMemberSnapshot(uri, "harness"),))
+    view, _, actors = _view({}, (), snap)
+    view._agents = SimpleNamespace(read_agents=lambda: (projection,))
+    view._identity = lambda _: (projection, None)
+    def state(receipts):
+        rows = run_states(view, {}, {}, now_ms=42, monotonic_ms=42,
+                          cell_actors=actors, completed_stops=receipts)
+        return rows[uri]["state"]
+    assert state({"agent:owner:node:old-name": "old-stop"}) == "unknown"
+    assert state({uri: "current-stop"}) == "not-running"
+    _, binding = _view({}, (), snap)[0]._identity(ACTOR)
+    view._identity = lambda _: (projection, binding)
+    assert state({uri: "previous-stop"}) == "unknown"
