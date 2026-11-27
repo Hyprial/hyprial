@@ -389,17 +389,15 @@ LISTING_REFUSED = "org directory unavailable while attempting to"
         pytest.param("ambiguous", "", id="the-orgs-directory-is-ambiguous"),
     ],
 )
-def test_the_grants_listing_alone_does_not_tell_an_unreadable_directory_from_no_grant(
+def test_the_grants_listing_names_an_unreadable_directory_instead_of_reading_like_no_grant(
     make_daemon: Any, failure: str, listing_message: str
 ) -> None:
-    """``service.grants`` without an org answers an empty list, not an error.
+    """``service.grants`` without an org answers, and names the org it could not read.
 
-    The migration guide sends the operator to the log, and this is why: asked
-    for every org, the listing skips one whose grant directory cannot be read
-    and returns a list without it, which reads exactly like "nobody was
-    granted". Asked for that one org, it refuses. Both are the service's own
-    behaviour and are not changed here; what is held is that the event is
-    there to tell the two apart when the listing is not.
+    Asked for every org, the listing leaves out an org whose grant directory
+    cannot be read and names it in ``unreadableOrgs``, so it no longer reads
+    like "nobody was granted". Asked for that one org, it refuses. The
+    directory_unavailable event is still logged for the enforcement side.
     """
 
     daemon = make_daemon()
@@ -422,6 +420,7 @@ def test_the_grants_listing_alone_does_not_tell_an_unreadable_directory_from_no_
     else:
         listed = daemon.app.handle("service.grants", {})
         assert (listed["granted"], listed["received"], listed["documentCount"]) == ([], [], {})
+        assert listed["unreadableOrgs"] == [ORG]
     with pytest.raises(DaemonRequestError) as refused:
         daemon.app.handle("service.grants", {"org": ORG})
     assert (refused.value.code, str(refused.value)) == (
