@@ -1,0 +1,41 @@
+# Provider 登录与密钥管理交给 Magpie（WIP，访谈中）
+
+状态：只有方向和待定问题，没有实现，不改变现行契约。设计由负责人逐问裁决，全部确认之前不写实现。
+本线在「与其他线的关系」一节列出的 PR 合入之前不开工。
+
+## 1. 负责人已定的方向
+
+2026-11-26：
+
+1. 模型密钥交给 Magpie 和 `hyprial provider` 处理。
+2. 交互终端里不出现密钥，由 Magpie 管理和投影。终端里只有网关地址和模型 ID。
+3. `hyprial agent provider login` 全部改为 `hyprial provider login`，登录通过调用 Magpie 完成。
+4. hyprial 共用用户自己的 Magpie 实例，不打包进 wheel。daemon 复用已在运行的网关，没有运行时再启动它。
+
+2026-11-27：
+
+5. hyprial 后端不再承担 provider 的管理职能，直接依赖 Magpie。daemon 仍提供 provider login 的方法，CLI 和 GUI 仍提供入口，后端调用的是 Magpie 的能力。
+
+本线据第 5 条理解为：hyprial 不保存模型 Key，无头启动与交互启动拿到的都只是网关地址和模型 ID。这一理解尚待负责人确认。
+
+这些方向与模型连接设计 §6（暂不把 Magpie 作为必需组件）和 daemon 级 provider 登录设计（不新增顶层 `hyprial provider` 命令族）的结论不同，是在它们之后做出的决定。
+
+## 2. 尚未决定
+
+- 各 harness 的原生订阅登录是否也经 Magpie。
+- `hyprial provider login` 的命令形态；一条绑定怎样选定 Magpie 的分组和模型。
+- 服务授权交付的 Key 落在哪里。
+- daemon 级 provider 登录设计（PR #68）的处置。
+- Windows 的范围。
+
+## 3. 与其他线的关系
+
+- 模型连接线（PR #61、#81、#82、#83、#96、#84、#85、#86，设计 #71）：本线等它全部合入后开工，并基于合入后的代码设计。不要求该线停下或改方向。
+- 服务授权线：同样等它合入。
+- 交互终端宿主线：不等待。两边只在启动参数处交汇。
+
+## 4. 约束
+
+- 业务逻辑在 daemon，CLI 和 GUI 只请求和渲染。
+- 不写迁移代码，迁移以文档形式给出。
+- 能做成运行时数据的不写死。
