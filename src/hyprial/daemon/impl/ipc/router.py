@@ -615,12 +615,13 @@ class _IpcDispatchMixin:
         only in a serving daemon; a bare host owns no admission enforcement.
         The owner's method is the one the service grant handler calls too.
         This method is named apart from it on purpose: both live on mixins of
-        the same class, and one name would let one hide the other.
+        the same class, and one name would let one hide the other. The owner
+        logs a tick it could not offer, so the exposure path never raises.
         """
 
         changed = getattr(self, "_service_admission_changed", None)
         if callable(changed):
-            changed()
+            changed("network.expose")
 
     def _remove_exposure(self, supervisor: Any, port: int) -> None:
         """Take a port off the sidecar and out of the store; no derivation in flight.

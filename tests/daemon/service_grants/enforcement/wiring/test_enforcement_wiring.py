@@ -236,7 +236,7 @@ def test_an_unexpose_during_a_derivation_is_not_undone_by_its_push(make_daemon: 
         return daemon.supervisor.membership_request("membership-status", {}, timeout=5.0)
 
     enforcer._roster_reader = held_roster
-    daemon.app._service_admission_changed()
+    daemon.app._service_admission_changed("service.grant")
     assert listed.wait(10.0)
 
     outcome: list[Any] = []

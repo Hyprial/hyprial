@@ -6,6 +6,9 @@
 #   installed) only marks the sets stale and hands one tick to a bounded
 #   cadence: the derivation, with its bounded roster read, never runs on an
 #   IPC thread, on the sidecar's relaunch path or on the scheduler thread.
+#   The trigger reports whether that tick was scheduled, and the application
+#   logs the ones that were not: the write the trigger followed is durable
+#   either way, so this is the only difference an operator can see.
 # - The maintenance tick drives the same cadence without marking anything
 #   stale, which gives the throttled re-derivation that picks up directory
 #   changes, expiry and a roster that completed after the grant was written.
@@ -125,18 +128,27 @@ class _ForwardingOpsMixin:
         itself, so this one does not repeat that.
         """
 
-        self._service_admission_changed()
+        self._service_admission_changed("sidecar-installed")
 
-    def _service_admission_changed(self) -> None:
-        """The inputs changed: the sets are stale. Never derives, never raises.
+    def _service_admission_changed(self, method: str) -> None:
+        """The inputs changed: mark the sets stale and offer the cadence a tick.
 
-        Called by the service grant handler after a grant or a revoke and by
-        the exposure path after a new exposure.
+        Called by the service grant handler after a grant or a revoke, by the
+        exposure path after a new exposure, and by the supervisor's installed
+        hook. It never derives and never raises. A tick that could not be
+        offered is logged here, once, for every caller: the change that
+        triggered it is already durable, so the only thing left to report is
+        that its re-derivation was not scheduled.
         """
 
-        from hyprial.daemon.impl.service_grants.enforcement.wiring import mark_stale
+        from hyprial.daemon.impl.service_grants.enforcement.wiring import (
+            mark_stale,
+            trigger_failed,
+        )
 
-        mark_stale(self)
+        reason = mark_stale(self)
+        if reason is not None:
+            trigger_failed(self, method, reason)
 
     def _service_port_unexposing(self, port: int, remove: Any) -> Any:
         """Take a port off the sidecar with no admission derivation in flight.

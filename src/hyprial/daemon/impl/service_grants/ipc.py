@@ -14,9 +14,12 @@
 #   a tick, through the application's own method when it has one; it never
 #   derives on the IPC thread and the reply never waits for the push. A
 #   trigger that cannot be delivered is not an error: the maintenance tick
-#   re-derives within its interval. The service builder and the quarantine
-#   accessor are public because the admission wiring builds the same service
-#   and reads the same directory diagnostics; there is one implementation.
+#   re-derives within its interval. It is logged, by the application for a
+#   tick that was not scheduled and here when the application's method itself
+#   failed, so that it never looks the same as a delivered one. The service
+#   builder and the quarantine accessor are public because the admission
+#   wiring builds the same service and reads the same directory diagnostics;
+#   there is one implementation.
 """Daemon IPC wiring for ``service.grant``, ``service.revoke``, and ``service.grants``."""
 
 from __future__ import annotations
@@ -136,13 +139,18 @@ def handle_service_grants(
 
 
 def _admission_changed(app: Any, method: str) -> None:
-    """Tell the application the admission inputs changed; never fails the write."""
+    """Tell the application the admission inputs changed; never fails the write.
+
+    The application logs a tick that could not be offered. It is reached
+    through ``getattr`` because a host without admission enforcement has no
+    such method; one that has it and cannot even run it is reported here.
+    """
 
     trigger = getattr(app, "_service_admission_changed", None)
     try:
         if callable(trigger):
-            trigger()
-    except Exception as error:  # noqa: BLE001 - the grant is already durable
+            trigger(method)
+    except Exception:  # noqa: BLE001 - the grant is already durable
         log_fn = getattr(app, "_log", None)
         if callable(log_fn):
             log_fn(
@@ -150,7 +158,7 @@ def _admission_changed(app: Any, method: str) -> None:
                 "service",
                 "service.grant.admission_trigger_failed",
                 method=method,
-                errorType=type(error).__name__,
+                reason="failed",
             )
 
 
