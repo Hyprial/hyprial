@@ -23173,6 +23173,179 @@
                       "additionalProperties": false,
                       "properties": {
                         "code": {
+                          "const": "MODEL_SESSION_BUSY"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "admission"
+                            },
+                            "reason": {
+                              "enum": [
+                                "session-reserved"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_RESUME_MISMATCH"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "resume"
+                            },
+                            "reason": {
+                              "enum": [
+                                "binding-changed",
+                                "model-changed",
+                                "provenance-missing"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_COMBINATION_UNSUPPORTED"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "admission"
+                            },
+                            "reason": {
+                              "enum": [
+                                "mode",
+                                "sdk-version",
+                                "runtime-option",
+                                "session-storage"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "const": "MODEL_AUTH_UNAVAILABLE"
+                        },
+                        "data": {
+                          "additionalProperties": false,
+                          "dependentRequired": {
+                            "phase": [
+                              "reason"
+                            ],
+                            "reason": [
+                              "phase"
+                            ]
+                          },
+                          "properties": {
+                            "lastError": {
+                              "type": "string"
+                            },
+                            "phase": {
+                              "const": "authorize"
+                            },
+                            "reason": {
+                              "enum": [
+                                "missing"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
                           "const": "USER_AGENT_IMMUTABLE"
                         },
                         "message": {
@@ -103066,6 +103239,131 @@
             "type": "object"
           },
           "description": "The per-launch worker-proxy read refused the forward launch; the start did not take effect and is never retried; data may name the harness's published refusal."
+        },
+        {
+          "code": "MODEL_SESSION_BUSY",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "admission"
+              },
+              "reason": {
+                "enum": [
+                  "session-reserved"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
+          "code": "MODEL_RESUME_MISMATCH",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "resume"
+              },
+              "reason": {
+                "enum": [
+                  "binding-changed",
+                  "model-changed",
+                  "provenance-missing"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
+          "code": "MODEL_COMBINATION_UNSUPPORTED",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "admission"
+              },
+              "reason": {
+                "enum": [
+                  "mode",
+                  "sdk-version",
+                  "runtime-option",
+                  "session-storage"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
+        },
+        {
+          "code": "MODEL_AUTH_UNAVAILABLE",
+          "dataSchema": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "phase": [
+                "reason"
+              ],
+              "reason": [
+                "phase"
+              ]
+            },
+            "properties": {
+              "lastError": {
+                "type": "string"
+              },
+              "phase": {
+                "const": "authorize"
+              },
+              "reason": {
+                "enum": [
+                  "missing"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "description": "The Pi connection/session precondition refused this start without credential fallback."
         },
         {
           "code": "USER_AGENT_IMMUTABLE",

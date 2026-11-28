@@ -221,6 +221,10 @@ export const STOP_DECLARED_ERROR_TEXT: Readonly<Record<string, string>> = {
 };
 
 const START_ONLY_ERROR_TEXT: Readonly<Record<string, string>> = {
+  MODEL_SESSION_BUSY: '该会话正在使用或保留占用，启动未完成。请确认运行状态，或新建会话。',
+  MODEL_RESUME_MISMATCH: '会话保存的模型配置与当前配置不一致，或无法核验来源，启动未完成。请恢复原配置或新建会话。',
+  MODEL_COMBINATION_UNSUPPORTED: '当前运行程序、运行方式与模型连接的组合不受支持，启动未完成。请调整配置。',
+  MODEL_AUTH_UNAVAILABLE: '无法取得所选模型连接的凭据，启动未完成。请检查凭据和授权。',
   HARNESS_BINARY_MISSING: '当前设备未找到所选运行程序，启动未执行。请确认已安装，并检查 daemon 启动时的 PATH。',
   SUBMIT_OUTCOME_UNKNOWN: '启动受理结果未知；请核对运行状态。',
   TRANSFER_STARTS_HELD: '迁移托管期间停止保持，启动未执行。',

@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Self, cast
 from uuid import uuid4
 
+from .bindings import KEY_ENV, PiModelBinding
+from .bindings.launch import p2_rpc_launch, start_failure
 from hyprial.kernel import ipc_errors
 from hyprial.kernel import HarnessLaunchSpec
 from hyprial.daemon.impl.transfer.execution.container import CONTAINER_PI_EXTENSION, wrap_worker_launch
@@ -39,10 +41,6 @@ from hyprial.identity import AgentRuntimeContext
 from hyprial.daemon.impl.harnesses.model_provider  import pi_model_args
 from hyprial.daemon.impl.harnesses.pi.loader  import (
     PiProjectTrustReceipt,
-    PiStartPreconditionError,
-    find_pi_package_root,
-    pi_sdk_launch_from_runtime_context,
-    resolve_approved_pi_project,
     without_pi_reserved_arguments,
 )
 from hyprial.daemon.impl.harnesses.pi.messages import (
@@ -55,7 +53,6 @@ from hyprial.daemon.impl.harnesses.pi.messages import (
     _last_assistant_message,
     _pi_progress_observation,
 )
-
 
 PI_HARNESS_BRIDGE_EXTENSION = Path(__file__).parent / "resources" / "pi_harness_bridge.ts"
 
@@ -77,6 +74,8 @@ class PiRpcClient:
             ) = None,
             trust_receipt: PiProjectTrustReceipt | None = None,
             provider_environment: Mapping[str, str] | None = None,
+            model_binding: PiModelBinding | None = None,
+            require_existing_session: bool = False,
         ) -> None:
             self.spec = spec
             self.session_ref = session_ref
@@ -96,6 +95,10 @@ class PiRpcClient:
             )
             # The process driver resolves the child's provider credential once.
             self._provider_environment = dict(provider_environment or {})
+            if model_binding is not None:
+                if runtime_context is None:
+                    raise ValueError("Pi model binding requires a trusted P2 runtime context")
+                self._provider_environment[KEY_ENV] = model_binding.key
             if runtime_context is not None:
                 if self._complete_launch is None or complete_environment is None:
                     raise ValueError("Pi P2 SDK bridge requires a complete environment")
@@ -103,27 +106,13 @@ class PiRpcClient:
                     raise ValueError("Pi P2 channel and environment contexts differ")
                 if spec.containerized:
                     raise ValueError("Pi P2 SDK bridge is not supported in containers")
-                trust = trust_receipt or resolve_approved_pi_project(
-                    cwd=spec.cwd,
-                    runtime_args=spec.args,
-                    # The P2 default cwd is this agent's own workspace, which is
-                    # deliberately not a Git repository; it is the only non-Git
-                    # root this launch may trust.
-                    own_workspace=runtime_context.roots.workspace_root,
-                    command_name=spec.name,
-                    command_model_provider=spec.model_provider,
-                    command_model=spec.model,
-                    command_session_ref=spec.session_ref,
-                )
-                sdk_launch = pi_sdk_launch_from_runtime_context(
-                    runtime_context,
-                    trust=trust,
-                    mode="rpc",
+                sdk_launch = p2_rpc_launch(
+                    context=runtime_context, spec=spec, command=command,
+                    environment=complete_environment,
+                    provider_environment=self._provider_environment,
+                    trust_receipt=trust_receipt, extension_path=PI_HARNESS_BRIDGE_EXTENSION,
                     session_id=_pi_session_id(session_ref),
-                    pi_package_root=find_pi_package_root(command, complete_environment),
-                    model_provider=spec.model_provider,
-                    model=spec.model, model_environment={**complete_environment, **self._provider_environment},
-                    additional_extension_paths=(PI_HARNESS_BRIDGE_EXTENSION,),
+                    model_binding=model_binding, require_existing_session=require_existing_session,
                 )
                 self.command = sdk_launch.argv
             else:
@@ -321,13 +310,9 @@ class PiRpcClient:
                 # ``async with`` does not invoke __aexit__ when __aenter__ fails.
                 # The ready probe is therefore an explicit resource boundary.
                 await self._close()
-                if isinstance(error, ConnectionError) and (
-                    b"HYPRIAL_PI_START_FAILURE:MODEL_UNAVAILABLE"
-                    in bytes(self._stderr_tail).splitlines()
-                ):
-                    raise PiStartPreconditionError(
-                        "configured Pi model is unavailable; check the selected provider and model"
-                    ) from error
+                bound_error = start_failure(bytes(self._stderr_tail))
+                if isinstance(error, ConnectionError) and bound_error is not None:
+                    raise bound_error from error
                 raise
 
         async def __aexit__(self, *args: object) -> bool:

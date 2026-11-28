@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hyprial.identity.impl.agents.runtime.model_records.connections import ModelConnection as ModelConnection
     from hyprial.identity.impl.provider_keys import ProviderKeys as ProviderKeys
     from hyprial.identity.impl.user_key import UserKey as UserKey
     from hyprial.identity.impl.user_key.encryption import EncryptionKey as EncryptionKey
@@ -388,6 +389,7 @@ if TYPE_CHECKING:
     from hyprial.identity.impl.agents.registry._base import agent_id_for_entity_token as agent_id_for_entity_token
 
 __all__ = [
+    'ModelConnection',
     'ACTION_INVITE', 'ACTION_LEAVE', 'ACTION_READ', 'ACTION_REMOVE', 'ACTION_WRITE', 'ADDRESS_RELPATH', 'AGENT_HEARTBEAT_TTL_SECONDS', 'AcquireAgentRuntimeLaunchCommand', 'Agent', 'AgentActor',
     'AgentAlreadyRunning', 'AgentBinding', 'AgentCapabilityGrantCompleted', 'AgentCommand', 'AgentConfig', 'AgentConfigCasMismatch', 'AgentConfigError', 'AgentDestroyReservationCompleted',
     'AgentDestroySettled', 'AgentError', 'AgentEvent', 'AgentHomeAccessError', 'AgentHomeAccessPending', 'AgentHomeError', 'AgentIncarnationMismatch', 'AgentLifecycleReceiptCompleted',
