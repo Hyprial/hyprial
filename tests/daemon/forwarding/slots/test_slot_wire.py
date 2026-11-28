@@ -1,6 +1,6 @@
 """The Python wire client speaks the v5 slot protocol end to end.
 
-Runs the protocol-v6 fixture sidecar (pinned to sidecar/hyprial-tailcat's
+Runs the protocol-v7 fixture sidecar (pinned to sidecar/hyprial-tailcat's
 stdio JSON lines) as a real subprocess: ``map-peer`` names a slot by its
 wire id and the answer echoes it, growth binds lazily beyond the ``up``
 list, ``unmap-peer`` returns the slot to hold, and the tcp transport
@@ -30,7 +30,7 @@ _FIXTURE = (
 
 def _controller(home: Path, slots: list[str]) -> ForwardingSidecarController:
     up = {
-        "v": 6, "requestId": "up-fixture",
+        "v": 7, "requestId": "up-fixture",
         "op": "up",
         "keyFile": str(home / "secrets/tailcat/device-key.json"),
         "membershipStore": str(home / 'membership.json'),

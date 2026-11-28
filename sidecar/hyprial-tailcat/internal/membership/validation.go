@@ -325,7 +325,7 @@ func Parse(data []byte, remote bool) (Request, error) {
 	if err := integerParams(r.Params); err != nil {
 		return r, err
 	}
-	version := 6
+	version := ProtocolVersion
 	if remote {
 		version = 1
 	}

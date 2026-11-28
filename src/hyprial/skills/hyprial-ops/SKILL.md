@@ -161,7 +161,7 @@ stderr 只输出 `moved: hyprial <旧参数>  →  hyprial <新参数>` 一行�
   Casdoor 自动发现只登记待办，不代替操作员确认。`org delete` 拒绝隐式删除最后 authority。
   设备 key 在 `hyprial login` 时生成；
   `hyprial doctor` 的 `tailcat-sidecar`、`device-key` 两项缺失时为 warn，存在但无效时为 fail。
-- Tailnet 升级：daemon 与边车须同时升级到 stdio v6，维护窗口先升级固定 authority；
+- Tailnet 升级：daemon 与边车须同时升级到 stdio v7（跨机器的边车间控制协议仍为 v1，同机 daemon 与边车须同批升级），维护窗口先升级固定 authority；
   不支持混合版本或自动选举。旧邀请返回 `INVITE_VERSION_UNSUPPORTED`，须重新签发 v2。
   成员表只由边车维护；Directory 是发布副本，不是准入来源。一次性离线迁移遇到
   `MIGRATION_AUTHORITY_MISSING` 时补齐明确的 owner 设备 pin，禁止任意选择设备（0.5.5.1.1）：

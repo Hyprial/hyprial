@@ -19,7 +19,7 @@ func TestVersion(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &out); err != nil {
 		t.Fatalf("version output: %v", err)
 	}
-	if out["v"] != float64(6) || out["sidecar"] == "" ||
+	if out["v"] != float64(7) || out["sidecar"] == "" ||
 		out["tailcat"] != "b4dc28e8aa8936f0a90a41ad8293a64e3d6b645f" {
 		t.Fatalf("version output = %v", out)
 	}

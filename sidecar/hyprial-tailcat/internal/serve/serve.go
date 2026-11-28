@@ -1,4 +1,4 @@
-// Package serve implements the protocol-v6 stdio lifecycle of
+// Package serve implements the protocol-v7 stdio lifecycle of
 // `hyprial-tailcat forward` (design doc §3.3): emit hello, consume
 // newline-delimited JSON commands, emit events, and on stdin EOF or down
 // shut everything down, emit exited, and return.
@@ -73,7 +73,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer, diag io.Writer)
 			command, err := proto.ParseCommand(line)
 			if err != nil {
 				logf("rejected malformed request")
-				event := proto.Error(proto.CodeBadRequest, "Invalid protocol-v6 request.")
+				event := proto.Error(proto.CodeBadRequest, "Invalid protocol-v7 request.")
 				event.RequestID = parseErrorRequestID(line)
 				var raw struct {
 					V  int    `json:"v"`
@@ -181,11 +181,17 @@ func handle(ctx context.Context, eng *engine.Engine, command proto.Command, writ
 		exposure, err := eng.Expose(ctx, engine.Exposure{
 			Port: command.Port, Target: command.Target,
 			ProxyProtocol: command.ProxyProtocol, Admission: command.Admission,
+			Keys: command.Keys,
 		})
 		if err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)
 		}
-		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol, exposure.Admission), command.RequestID)
+		var keyCount *int
+		if exposure.Admission == proto.AdmissionKeys {
+			count := len(exposure.Keys)
+			keyCount = &count
+		}
+		return writeResponse(writer, proto.Exposed(exposure.Port, exposure.Target, exposure.ProxyProtocol, exposure.Admission, keyCount), command.RequestID)
 	case "unexpose":
 		if err := eng.Unexpose(command.Port); err != nil {
 			return writeError(writer, err, proto.CodeInternal, command.RequestID)

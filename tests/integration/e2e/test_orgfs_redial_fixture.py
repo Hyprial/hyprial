@@ -6,6 +6,7 @@ import runpy
 import pytest
 
 from hyprial.daemon.impl.forwarding.controller import ForwardingSidecarController
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION
 
 
 def test_device_fixture_uses_owner_path_and_current_address_protocol():
@@ -28,7 +29,7 @@ def test_device_fixture_uses_owner_path_and_current_address_protocol():
     slot = "/run/hyprial/slots/slot-00"
 
     def request(command, expected):
-        assert command["v"] == 6 and expected == "peer-mapped"
+        assert command["v"] == FORWARD_PROTOCOL_VERSION and expected == "peer-mapped"
         assert command["slot"] == slot and command["address"] == address
         return {"peer": command["peer"], "slot": slot}
 
@@ -139,8 +140,8 @@ def _hello_capabilities(path: Path) -> set[str]:
     raise AssertionError(f"no literal hello capabilities in {path}")
 
 
-def test_all_python_forwarding_stdio_stubs_pin_real_v6_capabilities():
-    """Every active Python stdio double mirrors the v6 features it implements."""
+def test_all_python_forwarding_stdio_stubs_pin_real_v7_capabilities():
+    """Every active Python stdio double mirrors the v7 features it implements."""
 
     root = Path(__file__).resolve().parents[3]
     golden_hello = json.loads(
@@ -185,7 +186,7 @@ def test_all_python_forwarding_stdio_stubs_pin_real_v6_capabilities():
     ("run-peer-restart-relearn.py", "restart-b", "ff" * 32),
     ("run-peer-restart-relearn.py", "orgfs-redial-a-case", "02" * 32),
 ])
-def test_stdio_v6_private_unix_readiness_and_retired_allow_rejection(tmp_path, entrypoint, device_id, client):
+def test_stdio_v7_private_unix_readiness_and_retired_allow_rejection(tmp_path, entrypoint, device_id, client):
     import os
     import subprocess
     import sys
@@ -195,19 +196,20 @@ def test_stdio_v6_private_unix_readiness_and_retired_allow_rejection(tmp_path, e
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     up = {
-        "v": 6, "op": "up", "requestId": "up", "owner": "redial-a",
+        "v": FORWARD_PROTOCOL_VERSION, "op": "up", "requestId": "up", "owner": "redial-a",
         "deviceId": device_id, "membershipStore": str(private / "membership.json"),
         "keyFile": str(private / "key"), "addressFile": str(private / "address"),
         "inboundTarget": "unix:" + str(private / "absent.sock"), "slots": [],
     }
-    commands = [up, {"v": 6, "op": "membership-status", "requestId": "members", "params": {}},
-                {"v": 6, "op": "allow", "requestId": "old", "keys": [], "allowAny": True},
+    commands = [up, {"v": FORWARD_PROTOCOL_VERSION, "op": "membership-status", "requestId": "members", "params": {}},
+                {"v": FORWARD_PROTOCOL_VERSION, "op": "allow", "requestId": "old", "keys": [], "allowAny": True},
                 {"v": 5, "op": "status", "requestId": "v5"},
+                {"v": 6, "op": "status", "requestId": "v6"},
                 up | {"requestId": "tcp", "inboundTarget": "tcp:127.0.0.1:7447"},
                 up | {"requestId": "allow-up", "allowAny": True},
-                {"v": 6, "op": "membership-status", "requestId": "unknown", "params": {}, "extra": True},
-                {"v": 6, "op": "membership-status", "requestId": "x" * 129, "params": {}},
-                {"v": 6, "op": "down"}]
+                {"v": FORWARD_PROTOCOL_VERSION, "op": "membership-status", "requestId": "unknown", "params": {}, "extra": True},
+                {"v": FORWARD_PROTOCOL_VERSION, "op": "membership-status", "requestId": "x" * 129, "params": {}},
+                {"v": FORWARD_PROTOCOL_VERSION, "op": "down"}]
     process = subprocess.run(
         [sys.executable, str(runner), "--sidecar", str(tmp_path / "receipt"), str(tmp_path / "pid")],
         input="\n".join(json.dumps(row) for row in commands) + "\n",
@@ -221,12 +223,13 @@ def test_stdio_v6_private_unix_readiness_and_retired_allow_rejection(tmp_path, e
     status = next(row for row in events if row.get("requestId") == "members")
     assert status == next(row for row in golden if row.get("requestId") == "members")
     running = next(row for row in events if row.get("state") == "Running")
-    assert running["v"] == 6 and running["requestId"] == "up"
+    assert running["v"] == FORWARD_PROTOCOL_VERSION and running["requestId"] == "up"
     assert running["clientPublic"] == "nodekey:" + client
     assert running["readiness"] == {"sidecar": True, "control": True, "member": False}
     assert not (private / "absent.sock").exists()
     assert next(row for row in events if row.get("requestId") == "old")["code"] == "BAD_REQUEST"
     assert next(row for row in events if row.get("requestId") == "v5")["code"] == "SIDECAR_PROTOCOL_MISMATCH"
+    assert next(row for row in events if row.get("requestId") == "v6")["code"] == "SIDECAR_PROTOCOL_MISMATCH"
     for request in ("tcp", "allow-up", "unknown", "x" * 129):
         assert next(row for row in events if row.get("requestId") == request)["code"] == "BAD_REQUEST"
 
@@ -255,7 +258,7 @@ def test_private_fixture_configuration_matches_the_real_stdio_identity(entrypoin
         up = json.loads(daemon.env["HYPRIAL_FORWARDING_UP"]) | {"requestId": "configured-up"}
         process = subprocess.run(
             json.loads(daemon.env["HYPRIAL_FORWARDING_COMMAND"]),
-            input=json.dumps(up) + '\n{"v":6,"op":"down"}\n',
+            input=json.dumps(up) + f'\n{{"v":{FORWARD_PROTOCOL_VERSION},"op":"down"}}\n',
             capture_output=True, text=True, timeout=10,
             env={**os.environ, "NO_PROXY": "127.0.0.1,localhost,::1"},
         )

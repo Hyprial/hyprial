@@ -53371,6 +53371,14 @@
                                 "null"
                               ]
                             },
+                            "encryptionKeyId": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "encryptionPublicKey": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "firstPublishedAt": {
                               "type": "string"
                             },
@@ -126815,6 +126823,14 @@
                       "null"
                     ]
                   },
+                  "encryptionKeyId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "encryptionPublicKey": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "firstPublishedAt": {
                     "type": "string"
                   },
@@ -147066,6 +147082,952 @@
           "description": ""
         },
         {
+          "code": "PAYLOAD_INVALID",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_REGISTERED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_DEVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_AUTHORIZED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "AGENT_SECRET_RESOLUTION_FAILED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_RESTORING",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_NOT_READY",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "never",
+        "scope": "service.grant"
+      },
+      "mode": "unary",
+      "mutates": true,
+      "name": "service.grant",
+      "owner": "daemon.service_grants",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "entryId": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fieldName": {
+                    "minLength": 1,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "entryId"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "device": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expiresAtMs": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "org": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "port": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "protocol": {
+            "enum": [
+              "tcp",
+              "http",
+              null
+            ]
+          }
+        },
+        "required": [
+          "org",
+          "port",
+          "device"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "grant": {
+            "additionalProperties": false,
+            "properties": {
+              "effective": {
+                "type": "boolean"
+              },
+              "expiresAtMs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "grantId": {
+                "type": "string"
+              },
+              "grantedAtMs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "grantor": {
+                "type": "string"
+              },
+              "hasCredential": {
+                "type": "boolean"
+              },
+              "org": {
+                "type": "string"
+              },
+              "recipient": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "const": "@members"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "deviceId": {
+                        "type": "string"
+                      },
+                      "owner": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "owner",
+                      "deviceId"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "revokedAtMs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "schemaVersion": {
+                "const": 1,
+                "type": "integer"
+              },
+              "service": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "deviceId": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "note": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "port": {
+                        "maximum": 65535,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "protocol": {
+                        "enum": [
+                          "tcp",
+                          "http"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "deviceId",
+                      "port",
+                      "name",
+                      "protocol",
+                      "note"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "updatedAtMs": {
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "org",
+              "grantor",
+              "schemaVersion",
+              "grantId",
+              "service",
+              "recipient",
+              "grantedAtMs",
+              "expiresAtMs",
+              "revokedAtMs",
+              "updatedAtMs",
+              "hasCredential",
+              "effective"
+            ],
+            "type": "object"
+          },
+          "updated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "grant",
+          "updated"
+        ],
+        "type": "object"
+      },
+      "retry": "never",
+      "x-hyprial-example-gaps": {
+        "empty": "A service grant always returns the created or updated grant view."
+      },
+      "x-hyprial-examples": [
+        {
+          "description": "success",
+          "kind": "success",
+          "name": "success",
+          "params": {
+            "credential": {
+              "entryId": "magpie",
+              "fieldName": "API_KEY"
+            },
+            "device": "bob/device-b",
+            "name": "magpie",
+            "org": "group-acme",
+            "port": 8447,
+            "protocol": "http"
+          },
+          "result": {
+            "grant": {
+              "effective": true,
+              "expiresAtMs": null,
+              "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "grantedAtMs": 1700000000000,
+              "grantor": "alice",
+              "hasCredential": true,
+              "org": "group-acme",
+              "recipient": {
+                "deviceId": "device-b",
+                "owner": "bob"
+              },
+              "revokedAtMs": null,
+              "schemaVersion": 1,
+              "service": {
+                "deviceId": "device-a",
+                "name": "magpie",
+                "note": null,
+                "port": 8447,
+                "protocol": "http"
+              },
+              "updatedAtMs": null
+            },
+            "updated": false
+          }
+        },
+        {
+          "description": "invalid params",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "service.grant params do not match the declared schema at <root>"
+          },
+          "kind": "invalid-params",
+          "name": "invalid-params",
+          "params": {
+            "device": "@members",
+            "extra": true,
+            "org": "group-acme",
+            "port": 8447
+          }
+        },
+        {
+          "description": "domain error",
+          "error": {
+            "code": "SERVICE_NOT_REGISTERED",
+            "message": "port 9999 is not currently exposed on this device"
+          },
+          "kind": "domain-error",
+          "name": "domain-error",
+          "params": {
+            "device": "bob/device-b",
+            "org": "group-acme",
+            "port": 9999
+          }
+        }
+      ]
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_REGISTERED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_DEVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_AUTHORIZED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_RESTORING",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_NOT_READY",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "safe",
+        "scope": "service.grants"
+      },
+      "mode": "unary",
+      "mutates": false,
+      "name": "service.grants",
+      "owner": "daemon.service_grants",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "includeRevoked": {
+            "type": "boolean"
+          },
+          "org": {
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "port": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "documentCount": {
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "documentLimit": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "granted": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "effective": {
+                  "type": "boolean"
+                },
+                "expiresAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "grantId": {
+                  "type": "string"
+                },
+                "grantedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "grantor": {
+                  "type": "string"
+                },
+                "hasCredential": {
+                  "type": "boolean"
+                },
+                "org": {
+                  "type": "string"
+                },
+                "recipient": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "const": "@members"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "deviceId"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "revokedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "schemaVersion": {
+                  "const": 1,
+                  "type": "integer"
+                },
+                "service": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "port": {
+                          "maximum": 65535,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "protocol": {
+                          "enum": [
+                            "tcp",
+                            "http"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "deviceId",
+                        "port",
+                        "name",
+                        "protocol",
+                        "note"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "updatedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "org",
+                "grantor",
+                "schemaVersion",
+                "grantId",
+                "service",
+                "recipient",
+                "grantedAtMs",
+                "expiresAtMs",
+                "revokedAtMs",
+                "updatedAtMs",
+                "hasCredential",
+                "effective"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "limitedGrantors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "grantor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "org": {
+                  "type": "string"
+                },
+                "reason": {
+                  "enum": [
+                    "documents",
+                    "bytes",
+                    "grantors",
+                    "deadline"
+                  ]
+                }
+              },
+              "required": [
+                "org",
+                "grantor",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "received": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "connected": {
+                  "type": "boolean"
+                },
+                "effective": {
+                  "type": "boolean"
+                },
+                "entryId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "expiresAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "grantId": {
+                  "type": "string"
+                },
+                "grantedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "grantor": {
+                  "type": "string"
+                },
+                "hasCredential": {
+                  "type": "boolean"
+                },
+                "keyStored": {
+                  "type": "boolean"
+                },
+                "org": {
+                  "type": "string"
+                },
+                "recipient": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "const": "@members"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "owner": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "deviceId"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "revokedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "schemaVersion": {
+                  "const": 1,
+                  "type": "integer"
+                },
+                "service": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deviceId": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "port": {
+                          "maximum": 65535,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "protocol": {
+                          "enum": [
+                            "tcp",
+                            "http"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "deviceId",
+                        "port",
+                        "name",
+                        "protocol",
+                        "note"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "serviceName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "updatedAtMs": {
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "org",
+                "grantor",
+                "schemaVersion",
+                "grantId",
+                "service",
+                "recipient",
+                "grantedAtMs",
+                "expiresAtMs",
+                "revokedAtMs",
+                "updatedAtMs",
+                "hasCredential",
+                "effective",
+                "keyStored",
+                "entryId",
+                "connected",
+                "serviceName"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "unreadableOrgs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "granted",
+          "received",
+          "documentCount",
+          "documentLimit",
+          "limitedGrantors",
+          "unreadableOrgs"
+        ],
+        "type": "object"
+      },
+      "retry": "safe",
+      "x-hyprial-examples": [
+        {
+          "description": "success",
+          "kind": "success",
+          "name": "success",
+          "params": {
+            "org": "group-acme",
+            "port": 8447
+          },
+          "result": {
+            "documentCount": {
+              "group-acme": 1
+            },
+            "documentLimit": 256,
+            "granted": [
+              {
+                "effective": true,
+                "expiresAtMs": null,
+                "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "grantedAtMs": 1700000000000,
+                "grantor": "alice",
+                "hasCredential": true,
+                "org": "group-acme",
+                "recipient": {
+                  "deviceId": "device-b",
+                  "owner": "bob"
+                },
+                "revokedAtMs": null,
+                "schemaVersion": 1,
+                "service": {
+                  "deviceId": "device-a",
+                  "name": "magpie",
+                  "note": null,
+                  "port": 8447,
+                  "protocol": "http"
+                },
+                "updatedAtMs": null
+              }
+            ],
+            "limitedGrantors": [],
+            "received": [
+              {
+                "connected": false,
+                "effective": true,
+                "entryId": "grant.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "expiresAtMs": null,
+                "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "grantedAtMs": 1700000000000,
+                "grantor": "alice",
+                "hasCredential": true,
+                "keyStored": true,
+                "org": "group-acme",
+                "recipient": {
+                  "deviceId": "device-b",
+                  "owner": "bob"
+                },
+                "revokedAtMs": null,
+                "schemaVersion": 1,
+                "service": {
+                  "deviceId": "device-a",
+                  "name": "magpie",
+                  "note": null,
+                  "port": 8447,
+                  "protocol": "http"
+                },
+                "serviceName": "magpie",
+                "updatedAtMs": null
+              }
+            ],
+            "unreadableOrgs": []
+          }
+        },
+        {
+          "description": "empty",
+          "kind": "empty",
+          "name": "empty",
+          "params": {
+            "org": "group-acme"
+          },
+          "reason": "No effective service grants exist for caller.",
+          "result": {
+            "documentCount": {
+              "group-acme": 0
+            },
+            "documentLimit": 256,
+            "granted": [],
+            "limitedGrantors": [],
+            "received": [],
+            "unreadableOrgs": []
+          }
+        },
+        {
+          "description": "invalid params",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "service.grants params do not match the declared schema at <root>"
+          },
+          "kind": "invalid-params",
+          "name": "invalid-params",
+          "params": {
+            "org": "group-acme",
+            "unknown": true
+          }
+        },
+        {
+          "description": "domain error",
+          "error": {
+            "code": "SERVICE_NOT_REGISTERED",
+            "message": "org directory space is not available"
+          },
+          "kind": "domain-error",
+          "name": "domain-error",
+          "params": {
+            "org": "group-missing"
+          }
+        }
+      ]
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
           "code": "SERVICE_INVALID_TARGET",
           "dataSchema": null,
           "description": ""
@@ -147580,6 +148542,159 @@
               "spaceId": null
             },
             "services": []
+          }
+        }
+      ]
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_REGISTERED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_DEVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_AUTHORIZED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_REGISTRY_INVALID",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_RESTORING",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_NOT_READY",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "never",
+        "scope": "service.revoke"
+      },
+      "mode": "unary",
+      "mutates": true,
+      "name": "service.revoke",
+      "owner": "daemon.service_grants",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "grantId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "org": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "org",
+          "grantId"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "grantId": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "grantId",
+          "revoked"
+        ],
+        "type": "object"
+      },
+      "retry": "never",
+      "x-hyprial-examples": [
+        {
+          "description": "success",
+          "kind": "success",
+          "name": "success",
+          "params": {
+            "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "org": "group-acme"
+          },
+          "result": {
+            "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "revoked": true
+          }
+        },
+        {
+          "description": "empty",
+          "kind": "empty",
+          "name": "empty",
+          "params": {
+            "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "org": "group-acme"
+          },
+          "reason": "Grant was already revoked or absent under caller.",
+          "result": {
+            "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "revoked": false
+          }
+        },
+        {
+          "description": "invalid params",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "service.revoke params do not match the declared schema at <root>"
+          },
+          "kind": "invalid-params",
+          "name": "invalid-params",
+          "params": {
+            "org": "group-acme"
+          }
+        },
+        {
+          "description": "domain error",
+          "error": {
+            "code": "SERVICE_NOT_AUTHORIZED",
+            "message": "cannot revoke a service grant owned by another member"
+          },
+          "kind": "domain-error",
+          "name": "domain-error",
+          "params": {
+            "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "org": "group-acme"
           }
         }
       ]

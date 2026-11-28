@@ -1,3 +1,8 @@
+# Decision notes (service grant exposing side, 2026-11-26):
+# - The service admission cadence is closed right after the forwarding
+#   reconcile cadence and before the sidecar: it pushes to that sidecar, so
+#   it must be drained while the sidecar is still up, and it must not outlive
+#   the scheduler it can be offered ticks from.
 """Daemon shutdown authority: budgeted close steps, signal handling, exit backstop and stall traces."""
 
 from __future__ import annotations
@@ -466,6 +471,7 @@ class _ShutdownMixin:
                     "IPC requests did not settle before domain teardown"
                 )
             self._ipc_request_owner = None
+        self._stop_grant_recheck()
         if self._service_manager is not None:
             service_timeout = dict(_CLOSE_STEP_BUDGETS)["service-connect"]
             if not self._close_service_connect(service_timeout):
@@ -516,6 +522,14 @@ class _ShutdownMixin:
                     "forwarding effects did not drain; refusing unsafe sidecar teardown"
                 )
             self._forwarding_cadence = None
+        admission_cadence = getattr(self, "_service_admission_cadence", None)
+        if admission_cadence is not None:
+            if not admission_cadence.close(5.0):
+                raise RuntimeError(
+                    "admission effects did not drain; refusing unsafe sidecar teardown"
+                )
+            self._service_admission_cadence = None
+        self._service_admission_enforcer = None
         if self._restore_wake_cadence is not None:
             cadence = self._restore_wake_cadence
             if not cadence.close(5.0):

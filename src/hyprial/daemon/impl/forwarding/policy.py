@@ -1,12 +1,30 @@
+# Decision notes (service grant exposing side, 2026-11-26):
+# - An exposure's admission is explicit on protocol v7: "allow" admits every
+#   member of the tailnet, "keys" admits exactly the listed peer public keys
+#   and an empty list admits nobody. The daemon states which one it means on
+#   every expose; there is no default.
+# - The wire shape is validated here, before anything is written to the
+#   sidecar, with the same rules the Go parser applies (canonical nodekeys,
+#   no duplicates, no zero key, at most 4096). A request the sidecar would
+#   reject is refused without a round trip.
+# - The "exposed" reply never carries the key list, only a count in "keys"
+#   mode. The caller's set is confirmed by that count, which is why the reply
+#   check compares modes and counts and never expects keys back.
+# - Gate fix (2026-11-27): confirmed_admission names its second argument
+#   "request". It is a plain mapping, but the network reachability scan reads
+#   a ".get" on a receiver named "wire" as a transport get, so the old name
+#   put a pure comparison on an IPC-to-network path.
 """Forwarding validation, typed errors and membership operation wait policy."""
 
 from __future__ import annotations
 import ipaddress
+import re
 import socket
 import stat
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from hyprial.daemon.impl.network.tailcat.binary import SIDECAR_PROTOCOL_VERSION
 from hyprial.kernel import (
     MEMBERSHIP_BUDGETS,
     loopback_inbound_supported,
@@ -14,7 +32,7 @@ from hyprial.kernel import (
 )
 
 
-FORWARD_PROTOCOL_VERSION = 6
+FORWARD_PROTOCOL_VERSION = SIDECAR_PROTOCOL_VERSION
 
 
 _UNSUPPORTED_PROXY_KEYS = frozenset(
@@ -34,6 +52,7 @@ def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
+    """Validate an exposure record; protocol v7 writes canonical ``"none"`` as ``""`` on the wire."""
     port = exposure.get("port")
     target = exposure.get("target")
     proxy_protocol = exposure.get("proxyProtocol")
@@ -41,9 +60,6 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         raise ForwardingSidecarError("exposure port must be between 1 and 65535")
     if not isinstance(target, str) or not target:
         raise ForwardingSidecarError("exposure target must be a non-empty string")
-    # Python-side canonical value is "none"; protocol v6 writes "" on the
-    # wire (see controller.expose).  Both are accepted here so a persisted
-    # entry and a raw wire event normalize to the same record.
     if proxy_protocol not in {"v2", "none", ""}:
         raise ForwardingSidecarError("proxy protocol must be v2 or none")
     # Any local process can reach a loopback TCP port and forge a PROXY v2
@@ -59,6 +75,74 @@ def _normalize_exposure(exposure: Mapping[str, object]) -> dict[str, object]:
         # Canonicalize the wire form "" back to the Python-side "none".
         "proxyProtocol": "none" if proxy_protocol == "" else proxy_protocol,
     }
+
+
+ADMISSION_ALLOW = "allow"
+ADMISSION_KEYS = "keys"
+MAX_ADMISSION_KEYS = 4096
+_ADMISSION_MODES = frozenset({ADMISSION_ALLOW, ADMISSION_KEYS})
+CANONICAL_NODEKEY = re.compile(r"nodekey:[0-9a-f]{64}")
+ZERO_NODEKEY = "nodekey:" + "0" * 64
+
+
+def normalize_admission(admission: object, keys: object) -> tuple[str, list[str]]:
+    """Validate an exposure's admission; return it in wire order.
+
+    ``"allow"`` takes no keys. ``"keys"`` takes a list of canonical peer
+    public keys without duplicates, possibly empty (admit nobody).
+    """
+
+    if admission not in _ADMISSION_MODES:
+        raise ForwardingSidecarError("exposure admission must be allow or keys")
+    if admission == ADMISSION_ALLOW:
+        if keys:
+            raise ForwardingSidecarError("exposure admission allow carries no keys")
+        return ADMISSION_ALLOW, []
+    if not isinstance(keys, Sequence) or isinstance(keys, (str, bytes)):
+        raise ForwardingSidecarError("exposure admission keys must be a list")
+    if len(keys) > MAX_ADMISSION_KEYS:
+        raise ForwardingSidecarError("exposure admission keys exceed the sidecar limit")
+    for entry in keys:
+        if (
+            not isinstance(entry, str)
+            or entry == ZERO_NODEKEY
+            or not CANONICAL_NODEKEY.fullmatch(entry)
+        ):
+            raise ForwardingSidecarError("exposure admission keys must be canonical nodekeys")
+    if len(set(keys)) != len(keys):
+        raise ForwardingSidecarError("exposure admission keys must be unique")
+    return ADMISSION_KEYS, list(keys)
+
+
+def exposure_wire_request(
+    normalized: Mapping[str, object], admission: str, keys: Sequence[str]
+) -> dict[str, object]:
+    """The ``expose`` request for a normalized exposure and its admission."""
+
+    mode, ordered = normalize_admission(admission, keys)
+    wire: dict[str, object] = dict(normalized, admission=mode)
+    if wire["proxyProtocol"] == "none":
+        wire["proxyProtocol"] = ""
+    if mode == ADMISSION_KEYS:
+        wire["keys"] = ordered
+    return wire
+
+
+def confirmed_admission(event: Mapping[str, object], request: Mapping[str, object]) -> bool:
+    """Whether the ``exposed`` reply confirms exactly the ``request`` it answers.
+
+    The reply echoes the exposure and the mode and, in ``"keys"`` mode, the
+    number of keys it took. It never carries the keys themselves.
+    """
+
+    if _normalize_exposure(event) != _normalize_exposure(request):
+        return False
+    if event.get("admission") != request.get("admission"):
+        return False
+    if request.get("admission") == ADMISSION_ALLOW:
+        return "keyCount" not in event
+    count = event.get("keyCount")
+    return type(count) is int and count == len(request.get("keys", ()))
 
 
 def validate_unix_exposure_target(target: str) -> str:

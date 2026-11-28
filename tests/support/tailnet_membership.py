@@ -1,4 +1,4 @@
-"""In-memory v6 membership peer for daemon tests (contract §2–§4).
+"""In-memory v7 membership peer for daemon tests (contract §2–§4).
 
 This fake returns unwrapped data, not stdio frames. It does not model transport,
 cryptography, disk durability or timers. Tests must explicitly seed rosters;

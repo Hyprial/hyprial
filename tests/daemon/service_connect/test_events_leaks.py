@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from hyprial.daemon.impl.desired_state import DesiredStateStore, ServiceRegistry
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION
 from hyprial.daemon.impl.service_connect import ServiceConnectError, ServiceManager
 from hyprial.daemon.impl.service_connect.models import RegistrySnapshot
 from hyprial.daemon.impl.service_connect.models import CatalogEntry
@@ -179,7 +180,7 @@ def leak_surfaces(actor_host, tmp_path, caplog, monkeypatch) -> dict[str, str]:
         "HYPRIAL_FORWARDING_COMMAND": '["hyprial-tailcat","forward"]',
         "HYPRIAL_FORWARDING_UP": json.dumps(
             {
-                "v": 6,
+                "v": FORWARD_PROTOCOL_VERSION,
                 "op": "up",
                 "keyFile": "/private/key.json",
                 "addressFile": "/private/address",

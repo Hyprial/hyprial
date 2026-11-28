@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from hyprial.daemon.impl.forwarding import (
+    FORWARD_PROTOCOL_VERSION,
     ForwardingSidecarController,
     ForwardingSidecarError,
 )
@@ -30,7 +31,7 @@ def _slots(tmp_path: Path) -> list[str]:
 
 def _up(tmp_path: Path) -> dict[str, object]:
     return {
-        "v": 6, "requestId": "up-fixture",
+        "v": 7, "requestId": "up-fixture",
         "op": "up",
         "keyFile": str(tmp_path / "device-key.json"),
         "membershipStore": str(tmp_path / 'membership.json'),
@@ -115,7 +116,7 @@ def test_derive_client_key_uses_v5_public_only_operation(tmp_path: Path) -> None
     assert derived.startswith("nodekey:") and derived != server_public
     commands = [json.loads(line) for line in receipt.read_text().splitlines()]
     derive = commands[1]
-    assert derive["v"] == 6
+    assert derive["v"] == 7
     assert derive["op"] == "derive-client-key"
     assert derive["serverPublic"] == server_public
     assert isinstance(derive.get("requestId"), str) and derive["requestId"]
@@ -144,7 +145,7 @@ def test_derive_client_key_rejects_uncorrelated_v5_reply(
 
 
 def test_up_requires_the_v5_device_key_shape(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="protocol v6"):
+    with pytest.raises(ValueError, match=f"protocol v{FORWARD_PROTOCOL_VERSION}"):
         ForwardingSidecarController(
             (sys.executable, str(FIXTURE)),
             {"v": 2, "op": "up", "resume": True},
@@ -177,7 +178,7 @@ def test_reader_protocol_mismatch_is_sticky_and_names_both_versions(
         for _attempt in range(2):
             started = time.monotonic()
             with pytest.raises(
-                ForwardingSidecarError, match="expected v6, saw v4"
+                ForwardingSidecarError, match="expected v7, saw v4"
             ):
                 controller.status()
             assert time.monotonic() - started < 0.2
@@ -586,7 +587,7 @@ def test_map_peer_slot_binds_and_reports_the_slot(tmp_path: Path) -> None:
         map_commands = [item for item in commands if item["op"] == "map-peer"]
         assert len(map_commands) == 1
         assert map_commands[0].items() >= {
-            "v": 6,
+            "v": 7,
             "op": "map-peer",
             "peer": "100.64.20.2",
             "address": "tcPeerTwo",

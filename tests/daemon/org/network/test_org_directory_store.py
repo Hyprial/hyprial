@@ -717,5 +717,3 @@ def test_invites_member_grants_and_device_rows_with_real_names(tmp_path: Path) -
             assert f'"org":"{REAL_ORG}"' in text
     finally:
         reopened.close()
-
-

@@ -1,4 +1,4 @@
-"""Run v6 transport acceptance using compiled real engine tests and a local DERP.
+"""Run v7 transport acceptance using compiled real engine tests and a local DERP.
 
 No daemon, account or production socket is used. The binary contains the current
 checkout's engine and membership packages, not a fake sidecar implementation.
@@ -23,7 +23,7 @@ def run(scenario: str, test: str) -> int:
         print(f"RESULT BLOCKED {scenario}: Go toolchain is missing")
         return 3
     started = time.monotonic()
-    evidence = {"scenario": scenario, "test": test, "scope": "real-v6-transport",
+    evidence = {"scenario": scenario, "test": test, "scope": "real-v7-transport",
                 "result": "FAIL", "cliCasdoorOrgfs": "NOT_RUN"}
     try:
         with tempfile.TemporaryDirectory(prefix="hr-join-", dir="/tmp") as temporary:
@@ -65,7 +65,7 @@ def run(scenario: str, test: str) -> int:
             evidence["assertions"] = [line.strip().split(scenario + ":", 1)[1].strip()
                                       for line in lines if scenario + ":" in line]
             print(f"RESULT {evidence['result']} {scenario}: {test} "
-                  "scope=real-v6-transport cli/casdoor/orgfs=NOT_RUN")
+                  "scope=real-v7-transport cli/casdoor/orgfs=NOT_RUN")
             return 0 if passed else 1
     except (OSError, subprocess.TimeoutExpired) as error:
         evidence["reason"] = type(error).__name__

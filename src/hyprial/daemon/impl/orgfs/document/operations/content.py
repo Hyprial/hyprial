@@ -405,5 +405,3 @@ class FacadeContent:
         with self._lock:
             self._watchers[watcher.watch_id] = watcher
         return watcher
-
-

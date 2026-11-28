@@ -159,5 +159,3 @@ def test_full_directory_mailbox_retains_rebuild_catchup(tmp_path, monkeypatch):
     finally:
         release.set()
         runtime.close()
-
-

@@ -47,7 +47,7 @@ func TestControlResponseRequiresCompleteFrame(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			_, err := m.exchange(ctx, authority(a), Request{V: 6, Op: "roster-fetch", RequestID: "framing", Params: json.RawMessage(`{"tailnetId":"tn"}`)}, b)
+			_, err := m.exchange(ctx, authority(a), Request{V: 7, Op: "roster-fetch", RequestID: "framing", Params: json.RawMessage(`{"tailnetId":"tn"}`)}, b)
 			if mode == "complete" {
 				if err != nil {
 					t.Fatal(err)
@@ -134,7 +134,7 @@ func TestRepinRequiresRestart(t *testing.T) {
 	}
 }
 func TestRejectNullSenderAndOversizedRevision(t *testing.T) {
-	for _, s := range []string{`{"v":6,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn"},"sender":null}`, `{"v":6,"op":"member-revoke","requestId":"r","params":{"operationId":"op","tailnetId":"tn","deviceIds":["b"],"expectedRevision":9007199254740992,"confirmed":true,"reason":"test"}}`} {
+	for _, s := range []string{`{"v":7,"op":"roster-fetch","requestId":"r","params":{"tailnetId":"tn"},"sender":null}`, `{"v":7,"op":"member-revoke","requestId":"r","params":{"operationId":"op","tailnetId":"tn","deviceIds":["b"],"expectedRevision":9007199254740992,"confirmed":true,"reason":"test"}}`} {
 		if _, err := Parse([]byte(s), false); err == nil {
 			t.Fatal("invalid shape accepted")
 		}

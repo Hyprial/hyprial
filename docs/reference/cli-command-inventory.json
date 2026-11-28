@@ -29,17 +29,17 @@
     "workflow"
   ],
   "counts": {
-    "nodes": 255,
-    "rootInclusiveNodes": 256,
-    "leaves": 204,
+    "nodes": 263,
+    "rootInclusiveNodes": 264,
+    "leaves": 212,
     "groups": 51,
     "groupsIncludingRoot": 52,
     "executableGroups": 4,
-    "entries": 208,
+    "entries": 216,
     "hiddenNodes": 6,
     "directHiddenNodes": 3,
     "hiddenEntries": 4,
-    "visibleEntries": 204,
+    "visibleEntries": 212,
     "rootParams": 0
   },
   "commands": [
@@ -10319,6 +10319,330 @@
           "hidden": false,
           "type": "boolean",
           "help": "Show catalog fields and environment hints.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit JSON only.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "org service grant",
+      "family": "service",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.service.grants",
+      "help": "Grant one locally exposed service port to an org device or ``@members``.",
+      "params": [
+        {
+          "opts": [
+            "port"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int range",
+          "help": "Locally exposed org-network TCP port.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": 1,
+          "max": 65535
+        },
+        {
+          "opts": [
+            "--org"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Organization name.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--device"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Recipient '<owner>/<deviceId>' or '@members'.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--name"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Service name; the recipient gets a service entry only for a named grant. Required with --credential.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--protocol"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Optional catalog protocol: tcp or http.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--note"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Optional short usage note.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--expires-at-ms"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int range",
+          "help": "Optional expiration timestamp in Unix milliseconds.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": 0,
+          "max": null
+        },
+        {
+          "opts": [
+            "--credential"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Saved user-provider entry '<entryId>' or '<entryId>:<fieldName>'.",
+          "nargs": 1,
+          "metavar": "ENTRY[:FIELD]",
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit JSON only.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "org service revoke",
+      "family": "service",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.service.grants",
+      "help": "Revoke one service grant authored by the local owner.",
+      "params": [
+        {
+          "opts": [
+            "grant_id"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Service grant identifier (sg.<26 base32 chars>).",
+          "nargs": 1,
+          "metavar": "GRANT_ID",
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--org"
+          ],
+          "secondaryOpts": [],
+          "required": true,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Organization name.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--json"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Emit JSON only.",
+          "nargs": 1,
+          "metavar": null,
+          "default": false,
+          "choices": [],
+          "min": null,
+          "max": null
+        }
+      ]
+    },
+    {
+      "path": "org service grants",
+      "family": "service",
+      "kind": "leaf",
+      "hidden": false,
+      "directHidden": false,
+      "executable": true,
+      "callbackModule": "hyprial.shell.impl.cli.commands.service.grants",
+      "help": "List service grants authored by or targeting this device (read-only).",
+      "params": [
+        {
+          "opts": [
+            "--org"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "str",
+          "help": "Filter to one organization.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": null,
+          "max": null
+        },
+        {
+          "opts": [
+            "--port"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": false,
+          "multiple": false,
+          "hidden": false,
+          "type": "int range",
+          "help": "Filter to one remote service port.",
+          "nargs": 1,
+          "metavar": null,
+          "default": null,
+          "choices": [],
+          "min": 1,
+          "max": 65535
+        },
+        {
+          "opts": [
+            "--include-revoked"
+          ],
+          "secondaryOpts": [],
+          "required": false,
+          "isFlag": true,
+          "multiple": false,
+          "hidden": false,
+          "type": "boolean",
+          "help": "Include revoked and expired grants.",
           "nargs": 1,
           "metavar": null,
           "default": false,

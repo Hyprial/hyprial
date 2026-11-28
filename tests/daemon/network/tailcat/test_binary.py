@@ -19,7 +19,10 @@ from hyprial.daemon.impl.network.tailcat import (
     verify_tailcat_sidecar,
 )
 from hyprial.daemon.impl.network.tailcat import binary as binary_module
-from hyprial.daemon.impl.network.tailcat.binary import wheel_binary_path
+from hyprial.daemon.impl.network.tailcat.binary import (
+    SIDECAR_PROTOCOL_VERSION,
+    wheel_binary_path,
+)
 
 
 def _script(path: Path, body: str) -> Path:
@@ -29,7 +32,9 @@ def _script(path: Path, body: str) -> Path:
 
 
 def _version_script(tmp_path: Path, *, commit: str = TAILCAT_COMMIT) -> Path:
-    record = json.dumps({"v": 6, "sidecar": "0.1.0", "tailcat": commit})
+    record = json.dumps(
+        {"v": SIDECAR_PROTOCOL_VERSION, "sidecar": "0.1.0", "tailcat": commit}
+    )
     return _script(tmp_path / "hyprial-tailcat", f"echo '{record}'\n")
 
 
@@ -171,7 +176,11 @@ def test_locate_refuses_a_non_executable_candidate(tmp_path: Path) -> None:
 def test_verify_returns_the_version_record(tmp_path: Path) -> None:
     binary = _version_script(tmp_path)
     record = verify_tailcat_sidecar(tmp_path, {BINARY_ENV: str(binary)})
-    assert record == {"v": 6, "sidecar": "0.1.0", "tailcat": TAILCAT_COMMIT}
+    assert record == {
+        "v": SIDECAR_PROTOCOL_VERSION,
+        "sidecar": "0.1.0",
+        "tailcat": TAILCAT_COMMIT,
+    }
 
 
 def test_verify_rejects_a_different_tailcat_commit(tmp_path: Path) -> None:
@@ -196,7 +205,7 @@ def test_verify_rejects_a_nonzero_version_exit(tmp_path: Path) -> None:
     assert raised.value.code == "SIDECAR_INVALID"
 
 
-@pytest.mark.parametrize('version', [2, 5, 6.0])
+@pytest.mark.parametrize('version', [2, 5, 6, float(SIDECAR_PROTOCOL_VERSION)])
 def test_verify_rejects_a_protocol_version_mismatch(tmp_path: Path, version) -> None:
     record = json.dumps({"v": version, "sidecar": "0.1.0", "tailcat": TAILCAT_COMMIT})
     binary = _script(tmp_path / "hyprial-tailcat", f"echo '{record}'\n")

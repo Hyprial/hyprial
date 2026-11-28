@@ -129,7 +129,7 @@ def _app(
         "HYPRIAL_FORWARDING_UP",
         json.dumps(
             {
-                "v": 6, "requestId": "up-fixture",
+                "v": 7, "requestId": "up-fixture",
                 "op": "up",
                 "keyFile": str(tmp_path / "device-key.json"),
                 "membershipStore": str(tmp_path / 'membership.json'),

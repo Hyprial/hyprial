@@ -18,6 +18,7 @@ import pytest
 
 import hyprial.shell.impl.cli.commands.doctor.commands as doctor_module
 import hyprial.daemon.impl.network.tailcat as tailcat_module
+from hyprial.daemon.impl.network.tailcat.binary import SIDECAR_PROTOCOL_VERSION
 from hyprial.identity import (
     DeviceRecord,
     device_key_path,
@@ -603,7 +604,7 @@ def test_tailcat_sidecar_check_ok_when_version_verifies(
         tailcat_module,
         "verify_tailcat_sidecar",
         lambda home, environ=None: {
-            "v": 6,
+            "v": SIDECAR_PROTOCOL_VERSION,
             "sidecar": "0.1.0",
             "tailcat": tailcat_module.TAILCAT_COMMIT,
         },
@@ -612,6 +613,7 @@ def test_tailcat_sidecar_check_ok_when_version_verifies(
     check = doctor_module._tailcat_sidecar_doctor_check()
     assert check["status"] == "ok"
     assert "0.1.0" in str(check["detail"])
+    assert f"protocol v{SIDECAR_PROTOCOL_VERSION}" in str(check["detail"])
 
 
 def test_device_key_check_warns_without_key_and_record(

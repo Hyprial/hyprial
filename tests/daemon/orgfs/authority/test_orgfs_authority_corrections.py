@@ -93,5 +93,3 @@ def test_public_checkout_uses_lifecycle_command(tmp_path) -> None:
     finally:
         runtime._ask_lifecycle = original
         runtime.close()
-
-

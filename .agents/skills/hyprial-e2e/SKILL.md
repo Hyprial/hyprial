@@ -601,7 +601,7 @@ proof of the original transport's cause. Probes never run on successful controls
 
 ## Tailcat cycle-break acceptance (0.5.5.1)
 
-Use matched daemon/sidecar stdio v6 and control v1. A v5 fixture or old invitation
+Use matched daemon/sidecar stdio v7 and control v1. A v6 fixture or old invitation
 is a negative test, not working mixed-version networking. Upgrade the pinned
 fixed authority first; no election or automatic re-pin is permitted.
 
@@ -661,7 +661,7 @@ expiry. Control remains ready; member restart cannot revive a persisted lease.
 No shortened clock or skipped test counts as this acceptance.
 
 Offline re-pin has a separate real-sidecar local smoke:
-`uv run python tests/daemon/forwarding/membership/repin_smoke.py --binary <v6-binary> --relay <labrelay>`.
+`uv run python tests/daemon/forwarding/membership/repin_smoke.py --binary <v7-binary> --relay <labrelay>`.
 It creates disposable homes and checks live-daemon refusal, explicit confirmation,
 0600 backup, pin update and member retention. It does not prove cross-machine
 full-table/receipt transfer. Normal sidecar `up` still opens control networking
@@ -669,7 +669,7 @@ and starts refresh/announce; all other writers must be stopped for maintenance.
 A local daemon fence is not a global write lock. A revision conflict requires
 new preview/confirmation and a new operation ID, not silent parameter changes.
 
-### V6 admission and redemption-recovery transport scenarios
+### V7 admission and redemption-recovery transport scenarios
 
 Run `uv run python contract/e2e/run-tailcat-org-admission-deny.py` (E2E-029)
 and `uv run python contract/e2e/run-tailcat-org-join-resume.py` (E2E-030).
@@ -872,7 +872,7 @@ passing.
 | E2E-011 Lark App onboarding | `uv run python contract/e2e/run-lark-app-onboarding.py` | Executable through the PTY, scope/event declaration, verification-URL, persistence, daemon-load, negative-name, and secret-safety seams. Real App creation stops at the human device-authorization boundary and is `BLOCKED` without attended approval. |
 | E2E-012 Codex app-server worker | `uv run python contract/e2e/run-codex-worker.py` | `[REAL ENV]` authenticated Codex. Public CLI launch, exact desired state, OS process visibility, correlated reply/ack, daemon recovery with a fresh child PID, post-restart roundtrip, and fresh app-server thread. |
 | E2E-013 all-harness lifecycle | `uv run python contract/e2e/run-all-harness-lifecycle.py` | `[REAL ENV]` authenticated Claude, Pi, and Codex plus the dedicated test App for the Lark leg. Cross-harness launch/roundtrip, effective config, busy FIFO, identity-preserving harness/model switch, crash recovery, native attachment/reply delivery, and down/no-resurrection lifecycle. |
-| E2E-021 orgfs slot-pool-growth redial | `uv run python contract/e2e/run-orgfs-forwarding-redial.py` | Disposable closed-loopback topology; protocol-v6 leased-roster fixture reports daemon-selected private Unix slots but builds no tunnel. A one-slot pool binds the first leased fixture device without redial, then a second leased device forces legitimate pool growth and `reconfigure_connect`; owner-path fixtures, exact golden checks, 64-token replay and orgfs/request/reply/maintenance/PID checks must remain healthy. |
+| E2E-021 orgfs slot-pool-growth redial | `uv run python contract/e2e/run-orgfs-forwarding-redial.py` | Disposable closed-loopback topology; protocol-v7 leased-roster fixture reports daemon-selected private Unix slots but builds no tunnel. A one-slot pool binds the first leased fixture device without redial, then a second leased device forces legitimate pool growth and `reconfigure_connect`; owner-path fixtures, exact golden checks, 64-token replay and orgfs/request/reply/maintenance/PID checks must remain healthy. |
 | E2E-024 peer re-learn after pool growth | `uv run python contract/e2e/run-peer-restart-relearn.py` | Positive control paired with E2E-028: four lossy-loopback modes first bind inside a one-slot pool with zero redials, then exhaust the pool and require `zenoh.forwarding.redialed`, an in-process zid change, bounded peer re-learning, bidirectional delivery, and owned cleanup. |
 | E2E-031 group conversations (isolated) | `uv run python contract/e2e/run-group-conversation.py` | One disposable daemon, no provider. Group create/show/list, an unmentioned owner message lands in history and wakes nobody, an owner message mentioning agents wakes only those mentioned agents with exactly one row each, an agent reply via `message reply` lands in the group and wakes nobody, an agent send with `--mention` wakes only the named agent, a reply with `--reply-to` without `--mention` wakes nobody while `--reply-to` with `--mention` wakes only the mentioned agent, removal stops delivery, a graceful restart between send and turn creates no second row, the group stays out of 1:1 lists, history is ordered. `--harness pi` adds a real headless Pi turn through the mock model (GC-11, owner mentions P1 and P2); without it that row is not run. Multi-machine, GUI and IM are out of scope. CI gates: `run-isolated-gate.py` (without the flag) and the `hosted` job of `mock-model-harness-e2e.yml` (`--harness pi`). |
 | E2E-028 remote drop without rebuild | `uv run python contract/e2e/run-remote-drop-no-rebuild.py` | Builds real Tailcat and labrelay executables from the current checkout. Two disposable nodes converge an OrgFS directory, then the dialer's owned sidecar is terminated to drop its remote slot. Require the same directory address and fixed endpoint set, zero forwarding changed/redialed events, zero transport reconfigure diagnostics, post-return delivery, and owned cleanup. |

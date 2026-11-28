@@ -23,11 +23,38 @@ Pure model plus naming rules — no storage, no daemon imports.  The storage
 port lives in ``ports.py``; the daemon's OrgFS-backed implementation is
 injected at the composition root (tailnet cutover §1: identity defines the
 directory model, daemon provides the storage).
+
+Service grant device encryption key (2026-11-26): a device row may carry the device's X25519
+public key as the paired optional keys ``encryptionKeyId`` and
+``encryptionPublicKey``.  The pair is either both present or both absent and
+the key set stays closed.  The public key is the encoding the local encryption
+key store already uses: the 32 raw key bytes as standard base64; the id is the
+store's ``x25519:`` + first 32 hex digits of the SHA-256 of those bytes, and a
+row whose id is not that digest is refused because every sealer names the
+recipient by id.  ``__post_init__`` is the one enforcement point, so a row
+built directly is checked exactly like one read back.
+
+A low-order point is refused: every shared secret derived from one is
+public.  X25519 drops bit 255 of the 32 bytes and reduces the rest modulo
+``p`` = 2**255 - 19, so one point has several spellings and a comparison of
+raw bytes refuses only one of them.  ``_encryption_public_key`` therefore
+compares the reduced value with ``_LOW_ORDER_U``.
+
+Where the five come from, and what is not claimed.  The X25519 library in
+use was the oracle, not a derivation of our own: its verdict and this rule
+agreed on every value tried, among them every spelling of the five, the
+integers below 30,000, the neighbourhoods of ``p``, ``2**255`` and ``2**256``,
+and 22,000 random values.  The count of five is the published order of the
+curve's group of small points (eight, so at most five distinct
+u-coordinates); that count was taken from the curve's definition and was not
+re-derived here.  ``p + 2`` reduces to ``2``, an ordinary point, and is
+accepted; an earlier list of raw bytes refused it.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -98,7 +125,17 @@ MAX_PROTECTED_DOC_ID_LENGTH = 1024
 _LEGACY_RECEIVERS_SECTION = "receivers"
 _LEGACY_RECEIVERS_LEAF = "receivers.json"
 _PROTECTED_DOC_SECTIONS = frozenset(
-    {"devices", "people", "leaves", "invites", "org", "agents", "receivers", "user-keys"}
+    {
+        "devices",
+        "people",
+        "leaves",
+        "invites",
+        "org",
+        "agents",
+        "receivers",
+        "user-keys",
+        "service-grants",
+    }
 )
 
 #: The exact camelCase keys of the frozen wire shape (§4.1).
@@ -115,7 +152,23 @@ _RECORD_KEYS = frozenset(
     }
 )
 _OPTIONAL_RECORD_KEYS = frozenset({"machineFingerprint", "firstPublishedAt", "deviceUid"})
+_ENCRYPTION_RECORD_KEYS = ("encryptionKeyId", "encryptionPublicKey")
 _MACHINE_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
+_ENCRYPTION_KEY_ID_PREFIX = "x25519:"
+_ENCRYPTION_KEY_ID_HEX_DIGITS = 32
+_LOWER_HEX = "0123456789abcdef"
+_ENCRYPTION_PUBLIC_BYTES = 32
+_X25519_P = 2**255 - 19
+_X25519_KEEP = (1 << 255) - 1
+_LOW_ORDER_U = frozenset(
+    (
+        0,
+        1,
+        _X25519_P - 1,
+        39382357235489614581723060781553021112529911719440698176882885853963445705823,
+        325606250916557431795983626356110631294008115727848805560023387167927233504,
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,12 +195,35 @@ class DirectoryDevice:
     machine_fingerprint: str | None = None
     first_published_at: str | None = None
     device_uid: str | None = None
+    encryption_key_id: str | None = None
+    encryption_public_key: str | None = None
+
+    def __post_init__(self) -> None:
+        """One enforcement point for the encryption pair, whichever way a row is built.
+
+        ``from_record`` is strict, but a row built directly must not be able
+        to carry a bad pair out through ``as_record`` either.
+        """
+        if (self.encryption_key_id is None) != (self.encryption_public_key is None):
+            raise ValueError(
+                "directory device record: encryptionKeyId and encryptionPublicKey "
+                "must either both be present or both be absent"
+            )
+        if self.encryption_key_id is None or self.encryption_public_key is None:
+            return
+        _encryption_key_id(self.encryption_key_id)
+        public_key = _encryption_public_key(self.encryption_public_key)
+        if self.encryption_key_id != encryption_key_digest(public_key):
+            raise ValueError(
+                "directory device record: encryptionKeyId does not match encryptionPublicKey"
+            )
 
     def as_record(self) -> dict[str, object]:
         """The camelCase JSON projection, including optional binding metadata.
 
         ``deviceUid`` (UUID addressing) is written only when the row carries
-        one, so a row without it keeps the exact pre-UUID shape.
+        one, so a row without it keeps the exact pre-UUID shape.  The
+        encryption key pair is written only when the device holds a key.
         """
         record: dict[str, object] = {
             "deviceId": self.device_id,
@@ -165,6 +241,9 @@ class DirectoryDevice:
             record["firstPublishedAt"] = self.first_published_at
         if self.device_uid is not None:
             record["deviceUid"] = self.device_uid
+        if self.encryption_key_id is not None:
+            record["encryptionKeyId"] = self.encryption_key_id
+            record["encryptionPublicKey"] = self.encryption_public_key
         return record
 
     @classmethod
@@ -175,13 +254,16 @@ class DirectoryDevice:
         rejects them: the schema is frozen by the cutover contract, and
         documents cross machines via OrgFS sync.  ``deviceUid`` is either
         absent or a UUID4 hex string; an explicit null is rejected, since
-        :meth:`as_record` never writes one.
+        :meth:`as_record` never writes one.  The encryption key pair is
+        likewise absent or both present, never null; its shape and the
+        agreement between id and public key are checked in
+        ``__post_init__``, the one enforcement point for a row built either way.
         """
         if not isinstance(value, Mapping):
             raise ValueError(
                 f"directory device record must be a JSON object, got {type(value).__name__}"
             )
-        unknown = sorted(set(value) - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS)
+        unknown = sorted(set(value) - _RECORD_KEYS - _OPTIONAL_RECORD_KEYS - set(_ENCRYPTION_RECORD_KEYS))
         if unknown:
             raise ValueError(f"directory device record has unknown keys: {unknown}")
         missing = sorted(_RECORD_KEYS - set(value))
@@ -214,6 +296,16 @@ class DirectoryDevice:
                 None
                 if "deviceUid" not in value
                 else _checked_device_uid(value["deviceUid"])
+            ),
+            encryption_key_id=(
+                None
+                if "encryptionKeyId" not in value
+                else _encryption_key_id(value["encryptionKeyId"])
+            ),
+            encryption_public_key=(
+                None
+                if "encryptionPublicKey" not in value
+                else _encryption_public_key(value["encryptionPublicKey"])
             ),
         )
 
@@ -297,7 +389,7 @@ def _protected_tree_principal(path: str, space_owner: str | None) -> str | None:
         return None if space_owner is None else directory_owner_principal(space_owner)
     if parts[0] != "directory" or space_owner is None:
         return None
-    if len(parts) >= 3 and parts[1] in {"devices", "people", "user-keys"}:
+    if len(parts) >= 3 and parts[1] in {"devices", "people", "user-keys", "service-grants"}:
         return directory_owner_principal(parts[2])
     if len(parts) >= 3 and parts[1] == "leaves":
         return directory_owner_principal(parts[2].removesuffix(".json"))
@@ -321,6 +413,8 @@ def protected_section_for_path(path: str, *, space_owner: str | None = None) -> 
         return "people"
     if len(parts) >= 3 and parts[:2] == ["directory", "user-keys"]:
         return "user-keys"
+    if len(parts) >= 3 and parts[:2] == ["directory", "service-grants"]:
+        return "service-grants"
     if len(parts) == 3 and parts[:2] == ["directory", "leaves"] and parts[2].endswith(".json"):
         return "leaves"
     if len(parts) == 3 and parts[:2] == ["directory", "invites"] and parts[2].endswith(".json"):
@@ -396,7 +490,11 @@ def protected_directory_doc_id(
         section = "devices"
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])
-    elif len(parts) >= 4 and parts[0] == "directory" and parts[1] in {"people", "user-keys"}:
+    elif (
+        len(parts) >= 4
+        and parts[0] == "directory"
+        and parts[1] in {"people", "user-keys", "service-grants"}
+    ):
         section = parts[1]
         principal = directory_owner_principal(parts[2])
         leaf = "/".join(parts[3:])
@@ -633,6 +731,39 @@ def _optional_timestamp(value: object, label: str) -> str | None:
     if value is None:
         return None
     return _utc_timestamp(value, label)
+
+
+def encryption_key_digest(public_key: str) -> str:
+    """The key id the local encryption key store derives from a public key."""
+
+    digest = hashlib.sha256(base64.b64decode(public_key, validate=True)).hexdigest()
+    return _ENCRYPTION_KEY_ID_PREFIX + digest[:_ENCRYPTION_KEY_ID_HEX_DIGITS]
+
+
+def _encryption_key_id(value: object) -> str:
+    text = _non_empty_string(value, "encryptionKeyId")
+    digest = text.removeprefix(_ENCRYPTION_KEY_ID_PREFIX)
+    if digest == text or len(digest) != _ENCRYPTION_KEY_ID_HEX_DIGITS or digest.strip(_LOWER_HEX):
+        raise ValueError("encryptionKeyId must be 'x25519:' followed by 32 lowercase hex digits")
+    return text
+
+
+def _encryption_public_key(value: object) -> str:
+    """The store's public-key text: standard base64 of the 32 raw X25519 bytes."""
+
+    text = _non_empty_string(value, "encryptionPublicKey")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError("encryptionPublicKey must be base64") from error
+    if len(raw) != _ENCRYPTION_PUBLIC_BYTES or base64.b64encode(raw).decode("ascii") != text:
+        raise ValueError(
+            "encryptionPublicKey must be the canonical base64 of 32 bytes"
+        )
+    u = (int.from_bytes(raw, "little") & _X25519_KEEP) % _X25519_P
+    if u in _LOW_ORDER_U:
+        raise ValueError("encryptionPublicKey is a low-order point")
+    return text
 
 
 def _utc_timestamp(value: object, label: str) -> str:

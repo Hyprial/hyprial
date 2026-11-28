@@ -1,3 +1,15 @@
+# Decision record (service grant device encryption key, 2026-11-26: a bounded lock wait):
+# - ``locked()`` and ``ensure()`` take an optional timeout for this store's
+#   own file lock.  The default is the 15 s every existing caller waited
+#   before, so none of them changes behaviour.
+# - A caller on a periodic maintenance path passes a short one.  Before this,
+#   a lock held by another process stalled that path for the full default,
+#   once per call.  A lock not obtained in time is reported as
+#   ``USER_KEY_QUARANTINED``, the code the fence already uses for a refused
+#   lock; the store adds no new error code.
+# - Only the wait is bounded.  Everything inside the lock (the fence checks,
+#   the read, the write) is unchanged, and a lock that is obtained still
+#   serialises readers and writers exactly as before.
 """Fenced daemon-state key storage; login is the only generation operation."""
 from __future__ import annotations
 
@@ -79,12 +91,18 @@ class Store:
             raise Error(ipc_errors.USER_KEY_QUARANTINED) from None
 
     @contextmanager
-    def locked(self):
+    def locked(self, *, timeout: float = 15.0):
+        """Hold this store's file lock; ``timeout`` bounds the wait for a lock held elsewhere.
+
+        A lock that is not free within ``timeout`` seconds is reported as
+        ``USER_KEY_QUARANTINED``, the same code as any other refused fence.
+        """
+
         self.prepare()
         path = self.root / ".lock"
         lock = ProcessFileLock(path)
         try:
-            lock.acquire(timeout=15.0)
+            lock.acquire(timeout=timeout)
             self.check_file(path)
             self.prepare()
         except Error:
@@ -157,12 +175,17 @@ class Store:
                 return {"keyId": None, "publicKey": None, "state": "absent",
                         "bindingExp": None, "revocationSeq": None}
 
-    def ensure(self) -> dict:
-        """Idempotent login generation, without binding or network access."""
+    def ensure(self, *, lock_timeout: float = 15.0) -> dict:
+        """Idempotent login generation, without binding or network access.
+
+        ``lock_timeout`` bounds the wait for the store's file lock; the
+        default is the store's usual wait.
+        """
+
         if any(not isinstance(v, str) or not v or len(v) > 1024
                for v in (self.owner, self.casdoor_sub, self.device_uid, self.fingerprint)):
             raise Error(ipc_errors.USER_KEY_ABSENT)
-        with self.locked():
+        with self.locked(timeout=lock_timeout):
             try:
                 record = self._read()
             except Error as error:

@@ -26,8 +26,8 @@ class _Supervisor:
         self.calls = []
         self.key_result = {"addr": "192.0.2.8:54321", "found": False}
 
-    def expose(self, exposure):
-        self.calls.append(("expose", exposure.copy()))
+    def expose(self, exposure, *, admission, keys=()):
+        self.calls.append(("expose", exposure.copy(), admission, list(keys)))
         return exposure.copy()
 
     def unexpose(self, port):
@@ -71,6 +71,22 @@ def test_expose_unexpose_and_peer_key_keep_side_effects(tmp_path):
     host._forwarding_supervisor.key_result = {"addr": address, "found": True, "key": {"raw": 1}}
     assert host.handle("network.peerKey", {"addr": address})["key"] == {"raw": 1}
     assert host.starts == 4
+
+
+def test_a_new_exposure_starts_admitting_nobody(tmp_path):
+    """Service grant exposing side: network.expose states its admission, and states nobody.
+
+    The set is derived from the grants afterwards; until then the port must
+    not admit anyone, so the expose the daemon sends is an empty key set and
+    never "allow".
+    """
+
+    host = _Host(tmp_path / "exposures.json")
+    exposure = {"port": 8443, "target": "tcp:127.0.0.1:9443", "proxyProtocol": "none"}
+
+    host.handle("network.expose", exposure)
+
+    assert host._forwarding_supervisor.calls == [("expose", exposure, "keys", [])]
 
 
 def test_persist_failure_rolls_back_sidecar(tmp_path, monkeypatch):
@@ -162,7 +178,7 @@ def test_four_methods_over_isolated_unix_socket(tmp_path, monkeypatch):
 def test_sidecar_error_codes_remain_unchanged(tmp_path, method, params):
     host = _Host(tmp_path / "exposures.json")
     class Unsupported(_Supervisor):
-        def expose(self, _):
+        def expose(self, _, *, admission, keys=()):
             raise ForwardingSidecarError("SIDECAR_EXPOSE_UNSUPPORTED: old sidecar")
         def unexpose(self, _):
             raise ForwardingSidecarError("SIDECAR_EXPOSE_UNSUPPORTED: old sidecar")

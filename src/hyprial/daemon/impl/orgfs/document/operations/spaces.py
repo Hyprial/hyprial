@@ -93,5 +93,3 @@ class FacadeSpaces:
                 author=origin_author,
                 actor=origin_actor,
             )
-
-

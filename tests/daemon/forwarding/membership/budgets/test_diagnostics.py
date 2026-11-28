@@ -23,7 +23,7 @@ def response_error(data, code):
     controller._send = sent.append
 
     def response(match, *, deadline):
-        event = {"v": 6, "event": "error", "op": sent[-1]["op"],
+        event = {"v": 7, "event": "error", "op": sent[-1]["op"],
                  "requestId": sent[-1]["requestId"], "code": code,
                  "message": "secret-invite-payload", "data": data}
         assert match(event)

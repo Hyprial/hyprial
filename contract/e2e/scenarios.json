@@ -625,7 +625,7 @@
       "real_environment_required": false,
       "assertions": [
         "both nodes use E2E-021's narrow private-Unix forwarding isolation and validate owned effective endpoints at every start and restart",
-        "the protocol-v6 leased-roster fixture binds one peer inside the fixed pool without redial, then a second leased peer exhausts the pool and forces a real in-process rebuild",
+        "the protocol-v7 leased-roster fixture binds one peer inside the fixed pool without redial, then a second leased peer exhausts the pool and forces a real in-process rebuild",
         "B genuinely restarts immediately before A's slot-pool-growth rebuild",
         "swallow-close, blackhole, and 2 s / 10 s delayed resplice modes retain the 38 s relearn verdict, 114 s observation window and 300 s whole-scenario deadline with at most two independent case workers",
         "the forwarding fixture swallows A's final bytes, preserves B's client Unix stream, and blackholes A's reverse leg without a direct-path escape",
@@ -674,7 +674,7 @@
     },
     {
       "id": "E2E-029",
-      "title": "v6 control invite refusal and inbound business-stream revocation",
+      "title": "v7 control invite refusal and inbound business-stream revocation",
       "document": "29-tailcat-org-admission-deny.md",
       "runner": "run-tailcat-org-admission-deny.py",
       "executable": true,
@@ -698,7 +698,7 @@
     },
     {
       "id": "E2E-030",
-      "title": "v6 running joiner and durable recovery after a lost redemption reply",
+      "title": "v7 running joiner and durable recovery after a lost redemption reply",
       "document": "30-tailcat-org-join-resume.md",
       "runner": "run-tailcat-org-join-resume.py",
       "executable": true,

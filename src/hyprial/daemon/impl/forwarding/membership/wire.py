@@ -1,4 +1,4 @@
-"""Correlated v6 membership commands use operation-specific exchange budgets.
+"""Correlated v7 membership commands use operation-specific exchange budgets.
 
 Redeem includes two Go control exchanges. Late replies remain correlated and
 are aged out by the shared response demultiplexer, never misattributed.
@@ -105,7 +105,10 @@ class MembershipWireMixin:
                 or set(readiness) != {'sidecar', 'control', 'member'}
                 or any(type(value) is not bool for value in readiness.values())
                 or not readiness['sidecar'] or not readiness['control']):
-            raise ForwardingSidecarError('Invalid v6 startup readiness/correlation.', code='SIDECAR_PROTOCOL_MISMATCH')
+            raise ForwardingSidecarError(
+                f"Invalid v{FORWARD_PROTOCOL_VERSION} startup readiness/correlation.",
+                code='SIDECAR_PROTOCOL_MISMATCH',
+            )
         self.readiness = dict(readiness)
 
     def membership_request(

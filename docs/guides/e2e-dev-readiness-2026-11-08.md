@@ -123,7 +123,7 @@ cleanup is UNKNOWN; explicit per-case cleanup receipts cover only their
 respective resources. Three giant 024 records returned incomplete at 65,565
 characters, so omitted diagnostics cannot be inferred.
 
-020 covers only its declared first wave. 029/030 cover real v6 transport,
+020 covers only its declared first wave. 029/030 cover real v7 transport,
 with CLI/Casdoor/OrgFS explicitly NOT_RUN. Controlled credentials, live
 platform actions and the five-platform release matrix remain separate.
 

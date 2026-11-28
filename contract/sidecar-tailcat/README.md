@@ -1,6 +1,6 @@
-# sidecar-tailcat — 协议 v5 契约样例
+# sidecar-tailcat — 协议 v7 契约样例
 
-`hyprial-tailcat` 边车的 stdio JSON 协议 v5 的 golden 样例。子命令与 key 文件格式见
+`hyprial-tailcat` 边车的 stdio JSON 协议 v7 的 golden 样例。子命令与 key 文件格式见
 [tailnet-cutover-architecture-2026-10-03.md §3.1–§3.2](../../docs/design/tailnet-cutover-architecture-2026-10-03.md)，
 forward 基线见同文档 [§3.3](../../docs/design/tailnet-cutover-architecture-2026-10-03.md)，
 service-connect-v1 扩展以 [service-connect baseline-C contract](../service-connect/README.md)
@@ -69,7 +69,7 @@ below and is not evidence of a specific network cause.
 
 ## Membership transport diagnostic byte counts (0.5.5.3)
 
-A correlated v6 membership `error` may carry a `data` diagnostic object.
+A correlated v7 membership `error` may carry a `data` diagnostic object.
 The Python consumer validates the complete object before copying any of it
 into IPC error data. Required closed fields:
 
@@ -104,8 +104,8 @@ invite credential, proxy URL or remote prose is included in the diagnostic.
 
 ## 布局
 
-- `golden/commands.jsonl`：合法命令（daemon → 边车，每行一个 JSON 对象，`{"v":5,"op":…}`）。
-- `golden/events.jsonl`：合法事件（边车 → daemon，`{"v":5,"event":…}`）。
+- `golden/commands.jsonl`：合法命令（daemon → 边车，每行一个 JSON 对象，`{"v":7,"op":…}`）。
+- `golden/events.jsonl`：合法事件（边车 → daemon，`{"v":7,"event":…}`）。
 - `golden/invalid-commands.jsonl`：必须被解析器拒绝（`BAD_REQUEST`）的命令行。
 
 ## PROXY v2 target admission (2026-10-30)
@@ -182,9 +182,9 @@ region auto 从该 map 选路，并把最后一次成功 map 缓存在 sidecar �
 （owner-only 0600/0700）。map 暂时不可用时使用缓存；没有缓存则 `up` 失败并
 在 status 中可见。`status` 的 Running 事件带 `derpMapURL` 与
 `derpMapSource`（`configured`/`override`/`default`）。这些字段可选：Running
-事件不带 `derpMapURL` 时，daemon 按默认 map 处理。这不是旧版本兼容路径：v5 之前
-的边车（含 v3、v4）在上文 flag-day 边界被整体拒绝（daemon
-`forwarding/controller.py` 与 `internal/proto/message.go` 都只接受 v5）。
+事件不带 `derpMapURL` 时，daemon 按默认 map 处理。这不是旧版本兼容路径：旧版本
+边车在上文 flag-day 边界被整体拒绝（daemon `forwarding/controller.py` 与
+`internal/proto/message.go` 都只接受当前协议版本 v7）。
 `hyprial-tailcat-labrelay` 输出的 `{"v": 3, "derp": …}` 是它自己的 relay 配置信封，
 版本号与边车协议无关。
 
@@ -273,3 +273,15 @@ v4 引入固定槽位池（design-stable-zenoh-session-slots-2026-10-08 §4）�
   `slots`（解析后的 wire id，up 顺序在前、扩容追加）——tcp 传输下 daemon 以此获知
   内核分配的端口并组装 connect set。
 - `allow` 不变：入站准入与出站槽位是两件事。
+
+## expose key-set admission（协议 v7）
+
+v7 要求每条 `expose` 命令**显式提供** `admission`（`"allow"` 或 `"keys"`；缺省直接拒绝并返回 `BAD_REQUEST`，不再默认 `"allow"`），并在 `admission: "keys"` 时新增 `keys` 数组：
+
+- `keys` 编码与上限：仅在 `admission: "keys"` 时出现且不得为 `null`；每项必须是规范写法（小写 `nodekey:` 前缀 + 64 位小写十六进制非零公钥，与成员表公钥写法一致），拒绝大写十六进制、无前缀写法、零值公钥与重复项；数组上限为 **4096** 项，超限时返回带 `requestId` 的 `BAD_REQUEST` 且边车不退出。
+- 准入语义：对端必须先通过 tailnet 成员准入，且其连接本机 server 时出示的每 server 派生客户端公钥（本边车成员名册中该成员的 `clientPublicByServer[本机 serverPublic]`，daemon 经 `membership-status` 读取；不取自目录设备行）必须命中该端口的 `keys` 集合；未命中的连接在 accept 或入池复查阶段直接关闭并计入 `deniedCount`，不触达本地后端。
+- 空集合（`"keys": []`）拒绝所有对端（包括在册成员），不回退到 `allow`。
+- 对同一端口、同一 `target` 与 `proxyProtocol` 再次发送 `expose` 时，在原监听上就地替换准入规则（支持 `keys` 集合增删以及 `keys` ↔ `allow` 切换），并关闭已建连接中不再被新规则放行的连接；仍被放行的连接不受影响。
+- `exposed` 事件回显 `admission`（`"allow"` 或 `"keys"`），仅在 `keys` 模式下附带整型 `keyCount`（`0..4096`），永不回显完整 `keys` 数组（含 `keys`、或 `keys` 模式缺 `keyCount`、或 `allow` 模式带 `keyCount` 的事件均在 `invalid-events.jsonl` 中被拒绝）。
+- daemon 对用户暴露端口只下发 `admission: "keys"`：集合由服务授权推导（含 `@members` 授权，展开为该 org 成员设备的公钥），没有授权时为空集合；`"allow"` 仍是协议的合法值，但 daemon 不再对用户暴露使用它。推导规则与日志事件见 [service-grants 契约](../service-grants/README.md)。
+- 协议为封闭格式，v6 及更早版本一律返回 `SIDECAR_PROTOCOL_MISMATCH`；升级步骤见 [migration-sidecar-protocol-v7.md](../../docs/guides/migration-sidecar-protocol-v7.md)。

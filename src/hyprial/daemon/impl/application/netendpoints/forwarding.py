@@ -1,3 +1,23 @@
+# Decision notes (service grant exposing side, 2026-11-26):
+# - The daemon owns one admission enforcer for the lifetime of its forwarding
+#   supervisor. It is installed after the supervisor and OrgFS runtime exist,
+#   while the supervisor's on_installed hook re-pushes admission after a spawn.
+# - An immediate trigger (a grant, a revoke, a new exposure, the sidecar being
+#   installed) only marks the sets stale and hands one tick to a bounded
+#   cadence: the derivation, with its bounded roster read, never runs on an
+#   IPC thread, on the sidecar's relaunch path or on the scheduler thread.
+#   The trigger reports whether that tick was scheduled, and the application
+#   logs the ones that were not: the write the trigger followed is durable
+#   either way, so this is the only difference an operator can see.
+# - The maintenance tick drives the same cadence without marking anything
+#   stale, which gives the throttled re-derivation that picks up directory
+#   changes, expiry and a roster that completed after the grant was written.
+# - An unexpose asks the enforcer to forget the port and to revoke this
+#   device's grants for it. That is best effort: a failure there is logged
+#   and never fails the unexpose.
+# - The enforcer is a forwarding concern that reads the org directory, so the
+#   inputs it needs are taken from the same public places the service grant
+#   IPC handler takes them from.
 """Forwarding sidecar operations: supervisor start, exposure warnings, redial and status."""
 
 from __future__ import annotations
@@ -91,6 +111,7 @@ class _ForwardingOpsMixin:
             slot_transport=slot_transport(),
             on_slots_reported=lambda ids: record_tcp_slot_ports(self, ids),
             up_slots=lambda: slot_store_for_app(self).specs(),
+            on_installed=getattr(self, "_service_admission_installed", None),
         )
         self._forwarding_supervisor = supervisor
         supervisor.ensure_started()
@@ -104,6 +125,9 @@ class _ForwardingOpsMixin:
         target = inbound_target_from_listener(listener)
         self._forwarding_environment = self._forwarding_automatic.environment(target)
         if self._forwarding_supervisor is not None:
+            retire = getattr(self, "_retire_service_admission", None)
+            if callable(retire):
+                retire()
             self._forwarding_supervisor.close()
             self._forwarding_supervisor = None
         self._forwarding_start_attempted = False
@@ -340,6 +364,9 @@ class _ForwardingOpsMixin:
         self._retry_degraded_redemption_throttled()
         self._publish_org_directory_if_address_changed()
         self._process_org_leave_requests_throttled()
+        offer_tick = getattr(self, "_offer_service_admission_tick", None)
+        if callable(offer_tick):
+            offer_tick()
         backend = self._forwarding_backend()
         if backend is None:
             return

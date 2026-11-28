@@ -444,4 +444,3 @@ class FileStateStore:
             appends=len(batch.appends),
             deletes=len(batch.deletes),
         )
-

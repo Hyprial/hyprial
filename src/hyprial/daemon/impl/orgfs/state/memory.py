@@ -137,4 +137,3 @@ class MemoryStateStore:
             raise RuntimeError(f"state store of space {self.space_id} is closed")
         if self._broken:
             raise StateStoreBroken(f"state store of space {self.space_id} must be reopened")
-

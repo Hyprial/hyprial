@@ -1,4 +1,4 @@
-# E2E-029: v6 invite admission denial and business-stream revocation
+# E2E-029: v7 invite admission denial and business-stream revocation
 
 ## Preconditions
 
@@ -10,7 +10,7 @@ servers/clients and an in-process loopback labrelay, with disposable `/tmp/hr-*`
 key files, membership stores, Unix backends and slots. It uses no production
 account, daemon, credentials, host tailscale, or public relay.
 
-This is the **v6 transport equivalent** of #1855's E2E-029, not full CLI/OrgFS
+This is the **v7 transport equivalent** of #1855's E2E-029, not full CLI/OrgFS
 acceptance. The private backend is an echo server, not Zenoh. E2E-025 remains the
 full-daemon invite/join/OrgFS positive control. Live Casdoor, zero Zenoh subscriber
 puts and preservation of a local OrgFS replica are NOT_RUN here.

@@ -34,6 +34,7 @@ from hyprial.kernel import (
     DEFAULT_PEER_PORT,
 )
 from hyprial.daemon.impl.forwarding  import (
+    ADMISSION_KEYS,
     ForwardingSidecarError,
     validate_exposure_target,
     validate_peer_key_address,
@@ -193,8 +194,11 @@ _IPC_STATS_METHODS = frozenset(
         "session.unregister",
         "service.connect",
         "service.disconnect",
+        "service.grant",
+        "service.grants",
         "service.guide",
         "service.list",
+        "service.revoke",
         "shutdown",
         "targets",
         "top.snapshot",
@@ -365,8 +369,11 @@ class _IpcDispatchMixin:
         if method in {
             "service.connect",
             "service.disconnect",
+            "service.grant",
+            "service.grants",
             "service.guide",
             "service.list",
+            "service.revoke",
         }:
             return METHOD_REGISTRY.invoke(
                 self, method, params, trusted_message_origin=_trusted_message_origin
@@ -582,7 +589,7 @@ class _IpcDispatchMixin:
             supervisor = self._forwarding_supervisor
             if supervisor is None:
                 raise ForwardingSidecarError("forwarding sidecar is not configured")
-            applied = supervisor.expose(exposure)
+            applied = supervisor.expose(exposure, admission=ADMISSION_KEYS, keys=())
             try:
                 self._exposure_store.set(applied)
             except Exception:
@@ -591,6 +598,7 @@ class _IpcDispatchMixin:
                 except Exception:  # noqa: BLE001 - preserve persistence cause
                     pass
                 raise
+            self._notify_service_admission_changed()
             return {"exposure": applied}
         except ForwardingSidecarError as error:
             code = (
@@ -599,6 +607,44 @@ class _IpcDispatchMixin:
                 else "FORWARDING_UNAVAILABLE"
             )
             raise DaemonRequestError(code, str(error)) from error
+
+    def _notify_service_admission_changed(self) -> None:
+        """Tell the state owner the inputs changed. A host without one is not broken.
+
+        ``network.expose`` runs in this mixin, whose host is the application
+        only in a serving daemon; a bare host owns no admission enforcement.
+        The owner's method is the one the service grant handler calls too.
+        This method is named apart from it on purpose: both live on mixins of
+        the same class, and one name would let one hide the other. The owner
+        logs a tick it could not offer, so the exposure path never raises.
+        """
+
+        changed = getattr(self, "_service_admission_changed", None)
+        if callable(changed):
+            changed("network.expose")
+
+    def _remove_exposure(self, supervisor: Any, port: int) -> None:
+        """Take a port off the sidecar and out of the store, and keep it closed.
+
+        The owner that enforces admission wraps ``remove`` in the enforcer's
+        own step, which registers the port so that no derivation exposes it
+        again, waits for a push of the port already in flight, and revokes the
+        port's grants once the removal has succeeded. That wait is bounded;
+        at its bound the step raises ``ForwardingSidecarError`` before the
+        removal is asked for, nothing has changed, and the caller's error is
+        the one the exposure path already reports. A host that owns no
+        admission enforcement runs the step as it is.
+        """
+
+        def remove() -> None:
+            supervisor.unexpose(port)
+            self._exposure_store.remove(port)
+
+        unexposing = getattr(self, "_service_port_unexposing", None)
+        if callable(unexposing):
+            unexposing(port, remove)
+            return
+        remove()
 
     def _ipc_network_unexpose(self, params) -> Any:
         port = params.get("port")
@@ -617,8 +663,7 @@ class _IpcDispatchMixin:
                 "FORWARDING_UNAVAILABLE", "forwarding sidecar is not configured"
             )
         try:
-            supervisor.unexpose(port)
-            self._exposure_store.remove(port)
+            self._remove_exposure(supervisor, port)
         except ForwardingSidecarError as error:
             code = (
                 "SIDECAR_EXPOSE_UNSUPPORTED"

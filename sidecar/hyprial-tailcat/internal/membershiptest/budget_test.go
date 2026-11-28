@@ -97,7 +97,7 @@ func redeemWithExchangeMargin(t *testing.T, b *node, invite membership.InviteV2)
 	}
 	defer manager.Close()
 	params, _ := json.Marshal(membership.RedeemParams{OperationID: "budget-redeem", Invite: invite})
-	if _, err := manager.Execute(context.Background(), membership.Request{V: 6, Op: "invite-redeem", RequestID: "budget", Params: params}); err != nil {
+	if _, err := manager.Execute(context.Background(), membership.Request{V: 7, Op: "invite-redeem", RequestID: "budget", Params: params}); err != nil {
 		t.Fatal(err)
 	}
 	if exchanges != 2 {

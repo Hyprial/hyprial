@@ -452,5 +452,3 @@ class FacadeEffects:
                 lock = threading.RLock()
                 self._space_locks[space_id] = lock
             return lock
-
-

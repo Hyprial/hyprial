@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E-021: OrgFS stays live across a v6 leased-roster Unix-slot redial."""
+"""E2E-021: OrgFS stays live across a v7 leased-roster Unix-slot redial."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from _daemon_runner import (  # noqa: E402
 from _tailcat_isolation import local_topology_violations  # noqa: E402
 from _presence_trace import PresenceTrace
 from _orgfs_redial_fixture import LeasedUnixFixture, membership_params, scenario_root
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION, ForwardingSidecarError
 
 SCENARIO = "E2E-021"
 OVERALL_TIMEOUT_SECONDS = 240
@@ -83,7 +84,7 @@ def _emit(command: dict[str, object] | None = None, **event: object) -> None:
     request_id = command.get("requestId") if command is not None else None
     if isinstance(request_id, str) and request_id:
         event["requestId"] = request_id
-    print(json.dumps({"v": 6, **event}, separators=(",", ":")), flush=True)
+    print(json.dumps({"v": FORWARD_PROTOCOL_VERSION, **event}, separators=(",", ":")), flush=True)
 
 
 _LOOPBACK_SCHEME = "tc-e2e-unix"
@@ -92,7 +93,7 @@ _DUMMY_CLIENT_PUBLIC = "nodekey:" + "02" * 32
 
 
 def _sidecar(receipt: Path, pid_path: Path, *, member_factory: Callable[..., dict] | None = None) -> int:
-    """Protocol-v6 leased-roster fixture; Unix proxies, no Tailcat/DERP.
+    """Protocol-v7 leased-roster fixture; Unix proxies, no Tailcat/DERP.
 
     The explicit source models authority exchanges independently of directory
     publications. Business mappings require an active row and a fresh lease.
@@ -103,7 +104,6 @@ def _sidecar(receipt: Path, pid_path: Path, *, member_factory: Callable[..., dic
     mappings: dict[str, str] = {}
     slots: list[str] = []
     from tests.support.tailnet_membership import FakeMembershipSidecar
-    from hyprial.daemon.impl.forwarding.policy import ForwardingSidecarError
 
     fixture = LeasedUnixFixture(receipt.parent / "roster-fixture.json")
     public = {"serverPublic": _DUMMY_SERVER_PUBLIC, "clientPublic": _DUMMY_CLIENT_PUBLIC}
@@ -127,8 +127,8 @@ def _sidecar(receipt: Path, pid_path: Path, *, member_factory: Callable[..., dic
         with receipt.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(command, separators=(",", ":")) + "\n")
         operation = command.get("op")
-        if command.get("v") != 6:
-            _emit(command, event="error", code="SIDECAR_PROTOCOL_MISMATCH", message="Invalid protocol-v6 request.")
+        if command.get("v") != FORWARD_PROTOCOL_VERSION:
+            _emit(command, event="error", code="SIDECAR_PROTOCOL_MISMATCH", message=f"Invalid protocol-v{FORWARD_PROTOCOL_VERSION} request.")
             continue
         if operation == "up":
             address_file = command.get("addressFile")
@@ -385,7 +385,7 @@ def _configure_forwarding(
             ),
             "HYPRIAL_FORWARDING_UP": json.dumps(
                 {
-                    "v": 6,
+                    "v": FORWARD_PROTOCOL_VERSION,
                     "op": "up",
                     "keyFile": str(key_file),
                     "membershipStore": str(sidecar_state / "membership.json"),

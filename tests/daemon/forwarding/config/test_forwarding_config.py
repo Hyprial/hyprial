@@ -53,7 +53,7 @@ def test_forwarding_environment_uses_device_identity_and_private_target(tmp_path
     result = daemon_forwarding_environment(home, inputs, node_id='node-a')
     assert json.loads(result['HYPRIAL_FORWARDING_COMMAND']) == [str(binary), 'forward']
     assert json.loads(result['HYPRIAL_FORWARDING_UP']) == {
-        'v': 6, 'op': 'up', 'keyFile': str(device_key_path(home)),
+        'v': 7, 'op': 'up', 'keyFile': str(device_key_path(home)),
         'owner': 'tester', 'deviceId': 'node-a', 'controlPort': 7448,
         'membershipStore': str(home / 'tailnet/membership.json'),
         'addressFile': str(address_path(home)), 'inboundTarget': inputs['HYPRIAL_FORWARDING_INBOUND_TARGET'],

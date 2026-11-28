@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Protocol
 
 from hyprial.kernel import (
+    FileLockBusy,
     PrivateAccessUnsupported,
+    ProcessFileLock,
     harden_private_path,
     ipc_errors,
     private_metadata_violation,
@@ -39,11 +41,15 @@ __all__ = [
     "SecretResolver",
     "SecretResolutionError",
     "SecretSource",
+    "create_user_provider",
+    "delete_user_provider",
+    "read_user_provider_value",
     "secret_environment_name_is_allowed",
     "validate_secret_environment_name",
 ]
 
 _ENTRY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_DELETE_LOCK_TIMEOUT_SECONDS = 1.0
 _ENV_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _RESERVED_ENVIRONMENT_NAMES = frozenset(
     {"PATH", "HOME", "CODEX_HOME", "LANG", "TMPDIR"}
@@ -355,6 +361,34 @@ class SecretResolver:
             model_records.write(path, values)
         except (OSError, PrivateAccessUnsupported, ValueError):
             raise SecretResolutionError("unavailable", entry_id, "write") from None
+        return path
+
+    def create_user_provider(self, entry_id: str, values: Mapping[str, str]) -> Path:
+        """Create a new user-owned provider entry; never merge into or replace one that exists.
+
+        The create-only counterpart of :meth:`write_user_provider`, for a
+        writer that must not own a name the user already has. It takes the
+        same lock and performs the same validation; under the lock it either
+        finds no entry file at the path and creates it, or raises
+        :class:`SecretResolutionError` with category ``"exists"`` and writes
+        nothing. A symlink or a directory at the path counts as "exists".
+        """
+
+        _validate_entry(entry_id)
+        if any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in values.items()
+        ):
+            raise TypeError("provider secret fields and values must be strings")
+        directory = self.hyprial_home / "secrets" / "providers"
+        self._ensure_private_directory(directory)
+        path = directory / f"{entry_id}.json"
+        try:
+            model_records.write(path, values, create_only=True)
+        except FileExistsError:
+            raise SecretResolutionError("exists", entry_id, "create") from None
+        except (OSError, PrivateAccessUnsupported, ValueError):
+            raise SecretResolutionError("unavailable", entry_id, "create") from None
         return path
 
     def configure_model_service(
@@ -760,6 +794,115 @@ class SecretResolver:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def read_user_provider_value(
+    hyprial_home: Path, entry_id: str, field_name: str | None = None
+) -> str:
+    """Read one user-provider value by ``(entryId, fieldName)`` under the resolver's rules.
+
+    The lookup is the one :meth:`SecretResolver.resolve` performs for a
+    user-provider grant: the same ancestor and file privacy checks, the same
+    record decoding, the same route consistency derived from saved state, and
+    the same field selection. It is meant for an owner-side daemon operation
+    that is not an agent launch, so no registry grant is consulted. Failures
+    raise :class:`SecretResolutionError` (never the value or a path); an
+    invalid ``entry_id`` or ``field_name`` raises ``ValueError``.
+    """
+
+    resolver = SecretResolver(hyprial_home, None)  # type: ignore[arg-type]
+    grant = SecretGrant(
+        actor="user",
+        entity_token="user",
+        grant_id=entry_id,
+        source=SecretSource.USER_PROVIDER,
+        entry_id=entry_id,
+        field_name=field_name,
+        environment_names=(),
+        revision=1,
+        route_required=resolver.model_route_required(entry_id, field_name),
+    )
+    return resolver._read_value(resolver._entry_path("user", grant), grant)[0]
+
+
+def create_user_provider(hyprial_home: Path, entry_id: str, values: Mapping[str, str]) -> Path:
+    """Create one user-provider entry only when nothing is at its path.
+
+    The owner-side form of :meth:`SecretResolver.create_user_provider`: the
+    existence check and the write happen under the record's write lock, so an
+    entry that appears between a caller's own look and this call is refused
+    with category ``exists``, never merged into or replaced.
+    """
+
+    return SecretResolver(hyprial_home, None).create_user_provider(entry_id, values)  # type: ignore[arg-type]
+
+
+def delete_user_provider(hyprial_home: Path, entry_id: str) -> bool:
+    """Delete one user-provider entry file; ``False`` when it is already absent.
+
+    The counterpart of :meth:`SecretResolver.write_user_provider` for an
+    owner-side daemon operation. It removes exactly ``secrets/providers/
+    <entry_id>.json`` under the resolver's ancestor checks, inside the
+    record's write lock, and only when the path is a plain file (never a
+    symlink, a directory or anything under a non-private ancestor). The
+    file's own mode is not a reason to keep it: a Key that was made public
+    is exactly the one to remove. Failures raise
+    :class:`SecretResolutionError` (never a path); an invalid ``entry_id``
+    raises ``ValueError``.
+    """
+
+    _validate_entry(entry_id)
+    resolver = SecretResolver(hyprial_home, None)  # type: ignore[arg-type]
+    grant = SecretGrant(
+        actor="user",
+        entity_token="user",
+        grant_id=entry_id,
+        source=SecretSource.USER_PROVIDER,
+        entry_id=entry_id,
+        field_name=None,
+        environment_names=(),
+        revision=1,
+        route_required=False,
+    )
+    path = resolver._entry_path("user", grant)
+    if not _entry_present(path, entry_id):
+        return False
+    resolver._validate_ancestors(path, entry_id)
+    try:
+        lock = ProcessFileLock(path.parent / ".write.lock")
+        lock.acquire(timeout=_DELETE_LOCK_TIMEOUT_SECONDS)
+    except (OSError, FileLockBusy):
+        raise SecretResolutionError("unavailable", entry_id, "delete") from None
+    try:
+        return _delete_entry_file(path, entry_id)
+    finally:
+        lock.release()
+
+
+def _entry_present(path: Path, entry_id: str) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        raise SecretResolutionError("permission", entry_id, "delete") from None
+    except OSError:
+        raise SecretResolutionError("io", entry_id, "delete") from None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SecretResolutionError("unsafe-type", entry_id, "delete")
+    return True
+
+
+def _delete_entry_file(path: Path, entry_id: str) -> bool:
+    if not _entry_present(path, entry_id):
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        raise SecretResolutionError("io", entry_id, "delete") from None
+    return True
 
 
 def _validate_entry(entry_id: str) -> None:

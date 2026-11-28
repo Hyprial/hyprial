@@ -80,6 +80,7 @@ from hyprial.shell.impl.cli.commands.adapter.data import identities_app, media_a
 from hyprial.shell.impl.cli.commands.routine.commands import routine_app
 from hyprial.shell.impl.cli.commands.workflow.run import workflow_app
 from hyprial.shell.impl.cli.commands.host import host_app
+from hyprial.shell.impl.cli.commands.service import grants as _service_grants  # noqa: F401
 from hyprial.shell.impl.cli.commands.service import network as _service_network  # noqa: F401
 from hyprial.shell.impl.cli.commands.profile.commands import profile_app
 from hyprial.shell.impl.cli.commands.adapter.lark_auth import user_auth_app

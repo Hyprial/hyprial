@@ -77,21 +77,21 @@ def test_capable_v3_service_wire_uses_exact_correlated_requests() -> None:
         request = writes[-1]
         if request["op"] == "map-service":
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-mapped",
                 "requestId": request["requestId"],
                 "service": dict(MAPPING),
             }
         if request["op"] == "unmap-service":
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-unmapped",
                 "requestId": request["requestId"],
                 "name": "api",
                 "removed": True,
             }
         return {
-            "v": 6,
+            "v": 7,
             "event": "service-status",
             "requestId": request["requestId"],
             "services": [dict(MAPPING)],
@@ -163,7 +163,7 @@ def test_service_response_validation_is_closed_correlated_and_secret_safe(
     def answer(*, deadline: float) -> dict[str, object]:
         del deadline
         event: dict[str, object] = {
-            "v": 6,
+            "v": 7,
             "event": "service-mapped",
             "requestId": writes[-1]["requestId"],
             "service": dict(MAPPING),
@@ -187,7 +187,7 @@ def test_registered_service_failure_is_nonfatal_and_next_peer_reply_is_not_confu
         request = writes[-1]
         if request["op"] == "map-service":
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-failed",
                 "requestId": request["requestId"],
                 "op": "map-service",
@@ -216,7 +216,7 @@ def test_correlated_malformed_service_reply_keeps_mesh_process_usable() -> None:
             malformed = dict(MAPPING)
             malformed["activeConnections"] = True
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-mapped",
                 "requestId": request["requestId"],
                 "service": malformed,
@@ -242,7 +242,7 @@ def test_timed_out_service_request_isolated_from_mesh_and_late_reply() -> None:
             raise ForwardingSidecarError("forwarding sidecar response timed out")
         if calls == 2:
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-mapped",
                 "requestId": writes[0]["requestId"],
                 "service": dict(MAPPING),
@@ -278,7 +278,7 @@ def test_slow_service_reply_does_not_hold_mesh_status_operation_lock() -> None:
     assert controller.map_peer("peer-a", "tcPeerAddress", "/s/slot-00") == "/s/slot-00"
     events.put(
         {
-            "v": 6,
+            "v": 7,
             "event": "service-mapped",
             "requestId": writes[0]["requestId"],
             "service": dict(MAPPING),
@@ -357,7 +357,7 @@ def test_forwarding_error_is_not_consumed_by_concurrent_service_request(
         forwarding.join(0.001)
     assert len(writes) == 2
     forwarding_error = {
-        "v": 6,
+        "v": 7,
         "event": "error",
         "code": "PORT_IN_USE",
         "message": "busy",
@@ -370,7 +370,7 @@ def test_forwarding_error_is_not_consumed_by_concurrent_service_request(
     controller._events.put(
         json.dumps(
             {
-                "v": 6,
+                "v": 7,
                 "event": "service-mapped",
                 "requestId": writes[0]["requestId"],
                 "service": dict(MAPPING),
@@ -428,7 +428,7 @@ def test_expired_late_service_reply_cannot_fail_the_next_service_request() -> No
         calls += 1
         if calls == 1:
             return {
-                "v": 6,
+                "v": 7,
                 "event": "service-failed",
                 "requestId": "expired-request",
                 "op": "map-service",
@@ -437,7 +437,7 @@ def test_expired_late_service_reply_cannot_fail_the_next_service_request() -> No
                 "message": "late",
             }
         return {
-            "v": 6,
+            "v": 7,
             "event": "service-mapped",
             "requestId": writes[-1]["requestId"],
             "service": dict(MAPPING),

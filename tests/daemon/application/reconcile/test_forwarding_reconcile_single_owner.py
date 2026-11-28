@@ -56,6 +56,9 @@ class _App(_ForwardingOpsMixin):
     def _note_forwarding_timer_tick(self) -> None:
         pass
 
+    def _recheck_grant_only_start(self, _now: float) -> None:
+        pass
+
     def _runtime_timer(self, _now: int) -> None:
         pass
 

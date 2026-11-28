@@ -29,7 +29,7 @@ def fake_wire(monkeypatch, durations):
             clock[0] += duration
             if clock[0] >= deadline:
                 raise ForwardingSidecarError("No response")
-        response = {"v": 6, "event": "membership-result", "requestId": request["requestId"],
+        response = {"v": 7, "event": "membership-result", "requestId": request["requestId"],
                     "op": request["op"], "data": {"ok": True}}
         assert match(response)
         return response

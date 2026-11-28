@@ -5,6 +5,27 @@ The handlers are module-level functions over the application object
 (``app._require_orgfs_runtime().facade``).  The forwarding seams W-C owns
 — ``map_peer(peer, address)``, redial, the sidecar status — are injected
 here as callbacks, never imported.
+
+Decision record (service grant device encryption key, 2026-11-26: the published key):
+- ``_build_service`` injects this device's encryption key reader.  It is the
+  one construction point of the network service, so the ``org.*`` handlers,
+  ``publish_self_for_app`` and the per-org actor all publish the pair and no
+  caller has to remember it.  ``publish_self_for_app`` has one caller, the
+  forwarding maintenance tick, which runs it on the first tick and whenever
+  the sidecar address changes, and otherwise at most every ten seconds.
+- The reader is bound to the home, the state directory, and a per-app in-memory
+  ``EncryptionKeyCache`` keyed by ``(user_id, device_uid)`` so steady-state
+  periodic refreshes never re-enter ``store.ensure()`` or contend on the 15 s
+  store file lock, while account or device changes invalidate the cache on the
+  next read.  ``publish_self_for_app`` scopes a ``single_read_pass()`` so a
+  multi-org refresh resolves the key at most once across all orgs.
+- An application without a state directory gets no reader.  Private state is
+  where the key lives; without it the row is published without the pair, which
+  is the same answer the reader gives for any missing prerequisite.
+- The key is ensured at serving start by the onboarding recovery pass, not
+  here: this path needs an org to publish into and a sidecar address.
+- ``invalid_device_diagnostics`` is public for other modules; the underscore
+  alias remains only for the org callers that still import it.
 """
 
 from __future__ import annotations
@@ -49,6 +70,10 @@ from hyprial.daemon.impl.org.network.directory import (
     OrgFsDirectoryStore,
 )
 from hyprial.daemon.impl.org.membership.invites import InviteService
+from hyprial.daemon.impl.org.network.device_key import (
+    EncryptionKeyCache,
+    encryption_key_reader,
+)
 from hyprial.daemon.impl.org.network.service import (
     OrgNetworkError,
     OrgNetworkService,
@@ -71,12 +96,28 @@ from hyprial.daemon.impl.org.cell_actor.sync import (
 )
 
 
-def _invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+def invalid_device_diagnostics(app: Any) -> InvalidDeviceQuarantine:
+    """The application's one invalid-device quarantine, created on first use."""
+
     quarantine = getattr(app, "_org_directory_quarantine", None)
     if quarantine is None:
         quarantine = InvalidDeviceQuarantine()
         app._org_directory_quarantine = quarantine
     return quarantine
+
+
+_invalid_device_diagnostics = invalid_device_diagnostics
+
+
+def _encryption_key_cache(app: Any) -> EncryptionKeyCache:
+    cache = getattr(app, "_device_encryption_key_cache", None)
+    if cache is None:
+        cache = EncryptionKeyCache()
+        try:
+            app._device_encryption_key_cache = cache
+        except AttributeError:
+            pass
+    return cache
 
 
 def _build_service(
@@ -223,6 +264,7 @@ def _build_service(
         except Exception:  # noqa: BLE001 - an unreadable cell runtime degrades to unknown
             return None
 
+    state_dir = getattr(app, "state_dir", None)
     service = OrgNetworkService(
         fs=fs,
         home=Path(app.hyprial_home),
@@ -230,10 +272,19 @@ def _build_service(
         owner=str(app.owner),
         store=OrgFsDirectoryStore(
             fs,
-            invalid_devices=_invalid_device_diagnostics(app),
+            invalid_devices=invalid_device_diagnostics(app),
             logger=lambda level, domain, event, **fields: app._log(
                 level, domain, event, **fields
             ),
+        ),
+        encryption_key=(
+            None
+            if state_dir is None
+            else encryption_key_reader(
+                home=Path(app.hyprial_home),
+                state_dir=Path(state_dir),
+                cache=_encryption_key_cache(app),
+            )
         ),
         map_peer=map_peer,
         unmap_peer=unmap_peer,
@@ -735,47 +786,51 @@ def publish_self_for_app(app: Any) -> dict:
     """
 
     try:
-        service = _build_service(app)
-        actors = ensure_org_cell_actors(app, service_factory=lambda: service)
-        orgs = service._orgs()
-        if (
-            isinstance(service, OrgNetworkService)
-            and type(service).publish_self is OrgNetworkService.publish_self
-        ):
-            published: list[str] = []
-            skipped: list[dict[str, str]] = []
-            errors: list[dict[str, str]] = []
-            for org in orgs:
-                try:
-                    if actors.for_org(org).org_publish_self():
-                        published.append(org)
-                except OrgNetworkError as error:
-                    skipped.append({"org": org, "reason": error.code})
-                except Exception as error:  # noqa: BLE001 - per-org failure must not mask others
-                    errors.append(
-                        {
-                            "org": org,
-                            "code": getattr(error, "code", "PUBLISH_FAILED"),
-                            "errorType": type(error).__name__,
-                        }
+        with _encryption_key_cache(app).single_read_pass():
+            service = _build_service(app)
+            actors = ensure_org_cell_actors(app, service_factory=lambda: service)
+            orgs = service._orgs()
+            if (
+                isinstance(service, OrgNetworkService)
+                and type(service).publish_self is OrgNetworkService.publish_self
+            ):
+                published: list[str] = []
+                skipped: list[dict[str, str]] = []
+                errors: list[dict[str, str]] = []
+                for org in orgs:
+                    try:
+                        if actors.for_org(org).org_publish_self():
+                            published.append(org)
+                    except OrgNetworkError as error:
+                        skipped.append({"org": org, "reason": error.code})
+                    except Exception as error:  # noqa: BLE001 - per-org failure must not mask others
+                        errors.append(
+                            {
+                                "org": org,
+                                "code": getattr(error, "code", "PUBLISH_FAILED"),
+                                "errorType": type(error).__name__,
+                            }
+                        )
+                    finally:
+                        actors.prune_if_unowned(org)
+                if published or skipped or errors:
+                    app._log(
+                        "info",
+                        "org",
+                        "org.publish_self",
+                        published=published,
+                        skipped=skipped,
                     )
-                finally:
-                    actors.prune_if_unowned(org)
-            if published or skipped or errors:
-                app._log(
-                    "info",
-                    "org",
-                    "org.publish_self",
-                    published=published,
-                    skipped=skipped,
-                )
-            outcome: dict[str, Any] = {
-                "published": published,
-                "skipped": skipped,
-                "errors": errors,
-            }
-        else:
-            outcome = service.publish_self()
+                outcome: dict[str, Any] = {
+                    "published": published,
+                    "skipped": skipped,
+                    "errors": errors,
+                }
+            else:
+                outcome = service.publish_self()
+        from hyprial.daemon.impl.org.network.grant_roots import ensure_owner_roots_for_app
+
+        ensure_owner_roots_for_app(app, orgs)
         from hyprial.daemon.impl.org.network.member_agents import publish_for_app
 
         inventory = publish_for_app(app, orgs)
@@ -922,6 +977,7 @@ def _access_changed(app: Any, reason: str, result: Any, **fields: Any) -> Any:
 
 __all__ = [
     "directory_peers_for_app",
+    "invalid_device_diagnostics",
     "ipc_org_acl_grant",
     "ipc_org_acl_ls",
     "ipc_org_acl_revoke",

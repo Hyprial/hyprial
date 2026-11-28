@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from hyprial.kernel import ipc_errors
 
 
-_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
+SERVICE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}\Z")
 _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 _ENV_DENY_EXACT = frozenset(
     {
@@ -80,7 +80,7 @@ def invalid_registry(message: str = "service catalog is invalid") -> ServiceConn
 
 
 def _identifier(value: object, label: str) -> str:
-    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+    if not isinstance(value, str) or SERVICE_NAME_PATTERN.fullmatch(value) is None:
         raise invalid_registry(f"{label} is invalid")
     return value
 
@@ -211,6 +211,30 @@ class CatalogEntry:
         if extra:
             problems.append("unknown field(s): " + ", ".join(extra))
         return problems
+
+
+def failed_row(
+    name: str, entry: CatalogEntry | None, *, local_port: int | None, code: str
+) -> dict[str, object]:
+    """The row of a service that is wanted but has no usable mapping."""
+
+    return {
+        "name": name,
+        "deviceId": None if entry is None else entry.device_id,
+        "remotePort": None if entry is None else entry.remote_port,
+        "recordGeneration": None,
+        "localPort": local_port,
+        "activeConnections": 0,
+        "path": "unknown",
+        "pathDetail": None,
+        "observedAtMs": None,
+        "lastDialState": "unknown",
+        "lastDialMs": None,
+        "lastError": "service mapping is unavailable",
+        "lastErrorAtMs": None,
+        "state": "failed",
+        "errorCode": code,
+    }
 
 
 @dataclass(frozen=True, slots=True)

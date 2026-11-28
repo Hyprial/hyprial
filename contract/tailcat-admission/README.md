@@ -1,4 +1,4 @@
-# Sidecar-owned tailnet admission (stdio v6)
+# Sidecar-owned tailnet admission (stdio v7)
 
 The frozen wire/control and store contract is
 [tailcat-cycle-fix](../../docs/design/tailcat-cycle-fix-contract-2026-10-27.md)
@@ -16,7 +16,7 @@ Directory-to-allow model. Python does not compute or replay admission sets.
 | Direct OrgFS mutation | Does not revoke tailnet membership |
 | Failed projection | Stop selecting stale candidates; retain diagnostic error |
 
-Managed v6 rejects `allow`, `allowAny` and open exposure admission. It requires
+Managed v7 rejects `allow`, `allowAny` and open exposure admission. It requires
 `tailnet-membership-v1`, `tailnet-control-v1`, `unix-inbound-v1` and private Unix
 inbound; no old-sidecar or TCP fallback. Per-server derivation and single-active
 DERP client generation remain unchanged. Before TCP dialing, the existing pooled

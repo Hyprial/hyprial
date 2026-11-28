@@ -61,16 +61,16 @@ func TestServiceWireCorrelationAndNonfatalFailure(t *testing.T) {
 
 	// A service failure is ordinary and does not consume the forwarding
 	// process: an existing peer command still succeeds afterward.
-	s.send(t, `{"v":6,"op":"status"}`)
+	s.send(t, `{"v":7,"op":"status"}`)
 	if state := s.expect(t, "state"); state.State != "Running" {
 		t.Fatalf("peer status after service failure = %+v", state)
 	}
-	s.send(t, `{"v":6,"op":"service-status","requestId":"request-status"}`)
+	s.send(t, `{"v":7,"op":"service-status","requestId":"request-status"}`)
 	status := s.expect(t, "service-status")
 	if status.RequestID != "request-status" || status.Services == nil || len(*status.Services) != 0 {
 		t.Fatalf("bad status after failure: %+v", status)
 	}
-	s.send(t, `{"v":6,"op":"down"}`)
+	s.send(t, `{"v":7,"op":"down"}`)
 	s.finish(t)
 }
 

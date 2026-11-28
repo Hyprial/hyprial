@@ -27,10 +27,14 @@ FIXTURE = Path(__file__).resolve().parents[3] / 'tests/fixtures/network/fake_for
 class _Controller:
     def __init__(self) -> None:
         self.applied: list[dict[str, object]] = []
+        self.admissions: list[tuple[str, list[str]]] = []
         self.closed = False
 
-    def expose(self, exposure: dict[str, object]) -> dict[str, object]:
+    def expose(
+        self, exposure: dict[str, object], *, admission: str, keys: Any = ()
+    ) -> dict[str, object]:
         self.applied.append(dict(exposure))
+        self.admissions.append((admission, list(keys)))
         return dict(exposure)
 
     def close(self) -> None:
@@ -40,6 +44,13 @@ class _Controller:
 def test_desired_exposures_persist_and_are_reissued_after_restart(
     tmp_path: Path, generation_scheduler
 ) -> None:
+    """A persisted exposure is replayed on every sidecar start, admitting nobody.
+
+    Service grant exposing side: the replay is what closes the gap between a sidecar
+    coming up and the admission set being derived, so it must never be the
+    thing that opens the port.
+    """
+
     path = tmp_path / "network-exposures.json"
     store = ExposureStore(path)
     expected = {
@@ -68,12 +79,14 @@ def test_desired_exposures_persist_and_are_reissued_after_restart(
     )
     supervisor.ensure_started()
     assert made[0].applied == [expected]
+    assert made[0].admissions == [("keys", [])]
 
     callbacks[0](17)
     supervisor._scheduled_relaunch(
         supervisor._generation
     )  # exercise the real spawn seam
     assert made[1].applied == [expected]
+    assert made[1].admissions == [("keys", [])]
     supervisor.close()
 
 
@@ -87,7 +100,8 @@ def test_old_sidecar_refuses_expose_without_hanging() -> None:
                 "port": 8443,
                 "target": "tcp:127.0.0.1:9443",
                 "proxyProtocol": "none",
-            }
+            },
+            admission="keys",
         )
 
 
@@ -99,7 +113,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     controller = ForwardingSidecarController(
         [sys.executable, str(FIXTURE)],
         {
-            "v": 6,
+            "v": 7,
             "op": "up",
             "keyFile": str(tmp_path / "device-key.json"),
             "membershipStore": str(tmp_path / 'membership.json'),
@@ -122,7 +136,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
             "target": "tcp:127.0.0.1:9443",
             "proxyProtocol": "none",
         }
-        assert controller.expose(exposure) == exposure
+        assert controller.expose(exposure, admission="allow") == exposure
         assert controller.peer_key("100.64.20.8:54321") == {
             "addr": "100.64.20.8:54321",
             "found": True,
@@ -134,7 +148,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
 
     if own_io:
         for invoke in (
-            lambda: controller.expose(exposure),
+            lambda: controller.expose(exposure, admission="allow"),
             lambda: controller.unexpose(8443),
             lambda: controller.peer_key("100.64.20.8:54321"),
         ):
@@ -151,6 +165,7 @@ def test_controller_round_trips_expose_unexpose_and_peer_key(
     ]
     # Protocol v3: the Python-side "none" went out as "" on the wire.
     assert commands[1]["proxyProtocol"] == ""
+    assert commands[1]["admission"] == "allow"
 
 
 def test_unix_target_directory_requires_owner_only_mode(tmp_path: Path) -> None:
@@ -280,10 +295,12 @@ def test_invalid_persisted_exposure_is_skipped_not_fatal(tmp_path: Path) -> None
 
 
 class _RefusingController(_Controller):
-    def expose(self, exposure: dict[str, object]) -> dict[str, object]:
+    def expose(
+        self, exposure: dict[str, object], *, admission: str, keys: Any = ()
+    ) -> dict[str, object]:
         if exposure["port"] == 8444:
             raise ForwardingSidecarError("sidecar refused this exposure")
-        return super().expose(exposure)
+        return super().expose(exposure, admission=admission, keys=keys)
 
 
 def test_one_refused_exposure_does_not_stop_forwarding_start(
@@ -412,3 +429,178 @@ def test_network_exposures_text_lists_entries_that_are_not_served(
         "unix:",
         "target",
     ]
+
+
+def test_fake_sidecar_validates_v7_expose_admission_and_key_count(tmp_path: Path) -> None:
+    """Fake sidecar pins protocol-v7 expose admission, canonical keys, and keyCount."""
+
+    import subprocess
+
+    receipt = tmp_path / "receipt.jsonl"
+    key_a = "nodekey:" + "0" * 63 + "1"
+    commands = [
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "missing-admission",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "allow-ok",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+            "admission": "allow",
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-ok",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": [key_a],
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-dup",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": [key_a, key_a],
+        },
+        {
+            "v": 7,
+            "op": "expose",
+            "requestId": "keys-upper",
+            "port": 8444,
+            "target": "tcp:127.0.0.1:9444",
+            "proxyProtocol": "",
+            "admission": "keys",
+            "keys": ["nodekey:" + "A" * 64],
+        },
+        {"v": 7, "op": "down"},
+    ]
+    payload = "\n".join(json.dumps(item) for item in commands) + "\n"
+    completed = subprocess.run(
+        [sys.executable, str(FIXTURE)],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env={"FAKE_FORWARD_RECEIPT": str(receipt)},
+        check=True,
+        timeout=15,
+    )
+    events = [json.loads(line) for line in completed.stdout.splitlines()]
+    by_request = {event["requestId"]: event for event in events if "requestId" in event}
+    assert by_request["missing-admission"]["event"] == "error"
+    assert by_request["missing-admission"]["code"] == "BAD_REQUEST"
+    assert by_request["allow-ok"]["event"] == "exposed"
+    assert by_request["allow-ok"]["admission"] == "allow"
+    assert "keyCount" not in by_request["allow-ok"]
+    assert by_request["keys-ok"]["event"] == "exposed"
+    assert by_request["keys-ok"]["admission"] == "keys"
+    assert by_request["keys-ok"]["keyCount"] == 1
+    assert "keys" not in by_request["keys-ok"]
+    assert by_request["keys-dup"]["event"] == "error"
+    assert by_request["keys-dup"]["code"] == "BAD_REQUEST"
+    assert by_request["keys-upper"]["event"] == "error"
+    assert by_request["keys-upper"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.parametrize(
+    "admission,keys,wire",
+    [
+        ("allow", (), {"admission": "allow"}),
+        ("keys", (), {"admission": "keys", "keys": []}),
+        (
+            "keys",
+            ("nodekey:" + "ab" * 32,),
+            {"admission": "keys", "keys": ["nodekey:" + "ab" * 32]},
+        ),
+    ],
+)
+def test_controller_expose_sends_the_callers_admission(
+    admission: str, keys: tuple, wire: dict[str, Any]
+) -> None:
+    """Protocol v7 requires an explicit admission on every expose; there is no default.
+
+    Service grant exposing side: the controller used to send "allow" when the caller
+    said nothing. It now refuses a call without a mode, and puts exactly the
+    caller's mode and key list on the wire.
+    """
+
+    controller = object.__new__(ForwardingSidecarController)
+    controller._expose_capable = True
+    sent: list[dict[str, object]] = []
+
+    def fake_request(payload: dict[str, object], expected_event: str) -> dict[str, object]:
+        sent.append(dict(payload))
+        assert expected_event == "exposed"
+        reply: dict[str, object] = {
+            "v": payload["v"],
+            "event": "exposed",
+            "port": payload["port"],
+            "target": payload["target"],
+            "proxyProtocol": payload["proxyProtocol"],
+            "admission": payload["admission"],
+        }
+        if payload["admission"] == "keys":
+            reply["keyCount"] = len(payload["keys"])
+        return reply
+
+    controller._request = fake_request  # type: ignore[method-assign]
+    result = controller.expose(
+        {
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "none",
+        },
+        admission=admission,
+        keys=keys,
+    )
+    assert sent == [
+        {
+            "v": 7,
+            "op": "expose",
+            "port": 8443,
+            "target": "tcp:127.0.0.1:9443",
+            "proxyProtocol": "",
+            **wire,
+        }
+    ]
+    assert result == {
+        "port": 8443,
+        "target": "tcp:127.0.0.1:9443",
+        "proxyProtocol": "none",
+    }
+
+
+def test_controller_expose_without_a_mode_is_refused_before_the_wire() -> None:
+    """An expose that says whom to admit nowhere is the one thing v7 does not accept."""
+
+    controller = object.__new__(ForwardingSidecarController)
+    controller._expose_capable = True
+    sent: list[dict[str, object]] = []
+
+    def fake_request(payload: dict[str, object], expected_event: str) -> dict[str, object]:
+        sent.append(dict(payload))
+        raise AssertionError("the request must not reach the sidecar")
+
+    controller._request = fake_request  # type: ignore[method-assign]
+    with pytest.raises(TypeError, match="admission"):
+        controller.expose(
+            {
+                "port": 8443,
+                "target": "tcp:127.0.0.1:9443",
+                "proxyProtocol": "none",
+            }
+        )
+    assert sent == []

@@ -114,7 +114,7 @@ OTHER_NOT_A_TARGET = frozenset({
     "orgfs.space_purge", "orgfs.spaces", "orgfs.stat", "orgfs.status",
     "orgfs.trash", "orgfs.watch", "orgfs.write", "progress.list",
     "routine.audit", "routine.list", "routine.pause", "routine.plan", "routine.resume",
-    "routine.status", "service.connect", "service.disconnect", "service.guide",
+    "routine.status", "service.connect", "service.disconnect", "service.grant", "service.guide",
     "session.turn.refresh", "targets", "userKey.sign", "workflow.history.list",
     "workflow.list", "workflow.node.context",
     "autoupdate.trigger", "dispatch.matrix.resolve", "down",

@@ -384,9 +384,9 @@ func (e *Engine) membershipChanged(id string, rev uint64, code string) {
 	}
 	for _, exposed := range e.exposed {
 		for pair := range exposed.pairs {
-			if !m.Admits(pair.peerKey.String()) {
-				pair.close()
+			if !e.admitsExposureLocked(exposed.gate, pair.peerKey, !pair.peerKey.IsZero()) {
 				e.disconnected.Add(1)
+				pair.close()
 			}
 		}
 	}

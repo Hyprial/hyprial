@@ -22,9 +22,13 @@ value, and no derived value may equal the row's master `clientPublic`. Missing,
 invalid, duplicate or cross-role-aliased maps make the entire row invalid.
 `clientPublic` remains the master public identifier for directory identity only
 and is never an inbound admission key. Directory maps are publication data,
-not admission or HTTP attribution authority. With stdio v6 the sidecar roster
+not admission or HTTP attribution authority. With stdio v7 the sidecar roster
 supplies the derived-key-to-owner mapping; absent, ambiguous, master or
-foreign-server keys fail closed. The `self` pane still exposes the local public
+foreign-server keys fail closed. Service grant admission follows the same rule:
+the exposing daemon takes a recipient's admission key from its own sidecar
+roster (`membership-status`), never from this directory map, which the
+publishing path leaves empty (see
+[contract/service-grants](../service-grants/README.md)). The `self` pane still exposes the local public
 `serverPublic`. Directory outages do not change sidecar membership.
 
 UUID addressing adds `deviceUid` as an output field only; no routing key
@@ -67,6 +71,63 @@ candidate addresses. Bootstrap-peer admission/dial exceptions are removed.
 The one-time offline migration and subsequent sidecar membership commits check
 identity/address consistency. Do not use Directory conflict repair as an
 implicit authority transfer or key reissue.
+
+A directory row may additionally carry a device's encryption key as the
+paired keys `encryptionKeyId` and `encryptionPublicKey`: either both are
+present or neither. The key is an X25519 key of the `user` kind, the one
+kind that can open a sealed credential on the device. `encryptionPublicKey`
+is the 32 raw bytes of the public key as standard base64, the encoding the
+local key store already uses, and `encryptionKeyId` is `x25519:` followed by
+the first 32 lowercase hex digits of the SHA-256 of those bytes. A reader
+refuses a row where only one key is present, where either is malformed, where
+the id is not the digest of the public key, or where the public key is a
+low-order point; such a row is invalid as a whole. The key set of a row stays
+closed: `encryptionKeyPrivate` or any other unknown key is rejected. A service
+grant credential is sealed to this public key and bound to this
+`encryptionKeyId` ([contract/service-grants](../service-grants/README.md)); a
+row without the pair can be granted access but cannot receive a credential.
+
+A device publishes the pair once it holds a committed account and a device
+record that belongs to that account (settings `owner`, `identityIssuer` and
+`userId`, and the record's `deviceUid`). A device without them publishes a
+row without the pair, which stays valid, and its publish does not fail. When
+the local key store is temporarily unreadable (such as a busy store lock or
+transient I/O error), publication retains any pair already present on this
+device's current directory row instead of overwriting it without keys; only
+an explicit absence of prerequisites clears the pair. Serving start and
+relogin ensure the key on disk under the home identity transaction lock, and
+periodic `publish_self` caches the resolved public pair in memory by
+`(userId, deviceUid)` (invalidating when either changes) and reads at most
+once across all orgs per pass, with a short lock timeout on a cache miss. The
+pair carries no switch of its own: an upgraded daemon that has the
+prerequisites publishes the pair on its next `publish_self`. Whether the key
+was made by serving start or by a cache-miss publish does not matter: both
+read the same local key store and get the same key.
+
+Mixed-version window. A directory reader on a build that predates the two
+keys refuses a row that carries them. Measured on a real OrgFS store: an
+upgraded build wrote two rows, one with the pair and one without, and the
+reader of the build before this change kept only the row without the pair,
+logged `directory device record has unknown keys: ['encryptionKeyId',
+'encryptionPublicKey']` and reported the other row as an
+`invalid-device-record` data problem; the reader of the upgraded build kept
+both and reported no problem. The rows were written through the directory
+store, not by `publish_self`, and no two daemon builds talked to each other
+over a network. A daemon on the older build therefore leaves that device out
+of its directory view until it upgrades, while its other rows are not
+affected. On rollback, once an older daemon runs its next `publish_self`, it
+overwrites its own row with an older-format row without the pair and becomes
+visible again, whereas any device still running the newer build or offline
+with a row carrying the pair continues to be dropped as
+`invalid-device-record` by older builds. Because no switch delays the pair,
+every device of an org has to be upgraded together, before the first upgraded
+device republishes its row. The migration steps are in
+`docs/guides/migration-device-encryption-key.md`.
+
+A daemon on a build that publishes the pair but does not know it in its
+`org.network` result schema is not a supported state: the result is checked
+against a closed schema at request time, and such an answer fails as a
+whole. The schema and the publication change ship together.
 
 The response keeps the existing pane values and adds `paneStatus`, keyed by
 `directory`, `mappedPeers`, and `sidecar`. Each status is one of:

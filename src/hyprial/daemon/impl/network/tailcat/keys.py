@@ -30,6 +30,7 @@ from hyprial.identity import (
 from hyprial.kernel import is_identity_id_segment
 
 from .binary import (
+    SIDECAR_PROTOCOL_VERSION,
     TailcatSidecarError,
     locate_tailcat_sidecar,
     no_console_window_kwargs,
@@ -240,7 +241,7 @@ def _run_genkey(
         not isinstance(public, dict)
         or set(public) != {"v", "serverPublic", "clientPublic"}
         or type(public.get("v")) is not int
-        or public.get("v") != 6
+        or public.get("v") != SIDECAR_PROTOCOL_VERSION
         or not isinstance(public.get("serverPublic"), str)
         or not public["serverPublic"]
         or not isinstance(public.get("clientPublic"), str)

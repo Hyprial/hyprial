@@ -1044,6 +1044,14 @@
    "covered": false,
    "reason": "Service connect surface; not touched by S2-S7."
   },
+  "service.grant": {
+   "covered": false,
+   "reason": "Service grant surface (OrgFS grant documents); not touched by S2-S7."
+  },
+  "service.grants": {
+   "covered": false,
+   "reason": "Service grant surface (OrgFS grant documents); not touched by S2-S7."
+  },
   "service.guide": {
    "covered": false,
    "reason": "Service connect surface; not touched by S2-S7."
@@ -1051,6 +1059,10 @@
   "service.list": {
    "covered": false,
    "reason": "Service connect surface; not touched by S2-S7."
+  },
+  "service.revoke": {
+   "covered": false,
+   "reason": "Service grant surface (OrgFS grant documents); not touched by S2-S7."
   },
   "session.heartbeat": {
    "covered": true,

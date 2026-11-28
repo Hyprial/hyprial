@@ -29,6 +29,15 @@ from hyprial.kernel import (
     ipc_errors,
 )
 
+from .derived import (
+    derived_access,
+    grant_statuses,
+    is_withdrawn,
+    merge_entries,
+    record_absent,
+    refresh_quietly,
+    with_derived_devices,
+)
 from .io import ServiceIo
 from .models import (
     CatalogEntry,
@@ -36,6 +45,7 @@ from .models import (
     RegistrySnapshot,
     SERVICE_CODES,
     ServiceConnectError,
+    failed_row,
 )
 from .registry import CatalogRegistry
 from .resolver import ProtectedResolver
@@ -163,35 +173,7 @@ def _mapping(value: object, entry: CatalogEntry, device: ProtectedDevice) -> dic
 
 
 def _row(mapping: Mapping[str, object], *, state: str, error_code: str | None) -> dict[str, object]:
-    result = dict(mapping)
-    result.update({"state": state, "errorCode": error_code})
-    return result
-
-
-def _failed_row(
-    name: str,
-    entry: CatalogEntry | None,
-    *,
-    local_port: int | None,
-    code: str,
-) -> dict[str, object]:
-    return {
-        "name": name,
-        "deviceId": None if entry is None else entry.device_id,
-        "remotePort": None if entry is None else entry.remote_port,
-        "recordGeneration": None,
-        "localPort": local_port,
-        "activeConnections": 0,
-        "path": "unknown",
-        "pathDetail": None,
-        "observedAtMs": None,
-        "lastDialState": "unknown",
-        "lastDialMs": None,
-        "lastError": "service mapping is unavailable",
-        "lastErrorAtMs": None,
-        "state": "failed",
-        "errorCode": code,
-    }
+    return {**mapping, "state": state, "errorCode": error_code}
 
 
 class ServiceManager:
@@ -207,6 +189,7 @@ class ServiceManager:
         access_path: str | Path,
         scheduler, actor_host=None,
         service_discovery: Callable[[], tuple[CatalogEntry, ...]] | None = None,
+        derived_source=None,
     ) -> None:
         self._orgfs = orgfs
         self._state = state
@@ -215,6 +198,8 @@ class ServiceManager:
         self._resolver = ProtectedResolver(self.access_path)
         self._scheduler = scheduler
         self._service_discovery = service_discovery
+        self._derived = derived_source
+        self._derived_names: frozenset[str] = frozenset()
         self._io = ServiceIo(actor_host=actor_host)
         self._lock = threading.RLock()
         self._catalog_lock = threading.Lock()
@@ -262,6 +247,7 @@ class ServiceManager:
         catalog = None
         registry_error = None
         if method in {"service.list", "service.guide", "service.connect"}:
+            refresh_quietly(self._derived)
             try:
                 access = self._read_access()
                 catalog = self._read_catalog(access)
@@ -294,18 +280,12 @@ class ServiceManager:
             self._refresh_desired_if_dirty()
         # OrgFS and protected-file reads are bounded external I/O. They must
         # not hold the manager state lock and stall list/connect/disconnect.
+        refresh_quietly(self._derived)
         try:
             access = self._read_access()
             catalog = self._read_catalog(access)
         except ServiceConnectError as error:
-            try:
-                self.access_path.lstat()
-            except FileNotFoundError:
-                access_missing = True
-            except OSError:
-                access_missing = False
-            else:
-                access_missing = False
+            access_missing = record_absent(self.access_path)
             with self._lock:
                 if self._closed:
                     return
@@ -376,6 +356,12 @@ class ServiceManager:
                 )
             for name, remembered_port in tuple(self._desired.items()):
                 entry = catalog.find(name)
+                if is_withdrawn(self._derived, self._derived_names, name, entry):
+                    try:
+                        self._disconnect(name)
+                    except ServiceConnectError:
+                        pass
+                    continue
                 if entry is None:
                     self._close_one(name, controller, ipc_errors.SERVICE_NOT_REGISTERED)
                     self._restore_failed(name, ipc_errors.SERVICE_NOT_REGISTERED)
@@ -412,6 +398,8 @@ class ServiceManager:
                     failures += 1
                     continue
                 self._restore_pending.discard(name)
+            if self._derived is not None:
+                self._derived.retain(self._derived_names & self._desired.keys())
             self._emit_transition(
                 "reconcile",
                 logging.WARNING if failures else logging.INFO,
@@ -469,6 +457,9 @@ class ServiceManager:
             self._lock.release()
         return drained
 
+    def grant_status(self) -> dict[tuple[str, str], dict[str, object]]:
+        with self._lock:
+            return grant_statuses(self._derived, self._derived_names, self._bindings)
     def _require_open(self) -> None:
         if self._admission_closed.is_set() or self._closed:
             raise RuntimeError("service manager is closed")
@@ -506,8 +497,11 @@ class ServiceManager:
                 self._resolver, SERVICE_REGISTRY_READ_TIMEOUT_SECONDS
             )
             self._clear_transition("access:record")
-            return access
+            return access if self._derived is None else with_derived_devices(access, self._derived)
         except ServiceConnectError as error:
+            derived = derived_access(self._derived, self.access_path)
+            if derived is not None:
+                return derived
             self._access_invalid(None, error.code)
             raise
         except BaseException as error:
@@ -547,6 +541,8 @@ class ServiceManager:
             )
             if cache_changed:
                 self._cached_registry = snapshot.cache
+            if self._derived is not None:
+                snapshot, self._derived_names = merge_entries(snapshot, self._derived)
         if cache_changed:
             try:
                 self._persist(
@@ -637,7 +633,7 @@ class ServiceManager:
         try:
             row = self._map(entry, device, requested_port, controller)
         except ServiceConnectError as error:
-            self._rows[name] = _failed_row(
+            self._rows[name] = failed_row(
                 name,
                 entry,
                 local_port=requested_port or None,
@@ -654,7 +650,7 @@ class ServiceManager:
         except ServiceConnectError:
             self._unmap(controller, name)
             self._bindings.pop(name, None)
-            self._rows[name] = _failed_row(
+            self._rows[name] = failed_row(
                 name,
                 entry,
                 local_port=self._desired.get(name) or None,
@@ -662,6 +658,8 @@ class ServiceManager:
             )
             raise
         self._desired[name] = actual_port
+        if name in self._derived_names:
+            self._derived.connected(name)
         return self._connect_result(entry, row)
 
     def _map(
@@ -745,6 +743,8 @@ class ServiceManager:
                 context=("disconnect", name),
             )
             self._desired.pop(name, None)
+            if self._derived is not None and self._derived.remembers(name):
+                self._derived.forget(name)
         removed = False
         if controller is not None:
             try:
@@ -776,7 +776,7 @@ class ServiceManager:
         for name in sorted(self._desired):
             row = self._rows.get(name)
             if row is None:
-                row = _failed_row(
+                row = failed_row(
                     name,
                     catalog.find(name),
                     local_port=self._desired[name] or None,
@@ -835,7 +835,7 @@ class ServiceManager:
             try:
                 self._unmap(controller, name)
             except ServiceConnectError:
-                self._rows[name] = _failed_row(
+                self._rows[name] = failed_row(
                     name,
                     entry,
                     local_port=self._desired.get(name) or None,
@@ -843,7 +843,7 @@ class ServiceManager:
                 )
                 return
         self._bindings.pop(name, None)
-        self._rows[name] = _failed_row(
+        self._rows[name] = failed_row(
             name,
             entry,
             local_port=self._desired.get(name) or None,

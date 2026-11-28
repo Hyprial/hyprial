@@ -1,7 +1,7 @@
 # hyprial-tailcat
 
 The sidecar owns Tailcat membership and admission. The daemon uses the closed
-stdio-v6 protocol. Each tailnet has one fixed authority, a 300-second member
+stdio-v7 protocol. Each tailnet has one fixed authority, a 300-second member
 lease, and a 60-second refresh interval. There is no automatic authority election.
 
 The normative contract is
@@ -17,7 +17,7 @@ hyprial-tailcat forward
 ```
 
 `genkey` exits with code 3 if the key already exists and `--force` is absent.
-`forward` accepts v6 only. A version mismatch returns
+`forward` accepts v7 only. A version mismatch returns
 `SIDECAR_PROTOCOL_MISMATCH`; unknown operations or fields return `BAD_REQUEST`.
 
 ## Managed lifecycle
@@ -33,7 +33,7 @@ Membership operations are `membership-init`, `roster-fetch`, `member-announce`,
 `authority-repin`. Local-only operator operations cannot run over control-v1.
 `allow`, `allowAny`, and public `admission:any` are retired. Only the internal
 control listener bypasses business membership admission. Existing standalone
-engine/servicehost allow configuration is separate from the managed-v6 entry.
+engine/servicehost allow configuration is separate from the managed-v7 entry.
 
 An empty announcement map is expanded with derived public keys for the live
 roster's servers. Expansion is persisted beside the store as `.announcements`,

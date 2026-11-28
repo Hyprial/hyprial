@@ -1,4 +1,4 @@
-"""Real v6 sidecar + OrgFS device removal; SQLite groups are a protocol fixture.
+"""Real v7 sidecar + OrgFS device removal; SQLite groups are a protocol fixture.
 
 Only disposable homes and a loopback labrelay are used. This does not prove
 deployed Casdoor behavior. Run with --binary and --relay; no production state.
@@ -16,6 +16,7 @@ import time
 
 from hyprial.daemon import ensure_device_key
 from hyprial.daemon.impl.forwarding.controller import ForwardingSidecarController
+from hyprial.daemon.impl.forwarding.policy import FORWARD_PROTOCOL_VERSION
 from hyprial.daemon.impl.org.network.service import OrgNetworkError, OrgNetworkService
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 from hyprial.identity import address_path, device_key_path
@@ -55,7 +56,7 @@ def run(binary, relay_binary):
                                   name='device-smoke-' + device, environ=env)
                 private = home / 'tailnet'
                 private.mkdir(mode=0o700)
-                up = {'v': 6, 'op': 'up', 'keyFile': str(key_file),
+                up = {'v': FORWARD_PROTOCOL_VERSION, 'op': 'up', 'keyFile': str(key_file),
                       'membershipStore': str(private / 'membership.json'), 'owner': owner,
                       'deviceId': device, 'controlPort': 7448, 'addressFile': str(address_path(home)),
                       'inboundTarget': 'unix:' + str(private / 'absent.sock'),

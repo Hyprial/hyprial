@@ -166,7 +166,7 @@ func (m *Manager) Execute(ctx context.Context, r Request) (json.RawMessage, erro
 			// A replayed redemption receipt may contain an old roster. Never use
 			// that receipt to renew a lease; fetch the current authority snapshot.
 			start = time.Now()
-			snapshot, err = m.exchange(ctx, pin, Request{V: 6, Op: "roster-fetch", RequestID: randomToken(), Params: marshal(FetchParams{id})}, self)
+			snapshot, err = m.exchange(ctx, pin, Request{V: ProtocolVersion, Op: "roster-fetch", RequestID: randomToken(), Params: marshal(FetchParams{id})}, self)
 			if err != nil {
 				m.noteFailure(id, Code(err))
 				return nil, err

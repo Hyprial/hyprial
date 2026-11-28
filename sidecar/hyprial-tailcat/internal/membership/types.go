@@ -12,6 +12,10 @@ import (
 	"code.hyprial.com/HyprialOS/harness-bridge/sidecar/hyprial-tailcat/internal/outbound"
 )
 
+// ProtocolVersion is the sidecar stdio JSON-lines protocol version shared
+// by local membership requests and package proto.
+const ProtocolVersion = 7
+
 const MaxFrame = 1 << 20
 const MaxNumber = 1<<53 - 1
 const Lease = 300 * time.Second

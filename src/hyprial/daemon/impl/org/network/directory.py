@@ -57,6 +57,8 @@ from hyprial.identity import (
 )
 from hyprial.kernel import ORGFS_CONTENT_PENDING, canonical_user_uri
 
+from .grant_docs import SERVICE_GRANTS_DIR, ServiceGrantDocuments
+
 _LOG = logging.getLogger(__name__)
 _OWNER_CREATED_DIRS = (
     "directory",
@@ -64,6 +66,7 @@ _OWNER_CREATED_DIRS = (
     PEOPLE_DIR,
     INVITES_DIR,
     LEAVES_DIR,
+    SERVICE_GRANTS_DIR,
 )
 
 
@@ -116,7 +119,7 @@ def network_directory_projection(
     return directory, pending
 
 
-class OrgFsDirectoryStore:
+class OrgFsDirectoryStore(ServiceGrantDocuments):
     """:class:`~hyprial.identity.impl.org_directory.DirectoryStore` over OrgFS.
 
     ``fs`` is the OrgFS facade (``OrgFsRuntime.facade``).  Every method
@@ -137,6 +140,12 @@ class OrgFsDirectoryStore:
         quarantine = invalid_devices or InvalidDeviceDiagnostics()
         self._invalid_device_quiet = quarantine.entries
         self._invalid_device_lock = quarantine.lock
+
+    @property
+    def orgfs(self) -> OrgFs:
+        """The OrgFS facade this store addresses, for a bounded scan beside it."""
+
+        return self._fs
 
     # -- DirectoryStore ---------------------------------------------------
 

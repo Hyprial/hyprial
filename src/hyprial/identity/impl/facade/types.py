@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from hyprial.identity.impl.agents.runtime.model_records.connections import ModelConnection as ModelConnection
     from hyprial.identity.impl.provider_keys import ProviderKeys as ProviderKeys
+    from hyprial.identity.impl.sealed_envelope import SealedEnvelope as SealedEnvelope
     from hyprial.identity.impl.user_key import UserKey as UserKey
     from hyprial.identity.impl.user_key.encryption import EncryptionKey as EncryptionKey
     from hyprial.identity.impl.adapter_contracts import AgentIdentitySnapshot as AgentIdentitySnapshot
@@ -288,6 +289,9 @@ if TYPE_CHECKING:
         agent_secret_store_exists,
     )
     from hyprial.identity.impl.agents.runtime.secrets import secret_environment_name_is_allowed as secret_environment_name_is_allowed
+    from hyprial.identity.impl.agents.runtime.secrets import create_user_provider as create_user_provider
+    from hyprial.identity.impl.agents.runtime.secrets import delete_user_provider as delete_user_provider
+    from hyprial.identity.impl.agents.runtime.secrets import read_user_provider_value as read_user_provider_value
     from hyprial.identity.impl.agents.secret_store import secret_fingerprint as secret_fingerprint
     from hyprial.identity.impl.agents.actor.ports import (
         SetRestoreDispositionCommand as SetRestoreDispositionCommand, SettleAgentDestroyCommand as SettleAgentDestroyCommand,
@@ -422,17 +426,17 @@ __all__ = [
     'WORKFLOW_REMOTE_OWNER_UNSUPPORTED', 'WORKFLOW_WORKER_RECEIPT_MISMATCH', 'WorkerProxyError', 'WorkerSessionBinding', 'address_path', 'agent_config_digest', 'agent_home_mode',
     'agent_id_for_entity_token', 'agent_secret_store_exists', 'ambient_proxy_absent', 'apply_runtime_environment_profile', 'assess_agent_readiness',
     'bootstrap_yaml', 'check_org_context', 'check_shared_path', 'compose_worker_child_launch', 'consume_rotation_event',
-    'decode_invite', 'default_bootstrap', 'default_role_grants_document', 'derived_proxy_environment', 'desired_generation', 'device_key_path', 'device_record_path',
+    'decode_invite', 'default_bootstrap', 'default_role_grants_document', 'create_user_provider', 'delete_user_provider', 'derived_proxy_environment', 'desired_generation', 'device_key_path', 'device_record_path',
     'directory_device_path', 'directory_owner_principal', 'encode_invite', 'explain', 'explain_target', 'id_form_minting', 'identity_credential_path', 'identity_slug', 'inspect_logout_artifacts',
     'install_native_credential', 'install_native_credential_set', 'inspect_native_credentials', 'invite_deep_link', 'invite_https_url', 'is_inactive', 'is_org_acl_space', 'is_org_directory_space', 'JoinIdentityError', 'JoinTokenLedger', 'launch_worker_proxy_route',
     'load_packaged_support_matrix', 'machine_binding_path', 'machine_fingerprint', 'mark_first_published', 'may_send', 'migrate_legacy_agent_keep_list', 'name_taken_remedy', 'native_secrets_root', 'node_owner_or_none',
     'home_account_conflict_message', 'legacy_business_data_present', 'normalize_capabilities', 'normalize_harness_args', 'normalize_issuer', 'official_agent_uri', 'option_value', 'org_from_space_name', 'org_space_name', 'parse_bootstrap_yaml', 'parse_principal', 'parse_protected_directory_doc_id',
     'parse_protected_directory_node_id', 'parse_tool_declaration', 'preflight_codex_credential', 'prepare_legacy_claude_native_root', 'principal_kind', 'principal_matches_local_actor',
-    'protected_directory_author_allowed', 'protected_directory_doc_id', 'protected_directory_node_id', 'read_device_record', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
+    'protected_directory_author_allowed', 'protected_directory_doc_id', 'protected_directory_node_id', 'read_device_record', 'read_user_provider_value', 'read_home_binding', 'read_identity_admission', 'read_identity_credential',
     'read_identity_snapshot', 'read_login_generation', 'read_onboarding_identity', 'read_onboarding_subject', 'read_machine_binding', 'read_settings_identity', 'read_settings_identity_metadata', 'read_settings_username', 'read_worker_proxy', 'remove_logout_artifacts', 'remove_native_credentials',
     'reserve_identity_generation', 'resolve_agent_runtime_context', 'capture_native_auth_launch', 'resolve_agent_secrets', 'resolve_agent_tool_profile', 'resolve_local_actor', 'resolve_node_owner', 'resolve_node_user_id', 'role_grants_from_document', 'runtime_capabilities',
     'secret_environment_name_is_allowed', 'secret_fingerprint', 'settings_path', 'shared_credential_status', 'snapshot_home_payload', 'validate_oidc_join', 'validate_shared_credential_binding',
     'validate_shared_credential_environment', 'verify_native_projection', 'visible_targets', 'whitelist_replacement_environment', 'worker_session_binding', 'write_device_record',
     'write_identity_credential', 'write_machine_binding', 'write_settings_identity', 'write_settings_owner', 'write_worker_proxy_field',
-    'AgentIdentitySnapshot', 'AuthorizationMechanism', 'BINDING_URI_NAMESPACE', 'BINDING_URI_PREFIX', 'CLAIM_FIELDS', 'ClaimReceiptV1', 'ClientTlsMaterial', 'DEVICE_CERTIFICATE_ROUTE', 'DeviceAuthorityConfig', 'DeviceTransportClient', 'ENVELOPE_VERSION', 'EncryptionKey', 'InviteSelection', 'InviteView', 'MAX_REQUEST_BYTES', 'MAX_RESPONSE_BYTES', 'ManagementAuthorizationRefV1', 'OUTCOME_NOT_SENT', 'OUTCOME_REJECTED', 'OUTCOME_UNKNOWN', 'OrgMembership', 'OrgRef', 'OrganizationAuthorizationLeaseV1', 'PROFILE', 'ProviderKeys', 'RETIRE_BINDING_ROUTE', 'StagedTransportCredential', 'TailnetAuthorityBinding', 'TailnetAuthorityPin', 'TailnetCredentialAssociation', 'TailnetCredentialContext', 'TailnetCredentialError', 'TailnetCredentialOperation', 'TailnetCredentialWorkflow', 'TailnetCredentials', 'TailnetMember', 'TailnetMembership', 'TransportClientError', 'TransportCredential', 'TransportCredentialError', 'UserKey', 'binding_claims', 'binding_digest', 'binding_uri', 'canonical_binding_bytes', 'commit_transport_credential', 'invite_identifier', 'invite_link', 'invite_view', 'invite_views', 'load_client_tls_material', 'protected_section_for_path', 'read_transport_credential', 'retire_transport_credential', 'select_invites', 'stage_transport_credential', 'transport_credential_status', 'validate_enrollment_response', 'verify_certificate_binding'
+    'AgentIdentitySnapshot', 'AuthorizationMechanism', 'BINDING_URI_NAMESPACE', 'BINDING_URI_PREFIX', 'CLAIM_FIELDS', 'ClaimReceiptV1', 'ClientTlsMaterial', 'DEVICE_CERTIFICATE_ROUTE', 'DeviceAuthorityConfig', 'DeviceTransportClient', 'ENVELOPE_VERSION', 'EncryptionKey', 'InviteSelection', 'InviteView', 'MAX_REQUEST_BYTES', 'MAX_RESPONSE_BYTES', 'ManagementAuthorizationRefV1', 'OUTCOME_NOT_SENT', 'OUTCOME_REJECTED', 'OUTCOME_UNKNOWN', 'OrgMembership', 'OrgRef', 'OrganizationAuthorizationLeaseV1', 'PROFILE', 'ProviderKeys', 'RETIRE_BINDING_ROUTE', 'SealedEnvelope', 'StagedTransportCredential', 'TailnetAuthorityBinding', 'TailnetAuthorityPin', 'TailnetCredentialAssociation', 'TailnetCredentialContext', 'TailnetCredentialError', 'TailnetCredentialOperation', 'TailnetCredentialWorkflow', 'TailnetCredentials', 'TailnetMember', 'TailnetMembership', 'TransportClientError', 'TransportCredential', 'TransportCredentialError', 'UserKey', 'binding_claims', 'binding_digest', 'binding_uri', 'canonical_binding_bytes', 'commit_transport_credential', 'invite_identifier', 'invite_link', 'invite_view', 'invite_views', 'load_client_tls_material', 'protected_section_for_path', 'read_transport_credential', 'retire_transport_credential', 'select_invites', 'stage_transport_credential', 'transport_credential_status', 'validate_enrollment_response', 'verify_certificate_binding'
 ]

@@ -39,7 +39,7 @@ def _slot_set(tmp_path: Path) -> tuple[str, ...]:
 
 def _up(tmp_path: Path) -> dict[str, object]:
     return {
-        "v": 6, "requestId": "up-fixture",
+        "v": 7, "requestId": "up-fixture",
         "op": "up",
         "keyFile": str(tmp_path / "device-key.json"),
         "membershipStore": str(tmp_path / 'membership.json'),
