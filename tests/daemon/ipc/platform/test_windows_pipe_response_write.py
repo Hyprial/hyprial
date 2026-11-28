@@ -1,4 +1,10 @@
-"""Fake Win32 overlapped I/O controls; runnable without a Windows host."""
+"""Fake Win32 overlapped I/O controls; runnable without a Windows host.
+
+Decision record (2026-11-27): ``windows`` scopes its ``sys.modules`` fake Win32
+entries to module load time with ``monkeypatch.context()`` so later fixtures
+such as ``tmp_path`` and any subsequent imports see the real module table
+instead of incomplete stubs.
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -101,22 +107,23 @@ class WinIo:
 @pytest.fixture
 def windows(monkeypatch):
     io = WinIo()
-    for name in ("pywintypes", "win32api", "win32con", "win32event", "win32file", "win32pipe", "win32security"):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-    sys.modules["pywintypes"].error = WinError
-    events = sys.modules["win32event"]
-    events.INFINITE = 0xFFFFFFFF
-    events.WAIT_TIMEOUT = 258
-    events.WAIT_OBJECT_0 = 0
-    events.WaitForSingleObject = io.wait
-    files = sys.modules["win32file"]
-    files.WriteFile = io.write
-    files.ReadFile = io.read
-    files.GetOverlappedResult = io.result
-    path = Path(__file__).resolve().parents[4] / 'src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py'
-    spec = importlib.util.spec_from_file_location("_isolated_windows_pipe_response", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with monkeypatch.context() as mp:
+        for name in ("pywintypes", "win32api", "win32con", "win32event", "win32file", "win32pipe", "win32security"):
+            mp.setitem(sys.modules, name, types.ModuleType(name))
+        sys.modules["pywintypes"].error = WinError
+        events = sys.modules["win32event"]
+        events.INFINITE = 0xFFFFFFFF
+        events.WAIT_TIMEOUT = 258
+        events.WAIT_OBJECT_0 = 0
+        events.WaitForSingleObject = io.wait
+        files = sys.modules["win32file"]
+        files.WriteFile = io.write
+        files.ReadFile = io.read
+        files.GetOverlappedResult = io.result
+        path = Path(__file__).resolve().parents[4] / 'src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py'
+        spec = importlib.util.spec_from_file_location("_isolated_windows_pipe_response", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_overlapped", io.operation)
     monkeypatch.setattr(module, "_cancel", io.cancel)
     monkeypatch.setattr(module, "time", types.SimpleNamespace(monotonic=lambda: io.now, sleep=io.sleep))
@@ -323,3 +330,29 @@ def test_cancel_failure_keeps_pending_operation_until_late_full_completion(windo
     finally:
         release.set()
         worker.join(1)
+
+
+def test_windows_fixture_restores_sys_modules_before_tmp_path(
+    windows, tmp_path: Path
+) -> None:
+    module, _io, stream = windows
+    stub_names = (
+        "pywintypes",
+        "win32api",
+        "win32con",
+        "win32event",
+        "win32file",
+        "win32pipe",
+        "win32security",
+    )
+    try:
+        assert tmp_path.is_dir()
+        assert sys.modules.get("win32security") is not module.win32security
+        for name in stub_names:
+            assert sys.modules.get(name) is not getattr(module, name)
+        if sys.platform != "win32":
+            assert "win32security" not in sys.modules
+            for name in stub_names:
+                assert name not in sys.modules
+    finally:
+        stream.close()

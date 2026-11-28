@@ -1,7 +1,17 @@
+"""Windows Job-owned process group lifecycle tests with fake Win32 modules.
+
+Decision record (2026-11-27): ``fake_windows`` loads ``windows_owned_process.py``
+under an isolated spec name inside ``monkeypatch.context()`` so its fake Win32
+``sys.modules`` entries and the temporary ``_isolated_windows_owned_process``
+registration are restored immediately after module load without mutating any
+real ``sys.modules`` entry seen by later fixtures such as ``tmp_path``.
+"""
+
 from __future__ import annotations
 
 import asyncio
-import importlib
+import importlib.util
+from pathlib import Path
 import sys
 import threading
 import time
@@ -181,17 +191,25 @@ def fake_windows(monkeypatch: pytest.MonkeyPatch):
     win32job.SetInformationJobObject = set_job  # type: ignore[attr-defined]
     win32job.TerminateJobObject = terminate_job  # type: ignore[attr-defined]
 
-    for name, module in {
-        "win32api": win32api,
-        "win32con": win32con,
-        "win32event": win32event,
-        "win32job": win32job,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
-
-    target = "hyprial.kernel.impl.manysys.process.windows_owned_process"
-    sys.modules.pop(target, None)
-    module = importlib.import_module(target)
+    with monkeypatch.context() as mp:
+        for name, stub in {
+            "win32api": win32api,
+            "win32con": win32con,
+            "win32event": win32event,
+            "win32job": win32job,
+        }.items():
+            mp.setitem(sys.modules, name, stub)
+        path = (
+            Path(__file__).resolve().parents[3]
+            / "src/hyprial/kernel/impl/manysys/process/windows_owned_process.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_isolated_windows_owned_process", path
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        mp.setitem(sys.modules, spec.name, module)
+        spec.loader.exec_module(module)
     monkeypatch.setattr(module, "process_identity", lambda pid: f"fake:{pid}")
     monkeypatch.setattr(
         module.subprocess, "STARTUPINFO", type("STARTUPINFO", (), {}), raising=False
@@ -199,10 +217,7 @@ def fake_windows(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         module.asyncio, "create_subprocess_exec", state.create_subprocess
     )
-    try:
-        yield module, state
-    finally:
-        sys.modules.pop(target, None)
+    return module, state
 
 
 @pytest.mark.parametrize(
@@ -236,7 +251,7 @@ def test_late_bootstrap_failure_preserves_error_and_retries_failed_cleanup(
     fake_windows,
 ) -> None:
     module, state = fake_windows
-    state.wait_result = state_module = sys.modules["win32event"].WAIT_TIMEOUT
+    state.wait_result = state_module = module.win32event.WAIT_TIMEOUT
     assert state_module == 258
     state.close_failures["job"] = 1
     group = module.WindowsOwnedProcessGroup(label="late")
@@ -252,7 +267,7 @@ def test_late_bootstrap_failure_preserves_error_and_retries_failed_cleanup(
     assert state.process.wait_calls == 1
     assert group._job is first_job
 
-    state.wait_result = sys.modules["win32event"].WAIT_OBJECT_0
+    state.wait_result = module.win32event.WAIT_OBJECT_0
     process = asyncio.run(group.spawn(("worker",)))
     assert process.pid == 4242
     assert first_job.close_calls == 2
@@ -297,7 +312,7 @@ def test_unsettled_termination_and_bootstrap_cleanup_hold_ownership_until_retry(
     fake_windows,
 ) -> None:
     module, state = fake_windows
-    state.wait_result = sys.modules["win32event"].WAIT_TIMEOUT
+    state.wait_result = module.win32event.WAIT_TIMEOUT
     state.terminate_failures = 1
     state.kill_failures = 1
     group = module.WindowsOwnedProcessGroup(label="held")
@@ -315,7 +330,7 @@ def test_unsettled_termination_and_bootstrap_cleanup_hold_ownership_until_retry(
     assert liveness.state is module.ProcessLivenessState.ALIVE
     assert liveness.detail == "Windows Job cleanup is pending"
 
-    state.wait_result = sys.modules["win32event"].WAIT_OBJECT_0
+    state.wait_result = module.win32event.WAIT_OBJECT_0
     process = asyncio.run(group.spawn(("worker",)))
     assert process.pid == 4242
     assert held_job.closed
@@ -331,7 +346,7 @@ def test_delayed_job_termination_inside_existing_budget_allows_next_spawn(
     module, state = fake_windows
     monkeypatch.setattr(module, "PROCESS_FORCE_TERM_SECONDS", 0.02, raising=False)
     monkeypatch.setattr(module, "PROCESS_FORCE_KILL_SECONDS", 0.02, raising=False)
-    state.wait_result = sys.modules["win32event"].WAIT_TIMEOUT
+    state.wait_result = module.win32event.WAIT_TIMEOUT
     state.termination_delay_seconds = 0.01
     state.bootstrap_kill_clears_job = False
     group = module.WindowsOwnedProcessGroup(label="delayed-inside")
@@ -341,7 +356,7 @@ def test_delayed_job_termination_inside_existing_budget_allows_next_spawn(
 
     first_job = group._job
     assert first_job is not None
-    state.wait_result = sys.modules["win32event"].WAIT_OBJECT_0
+    state.wait_result = module.win32event.WAIT_OBJECT_0
     process = asyncio.run(group.spawn(("worker",)))
 
     assert process.pid == 4242
@@ -357,7 +372,7 @@ def test_delayed_job_termination_beyond_existing_budget_retains_ownership(
     module, state = fake_windows
     monkeypatch.setattr(module, "PROCESS_FORCE_TERM_SECONDS", 0.005, raising=False)
     monkeypatch.setattr(module, "PROCESS_FORCE_KILL_SECONDS", 0.005, raising=False)
-    state.wait_result = sys.modules["win32event"].WAIT_TIMEOUT
+    state.wait_result = module.win32event.WAIT_TIMEOUT
     state.termination_delay_seconds = 0.1
     state.bootstrap_kill_clears_job = False
     group = module.WindowsOwnedProcessGroup(label="delayed-beyond")
@@ -446,3 +461,17 @@ def test_signal_never_terminates_an_unverified_pid(fake_windows) -> None:
     group.force_close()
     assert state.terminate_calls >= 1
     assert group.stopped()
+
+
+def test_fake_windows_restores_sys_modules_before_tmp_path(
+    fake_windows, tmp_path: Path
+) -> None:
+    module, _state = fake_windows
+    assert tmp_path.is_dir()
+    stub_names = ("win32api", "win32con", "win32event", "win32job")
+    for name in stub_names:
+        assert sys.modules.get(name) is not getattr(module, name)
+    assert "_isolated_windows_owned_process" not in sys.modules
+    if sys.platform != "win32":
+        for name in stub_names:
+            assert name not in sys.modules

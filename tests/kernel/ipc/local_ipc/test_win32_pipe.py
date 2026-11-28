@@ -8,11 +8,17 @@ Decision record (2026-11-26): the deterministic ``PipeListener``
 accept/close concurrency tests load ``windows_pipe.py`` in isolation with fake
 Win32 modules and ``threading.Event`` barriers so they run on Linux as well as
 Windows without sleeping for races.
+
+Decision record (2026-11-27): ``fake_pipe_module`` scopes its ``sys.modules``
+fake Win32 entries to module load time with ``monkeypatch.context()`` so later
+fixtures such as ``tmp_path`` and any subsequent imports see the real module
+table instead of incomplete stubs.
 """
 
 from __future__ import annotations
 
 import errno
+import importlib
 import importlib.util
 import json
 from pathlib import Path
@@ -351,69 +357,70 @@ class _FakePipeWin32:
 @pytest.fixture
 def fake_pipe_module(monkeypatch: pytest.MonkeyPatch):
     io = _FakePipeWin32()
-    for name in (
-        "pywintypes",
-        "win32api",
-        "win32con",
-        "win32event",
-        "win32file",
-        "win32pipe",
-        "win32security",
-    ):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    with monkeypatch.context() as mp:
+        for name in (
+            "pywintypes",
+            "win32api",
+            "win32con",
+            "win32event",
+            "win32file",
+            "win32pipe",
+            "win32security",
+        ):
+            mp.setitem(sys.modules, name, types.ModuleType(name))
 
-    pywintypes: Any = sys.modules["pywintypes"]
-    pywintypes.error = _FakeWinError
-    pywintypes.OVERLAPPED = io.create_overlapped
-    pywintypes.SECURITY_ATTRIBUTES = _FakeSecurityAttributes
+        pywintypes: Any = sys.modules["pywintypes"]
+        pywintypes.error = _FakeWinError
+        pywintypes.OVERLAPPED = io.create_overlapped
+        pywintypes.SECURITY_ATTRIBUTES = _FakeSecurityAttributes
 
-    win32api: Any = sys.modules["win32api"]
-    win32api.GetCurrentProcess = lambda: 1
+        win32api: Any = sys.modules["win32api"]
+        win32api.GetCurrentProcess = lambda: 1
 
-    win32con: Any = sys.modules["win32con"]
-    win32con.TOKEN_QUERY = 8
-    win32con.GENERIC_ALL = 0x10000000
-    win32con.GENERIC_READ = 0x80000000
-    win32con.GENERIC_WRITE = 0x40000000
-    win32con.OPEN_EXISTING = 3
+        win32con: Any = sys.modules["win32con"]
+        win32con.TOKEN_QUERY = 8
+        win32con.GENERIC_ALL = 0x10000000
+        win32con.GENERIC_READ = 0x80000000
+        win32con.GENERIC_WRITE = 0x40000000
+        win32con.OPEN_EXISTING = 3
 
-    win32event: Any = sys.modules["win32event"]
-    win32event.INFINITE = _INFINITE
-    win32event.WAIT_OBJECT_0 = _WAIT_OBJECT_0
-    win32event.WAIT_TIMEOUT = _WAIT_TIMEOUT
-    win32event.CreateEvent = io.create_event
-    win32event.SetEvent = io.set_event
-    win32event.WaitForSingleObject = io.wait
+        win32event: Any = sys.modules["win32event"]
+        win32event.INFINITE = _INFINITE
+        win32event.WAIT_OBJECT_0 = _WAIT_OBJECT_0
+        win32event.WAIT_TIMEOUT = _WAIT_TIMEOUT
+        win32event.CreateEvent = io.create_event
+        win32event.SetEvent = io.set_event
+        win32event.WaitForSingleObject = io.wait
 
-    win32file: Any = sys.modules["win32file"]
-    win32file.FILE_FLAG_OVERLAPPED = 0x40000000
-    win32file.GetOverlappedResult = io.get_overlapped_result
+        win32file: Any = sys.modules["win32file"]
+        win32file.FILE_FLAG_OVERLAPPED = 0x40000000
+        win32file.GetOverlappedResult = io.get_overlapped_result
 
-    win32pipe: Any = sys.modules["win32pipe"]
-    win32pipe.PIPE_ACCESS_DUPLEX = 3
-    win32pipe.PIPE_TYPE_BYTE = 0
-    win32pipe.PIPE_READMODE_BYTE = 0
-    win32pipe.PIPE_WAIT = 0
-    win32pipe.CreateNamedPipe = io.create_named_pipe
-    win32pipe.ConnectNamedPipe = io.connect_named_pipe
+        win32pipe: Any = sys.modules["win32pipe"]
+        win32pipe.PIPE_ACCESS_DUPLEX = 3
+        win32pipe.PIPE_TYPE_BYTE = 0
+        win32pipe.PIPE_READMODE_BYTE = 0
+        win32pipe.PIPE_WAIT = 0
+        win32pipe.CreateNamedPipe = io.create_named_pipe
+        win32pipe.ConnectNamedPipe = io.connect_named_pipe
 
-    win32security: Any = sys.modules["win32security"]
-    win32security.ACL_REVISION = 2
-    win32security.TokenUser = 1
-    win32security.OpenProcessToken = lambda _proc, _access: _FakeToken()
-    win32security.GetTokenInformation = lambda _token, _cls: ("S-1-5-21-fake", 0)
-    win32security.ACL = _FakeAcl
-    win32security.SECURITY_DESCRIPTOR = _FakeSecurityDescriptor
-    win32security.ConvertStringSidToSid = lambda sid: sid
+        win32security: Any = sys.modules["win32security"]
+        win32security.ACL_REVISION = 2
+        win32security.TokenUser = 1
+        win32security.OpenProcessToken = lambda _proc, _access: _FakeToken()
+        win32security.GetTokenInformation = lambda _token, _cls: ("S-1-5-21-fake", 0)
+        win32security.ACL = _FakeAcl
+        win32security.SECURITY_DESCRIPTOR = _FakeSecurityDescriptor
+        win32security.ConvertStringSidToSid = lambda sid: sid
 
-    path = (
-        Path(__file__).resolve().parents[4]
-        / "src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py"
-    )
-    spec = importlib.util.spec_from_file_location("_isolated_windows_pipe_listener", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+        path = (
+            Path(__file__).resolve().parents[4]
+            / "src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py"
+        )
+        spec = importlib.util.spec_from_file_location("_isolated_windows_pipe_listener", path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_cancel", io.cancel)
     return module, io
 
@@ -746,4 +753,31 @@ def test_init_endpoint_write_failure_closes_prepared_pipe_once(
     assert io.violations == []
     assert len(io.handles) == 1 and io.handles[0].close_count == 1
     assert len(io.events) == 1 and io.events[0].close_count == 1
+
+
+def test_fake_pipe_module_restores_sys_modules_before_tmp_path(
+    fake_pipe_module, tmp_path: Path
+) -> None:
+    module, _io = fake_pipe_module
+    assert tmp_path.is_dir()
+    stub_names = (
+        "pywintypes",
+        "win32api",
+        "win32con",
+        "win32event",
+        "win32file",
+        "win32pipe",
+        "win32security",
+    )
+    for name in stub_names:
+        assert sys.modules.get(name) is not getattr(module, name)
+    if sys.platform != "win32":
+        assert "win32security" not in sys.modules
+        for name in stub_names:
+            assert name not in sys.modules
+    else:
+        real = importlib.import_module("win32security")
+        assert real is not module.win32security
+        assert hasattr(real, "PROTECTED_DACL_SECURITY_INFORMATION")
+        assert hasattr(real.ACL(), "AddAccessAllowedAceEx")
 

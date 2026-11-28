@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from hyprial.daemon.impl.application import DaemonApplication
-from hyprial.kernel import HarnessLaunchSpec
+from hyprial.kernel import HarnessLaunchSpec, secure_private_directory
 from hyprial.daemon.impl.lifecycle_manager import (
     LifecycleKind,
     LifecycleOperation,
@@ -200,6 +200,7 @@ def application(
     inbox: FakeInbox | None = None,
     online: tuple[str, ...] = (),
 ) -> DaemonApplication:
+    secure_private_directory(tmp_path.resolve(), create=True)
     app = DaemonApplication(
         state_dir=tmp_path,
         socket_path=tmp_path / "daemon.sock",
