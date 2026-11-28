@@ -25,6 +25,7 @@ from hyprial.identity.impl.agents.home.environment import (
     ChildEnvironmentLaunch,
     build_complete_child_environment,
     compose_worker_child_launch,
+    whitelist_replacement_environment,
 )
 from hyprial.identity.impl.agents.runtime.secrets import SecretResolutionError
 from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel, build_worker_channel
@@ -486,3 +487,57 @@ def test_host_claude_executable_ignores_parent_and_logs_once(
     assert messages == [expected]
     assert "/untrusted/parent/claude" not in caplog.text
     assert "SENTINEL-ALPHA" not in caplog.text
+
+
+def test_systemroot_is_base_only():
+    """``SYSTEMROOT`` is admitted only through the base child vocabulary."""
+
+    assert "SYSTEMROOT" in BASE_CHILD_ENVIRONMENT_NAMES
+    assert "SYSTEMROOT" not in GENERATED_CHILD_ENVIRONMENT_NAMES
+
+    complete = build_complete_child_environment(
+        base={"PATH": "/bin", "SYSTEMROOT": r"C:\Windows"},
+        generated={},
+    ).for_exec()
+    assert complete["PATH"] == "/bin"
+    assert complete["SYSTEMROOT"] == r"C:\Windows"
+
+    with pytest.raises(ValueError, match="generated child environment"):
+        build_complete_child_environment(
+            base={},
+            generated={"SYSTEMROOT": r"C:\Windows"},
+        )
+
+
+def test_compose_worker_child_launch_passes_systemroot_and_filters_unlisted(tmp_path):
+    """``SYSTEMROOT`` passes through from parent env while unlisted names stay filtered."""
+
+    registry = _seeded_registry(tmp_path)
+    parent = {
+        "PATH": "/bin",
+        "SYSTEMROOT": r"C:\Windows",
+        "UNRELATED_SECRET": "x",
+    }
+
+    environment = compose_worker_child_launch(
+        registry=registry,
+        hyprial_home=tmp_path / "home",
+        channel=_channel(tmp_path, actor="agent:p1b:node:alpha"),
+        environ=parent,
+        agent_name="alpha",
+    ).environment.for_exec()
+    assert environment["PATH"] == "/bin"
+    assert environment["SYSTEMROOT"] == r"C:\Windows"
+    assert "UNRELATED_SECRET" not in environment
+
+    whitelisted = whitelist_replacement_environment(parent)
+    assert whitelisted == {"PATH": "/bin", "SYSTEMROOT": r"C:\Windows"}
+
+    without_systemroot = compose_worker_child_launch(
+        registry=registry,
+        hyprial_home=tmp_path / "home",
+        channel=_channel(tmp_path, actor="agent:p1b:node:alpha"),
+        environ={"PATH": "/bin"},
+        agent_name="alpha",
+    ).environment.for_exec()
+    assert "SYSTEMROOT" not in without_systemroot

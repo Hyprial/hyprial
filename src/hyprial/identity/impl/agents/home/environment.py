@@ -2,6 +2,11 @@
 
 Nothing in this module starts a process.  The types make completeness explicit
 so P1b consumers can replace, rather than merge with, an ambient environment.
+
+Decision (2026-11-26): ``BASE_CHILD_ENVIRONMENT_NAMES`` includes ``SYSTEMROOT``
+so Windows worker child processes (including Node 22/24 CSPRNG initialization
+under KP-134) receive it when present in the parent environment, without adding
+other Windows system variables or introducing platform branches.
 """
 
 from __future__ import annotations
@@ -150,6 +155,7 @@ def _owner_grant(agent_name: str, entity_token: str, secret: Any) -> Any:
 BASE_CHILD_ENVIRONMENT_NAMES = frozenset(
     {
         "PATH",
+        "SYSTEMROOT",
         "LANG",
         "LC_ALL",
         "LC_CTYPE",
