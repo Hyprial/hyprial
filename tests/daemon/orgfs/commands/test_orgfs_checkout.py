@@ -156,11 +156,11 @@ def test_apply_events_converges_with_atomic_replace(
 
     facade.mkdir(space_id, "archive")
     checkout.apply(_latest(facade, space_id))
-    moved = facade.move(space_id, f"id:{node.node_id}", "archive/moved.bin")
+    facade.move(space_id, f"id:{node.node_id}", "archive/moved.bin")
     checkout.apply(_latest(facade, space_id))
     facade.remove(space_id, f"id:{node.node_id}")
     checkout.apply(_latest(facade, space_id))
-    facade.restore(space_id, f"id:{node.node_id}", moved.version)
+    facade.restore(space_id, f"id:{node.node_id}")
     checkout.apply(_latest(facade, space_id))
     assert not target.exists()
     assert (checkout.root / "archive" / "moved.bin").read_bytes() == replacement

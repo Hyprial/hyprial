@@ -50,8 +50,8 @@ policy before a separately authorized release. Changes under
 
 Work tracking documents under an organization's `work/` directory are ordinary
 OrgFS text. `hyprial org work ls/show` are read shortcuts; use `org fs read`
-and `org fs write --expect-version` for edits, and ordinary OrgFS move, history,
-and trash interfaces for conflicts or recovery. See
+and `org fs write --expect-version` for edits, and ordinary OrgFS move and
+trash interfaces for conflicts or recovery. See
 `contract/work-items/README.md` for exact arguments. No `work.*` IPC, dedicated
 work writer, collect/finish routine, or local approval-ledger check remains.
 Task fields, including `ownerActions` or `verified`, are content, not approval

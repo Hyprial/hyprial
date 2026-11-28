@@ -1,0 +1,3 @@
+# Target test file list for workflow_dispatch with selection=targets.
+# Must remain empty (comments only) on mergeable branches; on a temporary
+# dispatch branch each non-comment line must name a tracked file under tests/.

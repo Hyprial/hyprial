@@ -1,51 +1,15 @@
-# PR pytest selection by layer
+# Pytest impact selection
 
-Since 2026-11-06 a pull request runs only the test directories its change can
-break. Every push (dev, main, `intg/**`), manual run and scheduled run, and
-every PR into `main` or `release/**`, still runs the entire `tests/` suite, so a
-selection can never stand in for release validation. The unit gate, the
-four-shard plan, two-worker file grouping, crash/FD guards, lint, compile and
-the docs-only fast path are unchanged.
+The public merge gate uses `scripts/ci/pytest_impact.py` to choose tracked test files for pull requests. The selector reads the checked-out two-parent merge commit and compares its first parent with the merge commit. It accepts the pull-request head SHA from `pull_request.head.sha` and the target branch from `pull_request.base.ref`.
 
-The planner is `scripts/ci/pytest_impact.py` (`plan()` + `layer_targets()`),
-called by every `gate-python / pytest-shard (K)` job. Its decision is printed as
-`PYTEST_IMPACT {...}` and written to the step summary.
+Push, schedule, workflow-dispatch, malformed pull-request data, `main`, and `release/**` targets use the complete tracked test set. Any `src/**` change, environment-sensitive script, workflow gate input, test support or fixture input, dependency lock input, or unclassified path also uses the complete set.
 
-## The rule
+Unreferenced `docs/**/*.md` changes map to `tests/tooling/`. A documentation path is referenced when its full path or basename occurs in the runtime corpus. The corpus covers tests, active scripts, contract files, source Python with tokenizer comments removed, `.github`, `pyproject.toml`, and `GLOSSARY.md`. Scan failures use the complete suite.
 
-The product is five layers whose imports only point downward (measured over
-`src/hyprial` on 2026-11-06):
+Pure test changes are selected conservatively. An unreferenced test module may run alone. A helper, fixture, deleted module, referenced module, unsafe dynamic import, unreadable source, or cross-directory dependency expands the selection through the reverse reference closure. Any Python change adds the six cross-repository guard tests. A missing guard uses the complete suite.
 
-```
-kernel  <-  identity  <-  daemon  <-  biz  <-  shell
-```
+The selector enumerates tests with `git ls-files -z` and validates every returned path as a regular non-symlink file. `--plan-only` prints the plan. `--emit-shard K/N --out PATH --meta PATH` writes one path per line and a controlled metadata file. Selected plans of 16 files or fewer place all files in shard 1. Larger selected plans and full plans use zero-based round-robin assignment with `i % N == K - 1`.
 
-| Changed path | Tests run |
-|---|---|
-| `src/hyprial/<layer>/**` | `tests/<layer>/`, every layer above it, `tests/integration/` |
-| `tests/<layer>/**`, `tests/integration/**`, `tests/tooling/**`, `tests/scripts/**` | that directory only |
-| `.forgejo/**`, `scripts/ci/**` | `tests/tooling/` |
-| other `scripts/**` | `tests/tooling/`, `tests/scripts/` |
-| documentation only | the docs-only gate (no pytest) |
-| anything else -- `pyproject.toml`, `uv.lock`, `tests/conftest.py`, `tests/support/**`, `tests/fixtures/**`, `src/hyprial/cli.py`, `src/hyprial/skills/**`, `scripts/ci/pytest_impact.py`, `gui/**`, `contract/**`, `sidecar/**`, ... | the full suite |
+The gate validates metadata before reading it, independently counts tracked tests for full plans, rejects empty full shards, and accepts an empty selected shard only when the plan has at least one and at most 16 tests and the shard index is at least 2. Such a shard prints `PYTEST_SHARD_EMPTY` and exits successfully. Metadata contains exactly six controlled keys, positive decimal plan and shard indexes, a non-negative decimal shard count, and a 64-character lowercase SHA-256 digest.
 
-A PR's selection is the union over its changed paths; one path that maps to
-"full" makes the whole PR full. Any unreadable history, a checkout that is not
-the PR head, or an empty match also falls back to the full suite.
-
-## What it replaced
-
-The previous audited consumer map (`scripts/ci/pytest-impact-map.json`, audited
-2026-09-17) covered 3 of 1185 source files and switched itself off whenever any
-other backend file changed after the audit, so every PR ran the full suite
-(8 of 8 sampled shard logs: `mode: full`). PRs into `intg/gui*` were also forced
-to full. Both are gone.
-
-## Measured effect
-
-Replayed over the 210 merges into dev between 2026-10-15 and 2026-11-06: 83
-would have been layered, 117 still full (mostly `gui/`, `clients/`,
-`packaging/`, `contract/`), 10 docs-only; on average 22 % of test files are
-skipped per non-docs PR. Extending the table (for example `gui/**` to the GUI
-integration tests) is how the number grows -- each new row needs the same
-"only these directories can break" argument.
+S7 has a read-only replay entrypoint for a fixed selector snapshot and commit cohort. Run `uv run --no-project --python 3.12 python scripts/ci/replay_pytest_selector.py` from the repository root. The cohort is stored in `scripts/ci/pytest-selector-cohort.json`, and each commit's changed paths are passed to `plan_paths`, the same final path selector used after the pull-request merge comparison. The replay extracts snapshot `22eb4003760a4af0cac43db5030c7dc8cb748921` into a temporary directory, emits commit-level reasons and selected counts plus cohort summaries, and never reads the removed `scripts/ci/pytest-durations.json` file.

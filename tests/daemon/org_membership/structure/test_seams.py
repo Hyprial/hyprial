@@ -74,36 +74,6 @@ def test_the_daemon_facade_table_and_allowlist_still_agree() -> None:
     assert interface.__getattr__("wait_for_state_ownership") is not None
 
 
-def test_the_pending_queue_left_admission_without_a_second_host() -> None:
-    """P0 moved the hold/drain machinery out; the admission decision stayed."""
-
-    from hyprial.daemon.impl.orgfs.storage.store import LocalSpaceStore
-    from hyprial.daemon.impl.orgfs.storage.store.admission import StoreAdmission
-    from hyprial.daemon.impl.orgfs.storage.store.admission_support import (
-        StorePending,
-    )
-
-    assert issubclass(StoreAdmission, StorePending)
-    assert issubclass(LocalSpaceStore, StoreAdmission)
-    assert {name for name in vars(StorePending) if not name.startswith("__")} == {
-        "_pending_org",
-        "_expired_pending_page",
-        "_drain_budget_exceeded",
-        "_expire_pending_locked",
-        "expire_pending",
-        "_warn_pending_drop",
-        "_pending",
-        "_drain_pending",
-        "_drain_pending_until",
-        "_decode_pending_envelope",
-        "_drain_pending_row",
-        "take_drained",
-    }
-    # The drain's re-judgement is an admission decision, not queue mechanics.
-    assert "_drain_keeps_not_a_member" in vars(StoreAdmission)
-    assert "admission" in vars(StoreAdmission)
-
-
 ORG_COMMANDS_ROOT = (
     Path(__file__).resolve().parents[4]
     / "src"

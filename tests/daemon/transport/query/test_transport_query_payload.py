@@ -1,3 +1,7 @@
+# Decision record (OrgFS package S, 2026-11-25): the journal key builders
+# (``orgfs_log*``, ``orgfs_sync``, ``orgfs_snapshot``) are deleted with the
+# journal mesh.  Generic query tests use the protocol 3 sync key; the journal
+# key layout is spelled literally where a test still proves it is unused.
 from __future__ import annotations
 
 import queue
@@ -116,31 +120,18 @@ def test_query_dropped_after_direct_callback_returns_completes_without_reply() -
 def test_orgfs_keys_are_canonical_and_reject_unsafe_segments() -> None:
     keys = KeySpace()
 
-    assert keys.orgfs_log("space", "tree", "node.incarnation.lane", 42) == (
-        "hyprial/v1/org/fs/space/log/tree/node.incarnation.lane/42"
-    )
-    assert keys.orgfs_log_writer("space", "tree", "writer") == (
-        "hyprial/v1/org/fs/space/log/tree/writer/*"
-    )
-    assert keys.orgfs_log_any("space") == "hyprial/v1/org/fs/space/log/**"
-    assert keys.orgfs_sync("space", "node") == "hyprial/v1/org/fs/space/sync/node"
-    assert keys.orgfs_snapshot("space", "tree", "snapshot-1") == (
-        "hyprial/v1/org/fs/space/snapshot/tree/snapshot-1"
-    )
     assert keys.orgfs_blob("a" * 64) == f"hyprial/v1/org/fs/blob/{'a' * 64}"
     assert keys.orgfs_announce("node") == "hyprial/v1/org/fs/announce/node"
 
     with pytest.raises(ValueError):
-        keys.orgfs_log("space", "tree", "writer/with-slash", 1)
+        keys.orgfs_announce("node/with-slash")
     with pytest.raises(ValueError):
-        keys.orgfs_sync("space/with-slash", "node")
-    with pytest.raises(ValueError):
-        keys.orgfs_log("space", "tree", "writer", -1)
+        keys.orgfs3_sync("space/with-slash", "node")
 
 
 def test_query_delivers_payload_and_all_replies_disables_consolidation() -> None:
     owner, observer = _pair()
-    key = KeySpace().orgfs_sync("space", "node")
+    key = KeySpace().orgfs3_sync("space", "node")
     seen: list[tuple[str, bytes | None]] = []
 
     def handler(selector: str, payload: bytes | None):
@@ -167,7 +158,7 @@ def test_query_delivers_payload_and_all_replies_disables_consolidation() -> None
 @pytest.mark.parametrize("size", [64 * 1024, 1024 * 1024])
 def test_query_replies_support_frozen_payload_sizes(size: int) -> None:
     owner, observer = _pair()
-    key = KeySpace().orgfs_sync("space", "node")
+    key = KeySpace().orgfs3_sync("space", "node")
     response = b"x" * size
     registration = owner.declare_query_handler(
         key, lambda _selector, _payload: [(key, response)]
@@ -184,7 +175,7 @@ def test_query_replies_support_frozen_payload_sizes(size: int) -> None:
 
 def test_new_handler_accepts_legacy_get_without_a_payload() -> None:
     owner, observer = _pair()
-    key = KeySpace().orgfs_sync("space", "node")
+    key = KeySpace().orgfs3_sync("space", "node")
     seen: list[bytes | None] = []
 
     def handler(_selector: str, payload: bytes | None):
@@ -335,7 +326,7 @@ def test_slow_query_handler_does_not_stall_subscriber_on_same_session() -> None:
 
 def test_handler_exception_is_logged_and_queryable_survives(caplog) -> None:
     owner, observer = _pair()
-    key = KeySpace().orgfs_sync("space", "node")
+    key = KeySpace().orgfs3_sync("space", "node")
     calls = 0
 
     def handler(_selector: str, _payload: bytes | None):

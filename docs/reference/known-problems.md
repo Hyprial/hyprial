@@ -14,7 +14,7 @@
 | KP-006 | import ratchet 在 Python < 3.10 下读不了源码时只打印 FAIL、不阻断 | 待修 |
 | KP-007 | session_persistence_overload 在 xdist 并发下被 fd 卫生门偶发误报 teardown 泄漏 | 已修复（本轮，报告期复核瞬时描述符） |
 | KP-008 | `message.send` / `message.send.lookup` 走 registry 派发，网络门 IPC root（router `handle`）看不到它们 | 待修（0.5.5.4，网络门支持声明 handler root） |
-| KP-009 | `test_four_sides_cover_a_pure_heartbeat_load` 在本机（Apple Silicon）单独跑常红 | 不修（机器敏感，CI 绿） |
+| KP-009 | native actor 后端的 heartbeat 覆盖率测试因稳态唤醒与完成事件固定开销而低于门槛 | 已修复（方向 A，保持 `>= 0.70` 契约） |
 | KP-010 | `test_close_finishes_all_teardown_after_active_ipc_worker_times_out` 本机偶发：sentinel 错误先于 IPC client 超时错误浮出 | 不修（时序竞争，基线同分布） |
 | KP-011 | `test_shutdown_fails_loud_when_active_handle_exceeds_bound` 本机偶发 DID NOT RAISE：active client worker 的 0.05s 超时窗与线程退出竞争 | 不修（时序竞争，基线同分布） |
 | KP-015 | 本机受限执行环境中 hosted readiness 的 spawn-error 测试在 preexec 阶段失败 | 待测（本轮不修） |
@@ -51,8 +51,8 @@
 | KP-058 | provider-key HTTP 方法尚无 Contract Mock 示例（原分支 KP-047） | 待补示例与真实链路验收，不代表方法不存在 |
 | KP-059 | GUI 初始化跨进程未知回执恢复缺口（原分支 KP-048） | 已修复（代码已合入 dev：Z-3 #2861，GUI 托管的 initialize 路径随 Z-6b #2933 删除；真实 issuer、真实 Tailcat、macOS 与浏览器全旅程未验证；Z-3：serving 启动对已提交 casdoor owner 补完 promoting/unknown 的 initialize 回执、缺失的设备登记（含上一 owner 遗留的 device.json）、仅有 failed/cancelled initialize 回执的重新 initialize；`accepted` 回执与损坏日志不处理；native 隔离 home 上 kill -9 矩阵 6 行 PASS，受控身份与受控 provisioner；真实身份 issuer 与真实 Tailcat 为 BLOCKED，未验证） |
 | KP-060 | 四步引导浏览器验收等待旧按钮颜色超时 | 合并前后同样失败；随引导整理处理 |
-| KP-061 | 云工作机并发全量 pytest 中断与基线归因限制 | 待归因（五项 UNKNOWN；已确认 mock 测试适配由 #2780 修复） |
-| KP-062 | fs purge plan 无效目标未输出 JSON 错误信封 | 待修（CLI 输出；与 KP-020 测试入口问题分开） |
+| KP-061 | 云工作机并发全量 pytest 中断与基线归因限制 | Lark shutdown completion-custody 项已由 #59 修复；其余历史归因仍待查 |
+| KP-062 | fs purge plan 无效目标未输出 JSON 错误信封 | 已关闭（2026-11-25 OrgFS 精简实现删除了 `org fs purge plan`，问题随命令消失；与 KP-020 测试入口问题分开） |
 | KP-063 | GUI 产品代码仍保留 `/api/reference/*` 默认路径，但已无产品宿主提供 | 已修复（PR 1d、PR 1e 各段、PR 3、PR 1e-4；清单 `pending` 于 2026-11-16 清空，未发版） |
 | KP-064 | 已初始化的 home 在没有 daemon 运行时 `hyprial gui` 拒绝启动（`GUI_DAEMON_UNAVAILABLE`），经 GUI 初始化的 daemon 随 GUI 子进程结束 | 已修复（DL-1 #2845：准入前确保 daemon，校验之后启动，对恢复中的 daemon 有界等待；Z-6a #2916 起 ownerless home 同样被确保；Z-6b #2933 起 daemon 不再是 GUI 子进程；含 DL-1 的捆绑运行时在 macOS 上的第二次启动 UNKNOWN） |
 | KP-065 | 发布快照内网门在 `ci-native-conformance-routing.md` 的一行 clone 示例上命中两项，`dev` 的 shard 1 与 docs-only PR 的 `checks` 必红 | 修复候选在 #2833（占位写法；161 项焦点测试通过，待合入与 CI 验收） |
@@ -70,7 +70,7 @@
 | KP-077 | external promotion 用例在应答与服务端计数之间存在竞争，`dev` push 间歇变红 | 不修（owner 2026-11-14 裁定）；已随 external promotion 的删除关闭（Z-7 A1，#2963） |
 | KP-078 | `native-conformance` 的 PR lane：Linux arm64 单 runner 排队，Darwin arm64 工具链下载超时 | 待修（Darwin）；Linux arm64 只调查（owner 平台决定） |
 | KP-079 | `kill -9` 后陈旧的 `state/bootstrap.json` 使下一次 bootstrap 准入失败（“record belongs to another bootstrap instance”） | 已修复（Z-2：已退出或 pid 已被复用的实例的 `bootstrap.json` 与 bootstrap 形态的 `daemon.json` 一并清理；native 引擎、隔离 home 上 kill -9 与复用 pid 标记 → `daemon start` 已实测通过；缺少出生标识的标记、或平台无法读取出生标识的情形仍需手工清理） |
-| KP-080 | 安装态 `hyprial gui` 在 Windows 上返回 `GUI_RUNTIME_UNAVAILABLE`（POSIX 文件锁） | 代码已修、待 Windows 真机验收（owner 2026-11-21 解除「Windows 不排期」；锁改 `kernel.ProcessFileLock`，`--stdin-stop` 跨平台） |
+| KP-080 | 安装态 `hyprial gui` 在 Windows 上返回 `GUI_RUNTIME_UNAVAILABLE`（POSIX 文件锁） | 已修复（Windows 11 第二轮真机验收 dev @ 14d37d8142 通过：启动记录、Windows 绝对 `handoff_path`、第二实例 `GUI_RUNTIME_BUSY`、管道单独关 stdin 退出码 0；PTY 关闭方式下 `--stdin-stop` 复现不稳定见 KP-136） |
 | KP-081 | 非默认 home 的 per-user 服务单元以 0644 写入代理变量（可含 userinfo） | 接受（owner 2026-11-15，OD-Z7 选项 a）；发布说明列为已知问题 |
 | KP-082 | per-user 服务单元的 `PATH` 以 `~/.local/bin` 开头，非默认 home 的 daemon 按名字查找 `hyprial` 或 harness 时先命中该处的另一个安装 | 待修（登记；launchd 验收 F1，读代码所得；负责人 per-home service line） |
 | KP-083 | ownerless home 上显式 `hyprial daemon start` 留下持有锁的 bootstrap daemon，之后 `hyprial gui` 约 24 秒后以 `GUI_START_FAILED` 失败 | 已修复（#2916 Z-6a：`local-gui` 子进程转发到应答 bootstrap 的 daemon，`hyprial gui` 在任何状态都先确保 daemon；#2927 Z-6pre、#2933 Z-6b、#2946 Z-6c、#2963 Z-7 A1 已合入 dev；Z-6b 删除 GUI 托管路径后，下方“已知限制”不再成立，见该条；浏览器侧、真实 OIDC、macOS 与原生壳 UNKNOWN） |
@@ -110,7 +110,7 @@
 | KP-120b | `hyprial gui --stdin-stop` 收到 `SIGHUP` 时前端子进程留在孤立会话 | 观察 / 暂不修（用关闭 stdin 停机；PR #3051 实测 F4） |
 | KP-121 | 升级前处于登录态、升级后未重新登录就 `hyprial logout` 的老 home，同一账号再登录以 `IDENTITY_CONFLICT`（`reason=home-binding-missing`）被拒 | 接受（不在登出时自动补写绑定；迁移说明与 CHANGELOG 警告，手工补写 `homeAccount` 恢复） |
 | KP-122 | cell 成员 reconcile（I6-2）的一次有界漂移重启失败后，该成员在本次 daemon 运行内停在 `FAILED`（`config-digest-mismatch`），旧进程仍在运行；另有几处已知边界 | 暂缓（cell 模型线；改文档回到与运行中进程一致或重启 daemon 可恢复） |
-| KP-123 | Windows 上以提升权限的进程运行时，`mkdir(0o700)` 建出的目录没有当前用户 ACE，私有性校验报 `unsafe-acl` | 暂不修（登记；待真机证据；规避：用非提升的 shell 运行；负责人 Windows 可移植性线） |
+| KP-123 | Windows 上以提升权限的进程运行时，`mkdir(0o700)` 建出的目录没有当前用户 ACE，私有性校验报 `unsafe-acl` | 暂不修（登记；runner 上已实测，真机未测；规避：用非提升的 shell 运行；负责人 Windows 可移植性线） |
 | KP-124 | Windows 上 `hyprial gui --no-open --json` 启动记录的 `handoff_note` 仍称「private 0600 file」，而 Windows 没有 mode 位，文件私有性靠运行时目录的账号私有访问 | 暂不修（登记；`handoff_note` 是可改写的说明文字，不影响 `handoff_path` 与文件本身；负责人 Windows 可移植性线） |
 | KP-125 | 同一 adapter 被两个 agent 的 cell 声明时，写入不拒绝，路由读作“未绑定” | 延后（I6-4 critic P2-3；cm 线） |
 | KP-126 | cell 文档里的 adapter 成员不检查 adapter 是否存在 | 延后（I6-4 critic P2-4；cm 线） |
@@ -119,6 +119,47 @@
 | KP-129 | cell 运行时组合失败期间，本机每个 agent 发给 `user:<owner>` 的消息都以 `USER_DELIVERY_UNAVAILABLE` 被拒绝、不入队；`cache-identity-mismatch` 等原因下一直持续到人工修复 | 接受（I3 契约 §3.2 第 6 行：读不到 cell 不选聊天；按 cell authority 迁移说明手工修复 cache 恢复） |
 | KP-130 | 「本机运维者」不是硬边界：agent 自己的 shell 运行 CLI 时也算未验证的运维者，可读写 user agent cell，改变 owner 副本推往哪些聊天 | 接受（I7a critic P2-4；与 I7a 之前普通 agent cell 的 `agent.cell.update` 同等强度；cm 线） |
 | KP-131 | 成员 reconcile 重启时新旧配置都起不来，agent 停到下次启动或 `hyprial agent start` | 接受（I6-5 critic V3 P1-1 裁定；cm 线） |
+| KP-134 | Windows 上 Pi agent 起不来：npm 全局布局下找不到 Pi SDK 包根；绕过探测后 SDK worker 在 Node `Crypto.getRandomValues` 生成 session ID 时退出 | 第 1 点已修复（包根探测，#3139；GitHub 托管 Windows runner 验证；真机未测）；第 2 点待 owner 裁定（worker 退出，runner 上实测缺 `SYSTEMROOT` 时 Node 22/24 无法启动，代码未改）；负责人 Windows 可移植性线 |
+| KP-135 | Windows 源码开发构建：PowerShell 中 `HYPRIAL_BUILD_NATIVE=1 uv sync` 直接执行 `.sh` 报 WinError 193；editable 安装跳过 `_stage_tailcat()`，没有 `hyprial-tailcat.exe` | 第 1 点已修复（native 构建不再执行 `.sh`，#3139；GitHub 托管 Windows runner 验证；真机未测）；第 2 点 editable 缺 sidecar 待 owner 裁定；负责人 Windows 可移植性线 |
+| KP-136 | Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定；管道单独关闭 stdin 正常退出（退出码 0、无残留进程） | 已复现，未修复（GitHub 托管 Windows runner：ConPTY 关闭时根进程以 `0xC000013A` 被结束，清理未运行；#3139 的控制台句柄检查不处理这一事件；另一分支上的修复尝试两次未通过，修复不在 #69 里做，另行单独处理；负责人 GUI 启动维护者 / Windows 可移植性线） |
+| KP-137 | Windows 上 MCP channel 的父进程监视默认用 `os.kill(pid, 0)` 查 owner 是否存活；Windows 上信号 0 即 `CTRL_C_EVENT`，发出的是 Ctrl+C 而不是存活探测 | 已合入（PR #89，合并提交 `3c47b3e7bb`：父进程监视默认改走内核探针；Linux 测试机上先失败后通过；Windows 上未测；负责人 Windows 可移植性线） |
+| KP-138 | Windows 命名管道服务端 `accept` 与 `close` 并发时访问违例（`0xC0000005`），整个 pytest worker 崩溃 | 已合入（PR #87，合并提交 `1030b8da1b`：命名管道监听端 accept 与 close 的并发修复；GitHub 托管 Windows runner 上 `test_win32_pipe.py` 11 条全部通过；崩溃已实测，竞态是读码推断；负责人 Windows 可移植性线） |
+| KP-139 | device transport 存储与 tailnet `Slot` 在 Windows 上用 POSIX 模式位判定私有性，而 Windows 上模式位不代表访问控制 | 待修（修后转绿条数未实测；负责人 Windows 可移植性线） |
+| KP-140 | 管理员账户下 tailnet `Slot` 的 `operation.lock` 建好后没有加固，随后的私有性检查必然失败（`TAILNET_STORAGE_UNSAFE`） | 待修（负责人 Windows 可移植性线） |
+| KP-141 | Pi workspace 信任根只看 `st_mode & 0o077`：不查属主，Windows 上模式位不代表访问控制，这项判定没有意义，Windows 上 workspace 信任根恒被拒绝（推断） | 待修（Windows 上的后果是读码推断；POSIX 上同时新增属主检查（owner 已于 2026-11-26 批准）；负责人 Windows 可移植性线） |
+| KP-142 | Windows 上读 agent 配置项报 `changed while being read`（实测 15 条），原因推断为 CRLF 与缺 `O_BINARY`，未实测 | 待探测（先探测再修；假设不成立则关闭本条；负责人 Windows 可移植性线） |
+| KP-143 | OrgFS 的节点名与作者是自报的，签名今天不强制 | 接受（owner 2026-11-25） |
+| KP-144 | OrgFS 只读成员与被降级成员的写入只在写入节点本地与第一跳节点门被拒 | 接受（owner 2026-11-25） |
+| KP-145 | OrgFS 的 blob 拉取请求带自报的请求方，只能拦住未改动的软件 | 接受 |
+| KP-146 | 并发写同一受保护记录时，在合并中输掉的伪造更新被接受 | 不改 |
+| KP-147 | OrgFS 递归列目录不分页 | 不修 |
+| KP-148 | OrgFS 统计“正文未到”的文档时周期性扫描整张节点表 | 暂不改 |
+| KP-149 | 带 `--base-version` 的写入在同一行冲突时后写者胜，不报错 | 待负责人决定 |
+| KP-150 | 很旧的 `--base-version` 不再能合并，返回 `stale-write` | 接受 |
+| KP-151 | 二进制文件没有人读就不会取回，也没有到达事件；`content_pending` 不计二进制 | 接受 |
+| KP-152 | OrgFS 删除留下的墓碑随删除次数增长 | 接受 |
+| KP-153 | OrgFS 移动操作的时钟是进程内计数 | 不在本次修 |
+| KP-154 | OrgFS 被拒绝的远端更新不会自动对账 | 接受 |
+| KP-155 | 网络可达性门在同名定义超过 8 个时不连边 | 登记，待门的维护者决定 |
+| KP-156 | `orgfs.checkout` 对未知空间报 `checkout-io`，不说明原因 | 暂不改 |
+| KP-157 | 加入 OrgFS 空间时，供给方信任加入者自报的作者 | 待加入与身份负责人决定 |
+| KP-158 | GUI 回收站列表只显示默认上限内的条目 | 原有行为，登记 |
+| KP-159 | 一个对端被分区时，重启的节点连不上其他对端（不属于 OrgFS 改动） | 待查 |
+| KP-160 | 侧车停顿约 3 分钟后，转发一直宕到 daemon 重启（不属于 OrgFS 改动） | 待查 |
+| KP-161 | `org invite` 返回 `USER_DELIVERY_TIMEOUT` 但成员已经加入（不属于 OrgFS 改动） | 待查 |
+| KP-162 | 本机 IPC 请求超过 8 MiB 时直接断开，不回错误（不属于 OrgFS 改动） | 待查 |
+| KP-163 | 离开组织的请求在等待 owner 确认时没有日志（不属于 OrgFS 改动） | 待 org 负责人决定 |
+| KP-164 | 真实 daemon 上 `org join` 以 `IDENTITY_CONFLICT` 失败（不属于 OrgFS 改动） | dev 既有问题，已报 owner |
+| KP-165 | 请求注册表把带数据的已声明错误改写成 `DAEMON_ERROR`（不属于 OrgFS 改动） | dev 既有问题，已报 owner |
+| KP-166 | 一次广播丢失后，其余节点在约一分钟内仍可能报 `synced: true` | 接受 |
+| KP-167 | 被移出空间的成员只在未改动的软件上收不到新内容；已取到的内容不追回 | 接受 |
+| KP-168 | 成员在被移除但尚不知情时做的写入，重新邀请后被接受 | 待负责人决定 |
+| KP-169 | 删除迁移前的旧空间目录后，只被它引用的二进制内容不回收 | 暂不改 |
+| KP-170 | `org fs member invite` 接受不属于该组织的用户名 | 待负责人决定 |
+| KP-171 | 接受邀请在一次性 token 消费之后失败，重试只得到 `INVITE_CONSUMED` | 接受（owner 2026-11-27：不单独修，随加入方式重做消除） |
+| KP-172 | 持有方不在线或组织 actor 被占用时，加入组织约 30 秒后报 `DAEMON_ERROR` | 延后（owner 2026-11-27：OrgFS 精简合入后修） |
+| KP-173 | 加入组织后最初几毫秒，两篇必有文档之外的内容可能还没到 | 接受 |
+| KP-174 | Lark worker 的 `online` 与 stale 健康行在 ready 观测之间存在竞态，导致 exit 75 退避偶发失效 | 已修复（进程先消费缓冲健康行；测试使用单次原子写入） |
 
 ## KP-001 tailscale.com derphttp 经 HTTP 代理时被拒区域慢失败
 
@@ -186,13 +227,14 @@
 - 决定：待修。网络门需把声明的 handler 也作为 root（或采用等价规则），届时恢复 root 级可见性断言。
 - 负责人：R&D 负责人（emergent-org-structure-refactor）。
 
-## KP-009 heartbeat CPU 覆盖率测试在本机单跑常红
+## KP-009 heartbeat CPU 覆盖率测试在 native actor 后端下偏低
 
-- 现象：`tests/daemon/ipc/cost/test_ipc_cost_counters.py::test_four_sides_cover_a_pure_heartbeat_load` 断言 40 次 heartbeat 窗口内 `instrumentedCpuMs / processCpuDelta >= 0.70`。在本地 Apple Silicon（macOS，CPython 3.12）单跑时比值落在 0.68–0.74，常红（2026-11-03 实测：基线 `origin/release/v0.5.5.4` 五跑 4 红 1 绿，带 agent-git-identity 工作树五跑同样 4 红 1 绿）。窗口总 CPU 仅约 12–22 ms，未插桩的后台/GC CPU 就能把比值压到线下。
-- 影响：只影响本机手动复跑；CI（uv 管理的 3.12 runner）照常绿。不指向产品回归——基线与改动树同分布。
-- 规避：本机不以此单测结论为准；以 CI 全量结果为准，或多次重跑取稳定结论。
-- 决定：不修。比值门是为 CI 机器校准的；本地机器差异不是产品问题，不为它放宽或改写断言。若 CI 也开始变红，再按真回归处理。
-- 负责人：R&D 负责人。依据：agent-git-identity 分支调查（2026-11-03），基线/改动树同分布红绿。
+- 现象：`tests/daemon/ipc/cost/test_ipc_cost_counters.py::test_four_sides_cover_a_pure_heartbeat_load` 在默认 `native` 后端下将三个同步 actor dispatch 的固定 Rust 引擎开销计入进程 CPU 分母，但这些线程没有对应的 Python coverage span。Phase 1 的 native 基线在 macOS 单跑的 B 窗口为 `0.6492 / 0.6528 / 0.6737 / 0.7088`（min / p10 / median / max），10 次有 8 次低于 `0.70`，残余 CPU 为 `0.1487 ms/beat`（median）。Linux `taskset -c 0-3` 的 B 窗口在 daemon `-n 4` 争用下为 `0.7039 / 0.7050 / 0.7111 / 0.7165`，最低 `0.7039`，残余为 `0.1826 ms/beat`（median）。主要残差来自每次 `tell` 经 Tokio Ractor `PumpActor` 与 `oneshot` 双跳，以及每条成功命令无条件构造并发送 `command_completed` 事件。
+- 影响：native actor 后端的稳态 heartbeat 覆盖率在本机与共享 4-vCPU 争用条件下可能低于既有 `>= 0.70` 契约，造成真实测试失败。Phase 1 对照的 `reference-abi` macOS B 窗口中位数为 `0.8333`，Linux `-n 4` 中位数为 `0.8517`，说明差异来自 native 引擎路径，而不是 coverage 字段计算。未计费的 `ps` fixture 调用本身只贡献约 `0.0007 ms/beat`，不是根因。
+- 修复：方向 A 已完成。每代 executor 现在通过 cell generation wake signal 直接接收 mailbox 唤醒，Ractor 继续负责低频停止、失败与监督重启结果。`command_completed` 仅在存在 per-actor `spec_sink`、自定义 engine sink 或启用 `hyprial.actor_runtime` INFO 日志时跨 PyO3 构造与发送。成本测试改用 `app._ipc_stats_snapshot()` 排除未计费 `ps`，并按 `ipc_stats.py:83,91` 使用契约定义的 `coverageCpuMs`。`0.70` 阈值与测量契约保持不变。
+- 验证：方向 A 后 macOS native N=20 的 A/B 窗口分别为 `0.8365 / 0.8467 / 0.8532 / 0.8633` and `0.8480 / 0.8495 / 0.8534 / 0.8634`; 两者均为 `0/20` 低于 `0.70`。B 窗口残余为 `0.0415 / 0.0453 / 0.0481 / 0.0508 ms/beat`（min / p10 / median / max）。Linux powerstation fresh post-fix N=30 B 窗口为：alone `0.8284 / 0.8301 / 0.8328 / 0.8363`，daemon `-n 4` contention `0.8139 / 0.8163 / 0.8221 / 0.8419`，six CPU burners `0.8134 / 0.8155 / 0.8266 / 0.8363`，均为 `0/30` 低于 `0.70`；对应残余分别为 `0.0768 / 0.0777 / 0.0820 / 0.0880`、`0.0746 / 0.0822 / 0.0929 / 0.0998`、`0.0777 / 0.0808 / 0.0842 / 0.0942 ms/beat`。这些数字来自本轮 fresh post-fix JSONL probe，执行于 code-identical predecessor `48c0f56c1c`，最终交付即本条所属提交。此前保留的 JSONL 与旧 fixer report 中的 `0.8323–0.8426` 表来自不同验证状态，不能互相替代。Rust tests、native engine behavior、actor runtime 与 preservation 焦点套件分别完成验证，未将环境失败或未测项记为通过。
+- 决定：已修复，保留 `>= 0.70` 契约，继续以 native 后端和真实争用条件验收。
+- 负责人：R&D 负责人。依据：KP-009 Phase 1 profiling report、保留的 Linux probe JSONL 与本轮 macOS probe。
 
 ## KP-010 shutdown 遥测测试断言的错误次序在本机偶发颠倒
 
@@ -690,6 +732,7 @@
 
 ## KP-061 云工作机并发全量 pytest 的中断与基线归因限制
 
+- 状态更新（2026-11-27）：Lark shutdown 中 `completion()` 在 actor 已关闭后继续重试、占住 pending custody 的问题已由 PR `#59` 修复，提交 `441f5140f2`，标题为 `fix(lark): stop retrying completions after actor closure`。该修复覆盖本条登记的 `test_shutdown_reports_blocked_process_stop_until_custody_releases` failure item。
 - 现象：2026-11-14，在当前 4 核 / 16 GiB 云工作机上，daemon request 的四个独立候选全量 `pytest tests/` 诊断运行并发且均在完成前中断。固定候选 `60a37624e`（service）记录 3926 PASS / 9 FAIL / 1 ERROR / 5 SKIP；`a30e98556`（identity）3988 PASS / 4 FAIL / 5 SKIP；`d5d27cad0`（network）1931 PASS / 3 FAIL / 1 ERROR / 3 SKIP；`c1c9812ab`（routine）896 PASS / 5 FAIL / 1 ERROR / 3 SKIP。这些是中断时的部分计数，均非完整套件结论。Service/identity 中的 `tests/daemon/contract_mock/error_data/test_catalog.py` 参数化失败和 `test_mock_contract.py::test_the_real_registered_method_projection_loads_and_serves_success` 与新增声明未同步 mock 测试有关；共用测试修复已由 #2780 合入，基线与修复候选各 555 PASS，独立 service+routine 组合 562 PASS、identity 组合 560 PASS。network/routine 的历史全量在该段之前中断，不能将焦点通过写成那些全量通过。
 - 固定基线对照：在未改产品的 `2a494edccdee0135b0a4dbb6fd7f7cf755b803f0` 独立 checkout，使用已安装锁定依赖，仅对四轮中其余去重的 11 个失败 nodeid 做一次 `uv run --frozen pytest -q`，得到 5 PASS / 6 FAIL / 1 teardown ERROR（88.70 秒）。同一 nodeid 且同类症状的六项如下；它们在此控制中不能归因于上述新增 MethodSpec：
   - `tests/daemon/adapters/qq/test_token.py::test_token_stop_cancels_and_joins_background_task`：后台任务未全部完成，继发 `store.sqlite`/wal/shm 三个 fd 泄漏 teardown ERROR。
@@ -713,6 +756,7 @@
 - 决定：待修，由 CLI 输出 / OrgFS 命令维护者单独处理；词汇登记切片不改产品行为。不得用放宽输出断言或伪造成功来关闭。
 - 依据：产品源码未变的父 `837eaad9d` 与仅调整词汇台账的候选 `7484087aa`，两输入均得到 `exit 1, stdout_empty True, stderr_message True, stderr_traceback True`。原始隔离探针为当时工作区 `/workspace/work/inventory-scratch/fs-probe.py`；独立 Typer 测试入口的三项失败另归 KP-020，不将两种不同现象合并。
 - 负责人：CLI 输出 / OrgFS 命令维护者（待具体指派）。
+- 状态更新（2026-11-25）：已关闭。OrgFS 改为只保存当前状态的精简实现后，全网内容清除连同 `org fs purge plan`、`org fs purge status`、`org fs purge unban` 一起删除，本条描述的命令已不存在；保留的 `org fs purge run` 不接受目标列表参数。见 `docs/guides/migration-orgfs-minimal.md`。
 ## KP-063 GUI 产品代码仍保留 `/api/reference/*` 默认路径，但已无产品宿主提供
 
 2026-11-14 rebase：本条在 PR 1b 原分支编号为 KP-049；#2727 合入后 dev 已将该编号用于自动升级配置入口，故改为 KP-063。GUI 启动方式收拢设计第 5 节中的“KP-049”指本条。
@@ -916,6 +960,13 @@
   测试改为钉住「无 `fcntl`/`getuid`/`pthread_kill` 时不拒绝」（`tests/shell/gui/backend/test_source_platform_import.py`、`tests/shell/gui/installed/test_installed_admission.py`、`tests/shell/gui/startup/`）。
   Windows 真机结果：UNKNOWN，按 `scripts/verify/test-wheel-on-windows.ps1` 的 GUI 段验收（启动记录、`--stdin-stop` 退出且无残留子进程、第二实例被锁拒绝）；真机通过后再把本条改为已修复。
 
+- 状态更新（2026-11-24，第二轮 Windows 11 真机验收，dev @ 14d37d8142，PR #3106 评论）：已修复。实机通过的项：
+  `hyprial init`、home/state 的 DACL（未出现 `unsafe-acl`）、198 字符深路径下 init/start/status/stop、`state\daemon.sock` 为 `windows-pipe-v1` 端点且 daemon 重启后 Named Pipe 名称轮换；
+  GUI v1 启动 JSON、`url`、Windows 绝对 `handoff_path`、daemon 连接、第二实例 `GUI_RUNTIME_BUSY`，`--stdin-stop` 在管道单独关闭 stdin 时退出码 0 且无残留进程；
+  `hyprial login` 在进程内完成提交（辅助完成登录后 identity 为 authenticated，`daemon status --json` 退出码 0，无 `auth.login.begin failed`；首次无人辅助登录因超时得 `DEVICE_CODE_EXPIRED`），放入 sidecar 后设备注册生成 device identity、device、machine binding 与 device key；
+  `tests/kernel/ipc/local_ipc` 25 passed / 21 skipped，`test_win32_pipe.py` 4 passed，无 `No module named 'pwd'`；Rust native launcher `cargo test` 52 passed / 0 failed。
+  尾部问题另行登记：PTY 关闭方式下的 `--stdin-stop` 见 KP-136；Pi agent 见 KP-134；源码开发构建与 sidecar 见 KP-135。
+
 ## KP-081 非默认 home 的 per-user 服务单元以 0644 写入代理变量（可含 userinfo）
 
 - 现象：Z-8b 把 HTTP_PROXY / HTTPS_PROXY / NO_PROXY（含 URL userinfo）渲染进每-home
@@ -1081,7 +1132,7 @@
 ## KP-100 仓库里的 workflow 条件不是签名凭据的安全边界
 
 - 现象：Forgejo 运行的是被推送或被派发的那个 ref 上的 workflow 文件，workflow 里的触发条件与 `if:` 只约束这一份文件。有写权限的人推一个新分支，带一份改过的或全新的 workflow（`runs-on: [release-macos-arm64]`），就能在发布 Mac 上运行任意代码并读取任何仓库 secret；`secrets` 是仓库级的，只对 fork 来的 `pull_request` 置空。Forgejo 文档（admin/actions/security.md "Preventing Arbitrary Workflow Execution"）明说分支保护不是 workflow 的安全边界。
-- 实例读数（2026-11-17，只读 API，Forgejo 16.0.5）：dev、main 的分支保护设了 `protected_file_patterns: .forgejo/workflows/**`，但 `apply_to_admins: false`；没有 tag 保护；`release-macos-arm64` 是实例级 runner（owner、repo 都为 0）；`workflow_dispatch` 在本仓库用于过未受保护的分支。
+- 实例读数（2026-11-17，只读 API，Forgejo 16.0.5）：dev、main 的分支保护设了 `protected_file_patterns: .github/workflows/**`，但 `apply_to_admins: false`；没有 tag 保护；`release-macos-arm64` 是实例级 runner（owner、repo 都为 0）；`workflow_dispatch` 在本仓库用于过未受保护的分支。
 - 影响：如果把 Developer ID 证书或公证凭据配成本仓库的 secret，或让 CI job 能用 runner 账号 keychain 里的签名身份，就等于交给每一个有写权限的人和实例上每一个能用该 runner 标签的仓库。
 - 现状：没有任何 workflow 签名或公证，Forgejo 上没有配置签名 secret；`tauri.conf.json` 只做 ad-hoc 签名。`tests/tooling/release/shell/signing/test_no_signing_in_ci.py` 防止 workflow 重新出现签名凭据名、`notarytool`/`stapler`、keychain 导入或非 ad-hoc 的 `codesign --sign`，但它只是本仓库文件的回归检查，同样不是安全边界。打包脚本的 tauri-cli 默认装到新的临时目录并在退出时删除（CI 调用时是 `RUNNER_TEMP` 下的每次运行目录），不再复用持久的 `~/.cache` 工具目录；2026-11-17 起候选 workflow 只由 `workflow_dispatch` 手动触发，是该脚本的薄调用，打包期间由开发者本地运行脚本。
 - 决定：签名不进 CI。Developer ID 证书留在打包用的 Mac 上；签名与公证推迟到另行规划的工作。如果将来要自动签名，必须先在 Forgejo 与 runner 一侧解决（例如签名 runner 只注册给一个只有 owner 有写权限的独立仓库，或使用不跑 CI 的独立 macOS 账号），仓库里的 workflow 条件不是安全边界。runner 账号是否持有签名身份的只读核对由 owner 另行处理。
@@ -1352,6 +1403,7 @@
 - 规避：用非提升的 shell 运行 hyprial。真机验收须记录 `whoami /groups` 的输出，确认 `BUILTIN\Administrators` 不是 enabled 状态。已被提升进程建坏的 home 换一个新目录重新 `hyprial init`。
 - 决定：暂不修（PR `fix/windows-bootstrap-private-acl` 只登记）。待真机证据确认提升状态下的实际 owner 与失败点后再定方案；候选是把这些 `mkdir` 改为创建后 harden，或在 owner 为 Administrators/SYSTEM 且当前令牌已启用该组时把对应 ACE 计为可读。
 - 依据：`src/hyprial/kernel/impl/manysys/fs/private_access.py` 文件头决策块与 `_windows_violation`；`tests/kernel/platform/test_private_access.py::test_owner_rights_does_not_count_as_current_user_read_for_an_admin_owner` 与 `tests/daemon/onboarding/lifecycle/test_windows_state_dacl.py::test_elevated_launch_is_admitted_but_a_plain_private_mkdir_stays_unsafe` 钉住当前结果（模拟的 Windows 安全描述符）；CPython `Modules/posixmodule.c` 在 v3.12.4 起的 `mode == 0700` 分支。提升进程的默认 owner 为 Administrators 是 Windows 平台行为，真机 UNKNOWN。
+- 状态更新（2026-11-26，PR #69 的后续调查，只探测、没有改代码）：上面“真机 UNKNOWN”的两点在 GitHub 托管 Windows runner 上测到了（不是 Windows 11 真机）。runner 账户是提升权限的管理员（默认属主 `BUILTIN\Administrators`，`Administrators` 组启用）。① 位置（`%USERPROFILE%` / `RUNNER_TEMP`）× 建法（pwsh `New-Item` / 普通 `os.mkdir` / `os.mkdir(…, 0o700)` / pytest `tmp_path`）八格逐格实测：用 0o700 建的目录（含 `tempfile.mkdtemp`、pytest 的 `tmp_path` 与 xdist 目录）描述符是受保护的 SYSTEM / Administrators / OWNER RIGHTS 三项，在用户目录下属主是 `Administrators`、被拒；pwsh 建的或继承了 pwsh 所建父目录的目录带着账户自己的 ACE，在用户目录下通过。`RUNNER_TEMP` 下任何建法的目录都被拒：未受保护的会从那里继承 `BUILTIN\Users` 等条目，0o700 建的虽然挡住了继承，但在标准账户的宽测里同样未通过。② 用户目录下同样的 0o700 目录在标准账户（非提升，属主是账户自己）下通过。③ 全量运行里 bootstrap / agent home 这一类 `unsafe-acl` 失败（四个目录宽测，x64，307 个失败里占 127 个）在标准账户下归零。所以只把 pytest 的 `--basetemp` 挪到用户目录不解决问题：在用户目录下，决定结果的是 `mkdir` 的 mode 参数加提升权限的账户。另外两类同名公开错误的失败与临时目录无关：transport 存储目录和 tailnet 的锁文件在 Windows 上拿 `stat` 的模式位去比 `0o700` / `0o600`（目录恒为 `0o777`、文件恒为 `0o666`），标准账户下照旧失败（宽测里分别为 104、73 个），属于产品问题。换标准账户还新出现 8 个 “changed while being read”（`config.py:814`），未定位。全套没有在标准账户下跑过，不能按比例外推；真机未测。决定不变：待负责人定。可选方向有两个：把产品里这些 `mkdir(0o700)` 改成创建后加固（KP-123 原有的候选）；或者让 Windows 上的测试在非提升账户下运行——后者只消得掉第一类。运行 https://github.com/Hyprial/hyprial/actions/runs/45651791091 与 https://github.com/Hyprial/hyprial/actions/runs/45656522065 ，临时分支已删除。
 - 负责人：Windows 可移植性线。
 
 ## KP-124 Windows 上启动记录的 `handoff_note` 仍称「private 0600 file」
@@ -1442,3 +1494,404 @@
 - 决定：暂留为债。退出条件：新增 daemon 方法 `agent.tiers.probe`（探测可能持续 `timeout × 组合数` 秒，需流式或作业形态；记录视图由读方法提供），daemon 成为缓存唯一写者，届时删除这两行例外及 `dispatch.py` 余下的后端行。新增方法是新的已发布面，需 owner 批准。
 - 依据：S3c critic（cm-coord3，P1-1 / P2-4）。
 - 负责人：cell model（cm）线。
+
+## KP-134 Windows 上 Pi agent 起不来：SDK 包根探测失败，绕过后 worker 在生成 session ID 时退出
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142，PR #3106 评论）中，DeepSeek key 已写入 agent secret store 并授权，worker environment receipt 显示 grant 已投影；未带 `--approve` 时按预期返回 `PI_P2_LAUNCH_UNTRUSTED`。带上批准后有两处失败：
+  1. SDK 包根探测：npm 全局安装在 Windows 上把 `pi` 装成 `%APPDATA%\npm\pi.cmd` 一类的 shim，SDK 包在旁边的 `node_modules\@earendil-works\pi-coding-agent`。`find_pi_package_root`（`src/hyprial/daemon/impl/harnesses/pi/loader.py`）只沿 `shutil.which` 结果的父目录向上找 `package.json`，shim 的父目录链上没有该包，于是报「Pi SDK package root not found」。此原因按阅读代码推断，真机只观察到探测失败，未逐步核对。
+  2. 用临时 shim 绕过探测后，Pi SDK worker 实际启动，但在 Node `Crypto.getRandomValues` 生成 session ID 时退出，未进入模型请求。具体原因未定位（UNKNOWN）；Hyprial 的 Pi 资源（`resources/*.ts`、`pi_controlled_loader.mjs`）使用 `node:crypto` 的 `randomUUID`，失败点可能在 SDK 自身或 worker 的 Node 运行环境。
+- 影响：只有 Windows。登录后无法在 Windows 上运行 Pi agent；Linux 与 macOS 不受影响。
+- 规避：无可用规避（绕过探测后仍在第 2 步失败）。
+- 决定：待修。复现线索：Windows 11、npm 全局安装 `@earendil-works/pi-coding-agent`，`hyprial agent start` 一个 Pi agent（带 `--approve`）；worker 日志见 `<HYPRIAL_HOME>\state\logs\workers\<agent>.jsonl`。修复方向：探测时识别 npm `.cmd`/`.ps1` shim 并解析到 `node_modules` 下的包根；再按 worker 日志定位 `getRandomValues` 失败的调用栈与 Node 版本。
+- 状态更新（2026-11-24，PR #3139）：第 1 点代码已修，Windows 未实测（UNKNOWN）。`find_pi_package_root` 在父目录链之后再检查命令所在目录下的 `node_modules/@earendil-works/pi-coding-agent`（仍校验包名，不做更大范围搜索，不读 npm 配置）；回归测试 `tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_sdk_package_root.py` 在 Linux 上修复前红、修复后绿。第 2 点未处理：读代码发现 worker 子进程环境词表 `BASE_CHILD_ENVIRONMENT_NAMES`（`src/hyprial/identity/impl/agents/home/environment.py`）不含 `SYSTEMROOT` 等 Windows 系统变量，可能是 Node 取随机数失败的原因（推断，未验证）；是否扩充该词表待 owner 裁定。
+- 状态更新（2026-11-25，PR #69）：两点都在 runner 上取得实测。GitHub 托管 Windows runner（Windows Server、管理员账户，作业运行在该账户的交互式会话里，进程链在 `services.exe` 之下、标准句柄是管道、没有控制台窗口；不是 Windows 11 真机），运行 https://github.com/Hyprial/hyprial/actions/runs/45601792986（提交 f7dc519b2b），工作流 `.github/workflows/windows-followup.yml`，`npm install -g @earendil-works/pi-coding-agent@0.85.1` 后运行 `scripts/verify/windows_followup_probe.py`，Node 20.20.2、22.23.5、24.22.3 各一次。第 1 点：`pi` 解析为 npm 前缀目录下的 `pi.cmd`，只沿父目录查找（修复前的逻辑）找不到包根，`find_pi_package_root` 返回 `<npm 前缀>\node_modules\@earendil-works\pi-coding-agent`，三个 Node 版本结果相同。第 2 点：`whitelist_replacement_environment` 过滤 runner 环境后只剩 `PATH`。在这个只有 `PATH` 的环境下，Node 22 与 24 启动即以退出码 134 结束（`Assertion failed: ncrypto::CSPRNG(nullptr, 0)`，`node -e` 取随机数与运行 Pi 的 CLI `--version` 相同）；只加回 `SYSTEMROOT` 两者都通过，单独加回 `WINDIR`、`COMSPEC`、`PATHEXT`、`TEMP`、`TMP` 中任一个都不通过。Node 20 在只有 `PATH` 的环境下取随机数正常（Pi 0.85.1 的 CLI 在 Node 20 下任何环境都以退出码 1 结束，与本问题无关）。读代码确认真实启动路径不会补上 `SYSTEMROOT`：`compose_worker_child_launch` 只取 `BASE_CHILD_ENVIRONMENT_NAMES` 中的名字，唯一会复制这些系统变量的 `native_profile_environment` 没有调用方。所测的是 Node 能否启动；一次真实的 worker 会话（启动 shell、写临时文件）没有运行，其余五个名字是否需要未测。真机上的现象是 worker 启动后在 `Crypto.getRandomValues` 处退出，与此处的启动即断言不同，两者是否同一原因仍是推断，取决于真机的 Node 版本，未知。子进程环境词表是冻结表，未改动，待 owner 裁定。未在 Windows 11 真机复测。
+  读代码另发现两处同类问题，均未改、未实测：`src/hyprial/identity/impl/provider_auth/helper.py` 的 `find_pi_package_root` 假设 `<root>/dist/bundle/cli.js`，在 shim 布局下返回 `None`，Pi OAuth 类 provider 的重新登录会得到 spawn error；`loader.py` 中 workspace 信任根的 `st_mode & 0o077` 检查在 Windows 上恒为非零，不带 `--approve` 的 workspace 范围启动会被拒绝。
+- 状态更新（2026-11-26，PR #69）：第 1 点状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”，依据是上一条的修复前后对比：只沿父目录查找时找不到包根，修复后找到，三个 Node 版本结果相同。回归测试 `test_pi_sdk_package_root.py` 里 POSIX 符号链接布局的用例原先按裸名在 `PATH` 上找 npm 的 bin，Windows 的 `PATHEXT` 查找找不到无扩展名的文件；现在直接以符号链接本身的路径作为命令，仍覆盖符号链接解析和向上查找，账户不能建符号链接时跳过并写明原因。该文件在 runner 上的结果见 KP-135 的 2026-11-26 更新。第 2 点状态不变。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）第 4 项；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：Windows 可移植性线。
+
+## KP-135 Windows 源码开发构建：PowerShell 下 native 构建报 WinError 193，editable 安装缺 `hyprial-tailcat.exe`
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142）中，源码树上的开发安装有两个问题：
+  1. 在 PowerShell 中执行 `HYPRIAL_BUILD_NATIVE=1 uv sync --extra test --reinstall-package hyprial` 报 `WinError 193`。构建钩子 `_build_editable_native`（`src/hyprial/gui_build_hook.py:331`）以 `subprocess.run([str(script)])` 直接执行 `scripts/build/build_native_engine.sh`，Windows 不能把 `.sh` 当可执行文件启动。
+  2. editable 构建在 `CustomBuildHook.initialize` 里走 `_verify_editable_native` 后直接返回，不调用 `_stage_tailcat()`，所以 `uv sync --reinstall-package hyprial` 之后源码树里没有 `_bin\hyprial-tailcat.exe`。`locate_tailcat_sidecar`（`src/hyprial/daemon/impl/network/tailcat/binary.py:103`）只查 `HYPRIAL_TAILCAT_BINARY`、wheel 内 `hyprial\_bin` 与 `<HYPRIAL_HOME>\bin`，有意不查 `PATH`；首次设备注册因此返回 `DEVICE_ENSURE_FAILED`。
+- 影响：只影响 Windows 上从源码做 editable 开发安装；wheel 安装不受影响（wheel 构建会 stage sidecar）。第 2 点的 editable 跳过 sidecar 与平台无关，但 POSIX 开发者通常另有 sidecar 来源，本次只在 Windows 真机上观察到。
+- 规避：在 Git Bash 中执行 native 构建；把版本校验通过的 Windows sidecar 放进 `<HYPRIAL_HOME>\bin`，或用 `HYPRIAL_TAILCAT_BINARY` 指定。真机验收以此完成了 device provisioning。
+- 决定：待修。修复方向：Windows 上经 `bash` 调用构建脚本（或提供 PowerShell 等价脚本），并在 editable 构建时给出 sidecar 的来源或明确提示。
+- 状态更新（2026-11-24，PR #3139）：第 1 点代码已修，Windows 未实测（UNKNOWN）。editable 的 native 构建改为构建钩子在进程内调用 `src/hyprial/shell/impl/packaging/native_editable.py` 的 `build_editable`，不再执行 `.sh`；暂存文件名取自解释器的扩展后缀（Windows 为 `actors.pyd`）；`scripts/build/build_native_engine.sh` 的默认路径委托给同一入口。Linux 实测（[redacted]，x86_64，提交 cf3741dcc2，2026-11-24）：`HYPRIAL_BUILD_NATIVE=1 uv sync --extra test --reinstall-package hyprial` 退出码 0，随后 `from hyprial._core import actors` 导入 `src/hyprial/_core/actors.abi3.so`、`ENGINE_ABI_VERSION` 为 1；切片提交 f829121fa9 上直接运行该脚本同样通过（输出未入库）。预计的限制（推断，未实测）：Windows 上 daemon 正加载 `actors.pyd` 时重建会因文件占用失败，需先停 daemon。第 2 点（editable 不 stage sidecar）未处理，待 owner 裁定。
+- 状态更新（2026-11-25，PR #69）：第 1 点在 runner 上实测通过，两次完整运行结果相同。GitHub 托管 Windows runner（Windows Server、管理员账户，作业运行在该账户的交互式会话里，进程链在 `services.exe` 之下、标准句柄是管道、没有控制台窗口；不是 Windows 11 真机），运行 https://github.com/Hyprial/hyprial/actions/runs/45601792986（提交 f7dc519b2b），工作流 `.github/workflows/windows-followup.yml`：同一条命令 `HYPRIAL_BUILD_NATIVE=1 uv sync --locked --python 3.12 --extra test --reinstall-package hyprial`（pwsh）在 `dev` 头提交上退出码 1、输出含 `WinError 193`；在本 PR 上退出码 0，随后 `from hyprial._core import actors` 导入 `src\hyprial\_core\actors.pyd`、`ENGINE_ABI_VERSION` 为 1。未在 Windows 11 真机复测。同一运行中本 PR 新增的三个测试文件 6 failed / 44 passed：`test_editable_build.py` 5 条，其中 4 条报 `Rust 1.93.1 is not available`、1 条报 `WinError 193`，这些用例用 `#!/bin/sh` 脚本充当假的 `rustup`/`cargo`/`rustc`（原因是读测试代码的推断）；`test_pi_sdk_package_root.py` 1 条是 POSIX 符号链接布局的用例。均待修。第 2 点未处理，待 owner 裁定。
+- 状态更新（2026-11-26，PR #69）：第 1 点状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”，依据是上一条的修复前后对比：同一条命令在 `dev` 上报 `WinError 193`，在本 PR 上构建并导入 `actors.pyd`。上一条记录的 6 条测试失败已修。`test_editable_build.py` 的假 `cargo`、`rustup`、`rustc` 改为同一个 Python 脚本，配一对 npm 式入口：无扩展名的文件给 POSIX shell，`.cmd` 给 Windows 的 `PATHEXT` 查找；两种入口在所有平台上都写出，由平台自己的查找选一个，测试里没有平台分支。`test_pi_sdk_package_root.py` 的改动见 KP-134。在 GitHub 托管 Windows runner（`windows-latest`，Windows Server 2025 x64；不是 Windows 11 真机）上，本 PR 新增的三个测试文件从 6 failed / 44 passed（运行 https://github.com/Hyprial/hyprial/actions/runs/45603339438）变为 0 failed / 50 passed（运行 https://github.com/Hyprial/hyprial/actions/runs/45643144561，临时验证分支）；Linux 上同一批测试 116 passed。工作流里两个 pytest 步骤的 `--basetemp` 从 `RUNNER_TEMP` 移到用户目录：移动前后，改动目录里因私有目录检查失败的都是同样 10 条测试（8 条 `FAILED` 报 `agent home unsafe-acl`：`test_pi_provider_credentials.py` 6 条、`test_pi_sdk_required.py` 2 条；2 条 `ERROR` 是两个 headless e2e 的 fixture 起 daemon 时输出 `hyprial: unsafe-acl`），移动没有改变这一结果。原因见 KP-123 的 2026-11-26 更新。第 2 点状态不变。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）的「sidecar 调查结论」与「其他环境问题」；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：Windows 可移植性线（构建与打包）。
+
+## KP-136 Windows 上 `hyprial gui --stdin-stop` 在 PTY 关闭方式下退出复现不稳定
+
+- 现象：Windows 11 第二轮真机验收（dev @ 14d37d8142）中，`hyprial gui --no-open --json --port 0 --stdin-stop` 以管道启动、单独关闭 stdin 时正常退出（退出码 0、无残留子进程）；在 PTY（终端会话）关闭方式下，退出行为复现不稳定。哪种 PTY 宿主、关闭方式与失败表现（不退出、退出码异常或残留进程）评论里没有写明（UNKNOWN）。
+- 影响：只有 Windows，只涉及由终端/PTY 宿主托管、靠关闭 stdin 让 GUI 退出的调用方。launcher 等经管道托管的调用方不受影响（已实机通过）。
+- 规避：用管道托管 `--stdin-stop`，或用 Ctrl-C 结束前台 GUI。
+- 决定：待测。先在 Windows 真机上固定 PTY 宿主（ConPTY / Windows Terminal / Git Bash mintty）与关闭方式，记录 `StdinStopWatcher` 是否读到 EOF 以及 `deliver_main_termination` 的投递路径（无 `pthread_kill` 时为 `_thread.interrupt_main(SIGTERM)`）。
+- 状态更新（2026-11-24，PR #3139）：状态仍为待测。读代码认为 PTY 关闭方式对应三种机制（均为推断）：优雅关闭控制台或 ConPTY 时系统发 `CTRL_CLOSE_EVENT`，默认处理器以 `0xC000013A` 结束进程，`--stdin-stop` 不参与，退出码不是 0；控制台宿主被硬杀时 watcher 原先只轮询 `kbhit`，GUI 不退出；mintty 的管道写端仍被其他进程持有时 `PeekNamedPipe` 一直返回 0，GUI 不退出。本 PR 只针对第二种加了检查：控制台分支每轮复查 `GetConsoleMode`，失败即按 EOF 停止（伪造 kernel32 的单元测试 `tests/kernel/manysys/test_stdin_stop_windows_branches.py` 证明；真机上宿主消失后 `GetConsoleMode` 是否失败 UNKNOWN）。诊断脚本 `scripts/verify/stdin_stop_windows_probe.py` 打印 stdin 句柄事实并跟踪进程树退出码。是否加 `CTRL_CLOSE_EVENT` 处理器待真机结果后由 owner 决定。
+- 状态更新（2026-11-25，PR #69）：状态仍为待测，runner 上没有取得证据。GitHub 托管 Windows runner（Windows Server、管理员账户，作业运行在该账户的交互式会话里，进程链在 `services.exe` 之下、标准句柄是管道、没有控制台窗口；不是 Windows 11 真机），运行 https://github.com/Hyprial/hyprial/actions/runs/45601792986（提交 f7dc519b2b），工作流 `.github/workflows/windows-followup.yml`：runner 的三个标准句柄都不是控制台。在预先建好的隔离目录上以 `gui --no-open --json --port 0 --stdin-stop` 启动（源码安装，经管道和经 ConPTY 各一次），两次都在启动阶段返回 `GUI_HOME_UNSAFE`、退出码 1，没有运行到 stdin 监听。哪些目录会被这项检查拒绝，见下一条更新。真实终端宿主下的行为仍需真机矩阵。
+- 状态更新（2026-11-26，PR #69）：状态改为“已复现，未修复”。以下都在 GitHub 托管 Windows runner 上测得（`windows-latest` 是 Windows Server 2025 x64，`windows-11-arm` 是 Windows 11 Enterprise ARM64、在仿真下运行 x64 wheel；都不是 Windows 11 真机）。
+  - 复现：wheel 安装后，以 `hyprial gui --no-open --json --port 0 --stdin-stop` 在 ConPTY 里启动，再关闭 ConPTY。根进程 `hyprial.exe`（console-script 启动器）在 0.047–0.062 秒内以退出码 `0xC000013A`（3221225786，进程被控制台关闭事件结束）退出；其下的 python 进程，包括 GUI 宿主，全部同样以 `0xC000013A` 退出，没有一个以 0 退出，清理没有运行。运行 https://github.com/Hyprial/hyprial/actions/runs/45624289669 只有 x64 跑到关闭这一步（0.062 秒，`0xC000013A`；ARM 那个作业在启动阶段因 `DAEMON_START_FAILED` 退出，没有运行到关闭）；运行 https://github.com/Hyprial/hyprial/actions/runs/45625537163 的 x64 与 ARM 都跑到关闭这一步，结果相同（均为 0.047 秒，`0xC000013A`）。同样启动、只关闭管道 stdin 时，根进程在 0.31–0.45 秒内以 0 退出。两种关闭方式之后都剩 2 个 `python.exe`：一个是 daemon（`--stdin-stop` 只结束 GUI，不停 daemon），另一个的身份未查明。本 PR 加的 `GetConsoleMode` 复查不处理这个事件，本 PR 不修复 KP-136。
+  - 修复尝试（另一个分支，未并入本 PR）：stdin 是控制台时注册一个只处理 `CTRL_CLOSE_EVENT` 的处理函数，走与 stdin 读到 EOF 相同的停止路径，并让 GUI 宿主子进程不再共用控制台。两次 runner 运行（https://github.com/Hyprial/hyprial/actions/runs/45638227710 只有 x64 跑到关闭这一步；https://github.com/Hyprial/hyprial/actions/runs/45640875858 x64 与 ARM 都跑到）结果相同：GUI 宿主进程树在关闭后 0.1–0.2 秒内被正常清理收掉，有一个 python 进程在 0.34–0.42 秒时以 0 退出，但根进程 `hyprial.exe` 和另一个 python 仍以 `0xC000013A` 退出（x64 0.391 秒，ARM 0.343 秒）。日志没有记录父进程和命令行，哪个 python 是运行命令的解释器、哪个是 venv 的跳板没有区分；“以 0 退出的是解释器”是推断。绕开启动器直接用解释器启动的对照未测。修复不在 #69 里做，另行单独处理。
+  - 私有目录检查：用 pwsh `New-Item` 建的 GUI home，放在 `RUNNER_TEMP` 下被拒（`GUI_HOME_UNSAFE`，上一条的运行 45601792986），放在用户目录 `%USERPROFILE%` 下通过（上面两次复现运行）。由 pytest 新建的目录在两个位置都被私有目录检查拒绝（见 KP-135 的 2026-11-26 更新）。运行 https://github.com/Hyprial/hyprial/actions/runs/45645487342 读取了 Python 在两个位置新建的目录的安全描述符：属主都是 `BUILTIN\Administrators`，只有 SYSTEM、Administrators、OWNER RIGHTS 三条访问项，两个位置逐项相同。这一项的原因已查明，写在 KP-123 的 2026-11-26 更新里。
+  - 未测（没有真机）：Windows Terminal、mintty（Git Bash）、可见 conhost 窗口点关闭、标准用户账户。
+- 依据：PR #3106 第二轮真机验收评论（2026-11-24）第 2 项；KP-080 的 2026-11-21 状态更新；跟进 WIP PR `fix/windows-followup-pi-and-dev-build`。
+- 负责人：GUI 启动维护者；Windows 可移植性线。
+
+## KP-137 Windows 上 MCP channel 父进程监视用 `os.kill(pid, 0)` 查 owner，实际发出 Ctrl+C
+
+- 现象：修复前（`5201456950`）：`src/hyprial/daemon/impl/mcp/channel/loops.py:322 @ 5201456950` 的 `signal_process` 默认值是 `os.kill`，经 `src/hyprial/daemon/impl/mcp/channel/ownership.py:310` 以 `signal_process(pid, 0)` 查 owner 进程是否存活；生产路径 `src/hyprial/daemon/impl/mcp/channel/session.py:203-208` 调用时同样不传这个参数，走的就是默认值。POSIX 上信号 0 只做存在性检查；Windows 上 Python 把 0 当作 `signal.CTRL_C_EVENT`，这次调用向目标发出控制台 Ctrl+C，而不是探测存活。同一函数在 `signal_process is None` 时已有走 `hyprial.kernel` 的 `probe_process` 的分支，只是默认值没有用它。
+- 影响：只有 Windows。产品的 owner 存活判定本身仍然成立（调用正常返回，目标进程继续存活），但这次调用不是无害的存在性检查，而是向控制台发 Ctrl+C。信号 0 在 Windows 上的行为在 GitHub 托管 Windows runner 上实测过（https://github.com/Hyprial/hyprial/actions/runs/45651791091，x64 与 ARM64 结果一致）：目标不在新进程组里时，与它共用控制台的其他进程收到 `CTRL_C_EVENT`，没有装处理函数的进程被结束；目标在新进程组里启动、或有独立控制台时，其他进程不受影响。被监视的是启动 daemon 的 owner 进程，产品里实际会影响哪些进程取决于 daemon 与 owner 的控制台与进程组布局，这一点没有在产品路径上实测。测试里这条路径的默认参数在模块加载时已绑定原始 `os.kill`，运行期替换 `os.kill` 的拦截桩拦不到它，标 xfail 也照样会发 Ctrl+C，所以它是 Windows 全量测试的前置修复。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`signal_process` 默认值改为 `None`，走 `probe_process`，不加平台分支；在 `tests/daemon/channels/mcp/lifecycle/supersession/handoff/test_handoff.py` 追加一条修复前失败、修复后通过的测试，证明默认路径不再调用 `os.kill`。合入时以 Linux 验收为准；Windows 上的验收（该文件全部用例出结果、没有归因于它的 worker 自行退出或挂起）要等这个测试文件进入 Windows 的 CI 运行后补做。修完把本条状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”，并如实写未测范围。
+- 状态：已合入（PR #89，合并提交 `3c47b3e7bb`）。Linux 测试机上新增的用例先失败后通过，`test_handoff.py` 25 条全部通过；Windows 上没有运行过这条用例，也没有在产品路径上验证过修复的效果（信号 0 的行为只在 runner 上用自建的进程布局单独实测过，见上文影响段）；Windows 11 真机未测。
+- 依据：2026-11-26 Windows 测试分诊时读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-138 Windows 命名管道服务端 `accept` 与 `close` 并发时访问违例，pytest worker 崩溃
+
+- 现象：修复前（`5201456950`）：GitHub 托管 Windows runner 全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457（`windows-latest`，Windows Server 2025 x64，管理员账户；不是 Windows 11 真机）中，分片 2 与分片 3 的日志都记录了 `Windows fatal exception: access violation`（`0xC0000005` / 3221225477），崩溃栈在 `src/hyprial/kernel/impl/manysys/ipc/windows_pipe.py:331 @ 5201456950` 的 `accept`（`GetOverlappedResult`），主线程同时在测试 teardown 里调用服务端的 `close()`。`accept` 在 `:331` 用 `self.handle`、`self.operation` 等待，`close()`（`:346-358`）不加锁地取消、关闭 `hEvent` 并把两者置空。崩溃是实测；它由这一竞态造成是读码推断，未实测。
+- 影响：只有 Windows。崩溃的是整个 xdist worker 进程，不只是一条用例；上述运行的分片 2、3 因崩溃与挂起没有产出结果文件，其中测试在 Windows 上的真实状态未知。产品里并发关闭服务端时同样可能崩溃（推断，未实测）。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`accept` 与 `close` 用同一把锁保护 `operation`/`handle`，`close` 取消后等 `accept` 退出 overlapped 等待，再释放 `hEvent` 与 `handle`；在 `tests/kernel/ipc/local_ipc/test_win32_pipe.py` 追加伪造 overlapped 加 `threading.Event` 栅栏的确定性测试，修复前失败。合入时以 Linux 上的栅栏测试为准；Windows 上原生 worker 崩溃数为 0 的验收要等 Windows 上的全量测试进入 CI 后补做。修完更新本条状态，并如实写未测范围。
+- 状态：已合入（PR #87，合并提交 `1030b8da1b`）。GitHub 托管 Windows runner 上（https://github.com/Hyprial/hyprial/actions/runs/45811284348 的 w1-x64 作业，windows-latest）这个测试文件 11 条全部通过，其中 4 条用真实的命名管道；崩溃由这一竞态造成是读码推断，没有单独复现；Windows 上全量分片的原生崩溃数是否归零没有验证（Windows 上的全量测试还没有 CI 运行）；Windows 11 真机未测。
+- 依据：上述 runner 运行的分片 2、3 原始日志；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-139 device transport 存储与 tailnet `Slot` 在 Windows 上用 POSIX 模式位判定私有性
+
+- 现象：Windows 上模式位不代表访问控制，GitHub 托管 Windows runner 上实测目录恒报 `0o777`、文件恒报 `0o666`。下列产品代码拿模式位（以及 `st_uid`）做私有性判定：
+  1. `src/hyprial/identity/impl/device/transport_storage.py:84-85`：`_secure_directory` 对末级目录比较 `S_IMODE != 0o700`；`:120-127`：`_complete_paths_present` 比较 `st_uid` 与 `S_IMODE != mode`。
+  2. `src/hyprial/identity/impl/device/tailnet/runtime/slot.py:61-65`：`_file_safe` 比较 `st_uid != current_uid()` 与 `S_IMODE != mode`；它在读写文件、写后自检、`_existing_target` 以及 `locked()` 前后对 `operation.lock` 的检查中被调用。同文件 `:35` 的 `_directory_safe` 已经用 `private_metadata_violation`。
+- 影响：只有 Windows，两种账户下拦路点不同。标准账户下实测 transport 104 条、tailnet 73 条失败，原因是模式位比较，这是本条要修的对象。管理员账户（提升令牌，即托管 runner 的实际账户）下，全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457 分片 1、4 的 163 条 `transport storage directory is unsafe` 全部止于 `transport_storage.py:70` 的描述符检查 `unsafe-acl`（`src/hyprial/kernel/impl/manysys/fs/private_access.py:334`，被拒的是测试建的继承目录），没有走到 `:84` 的模式位比较；54 条 `TAILNET_STORAGE_UNSAFE` 全部落在经 `Slot` 存储的两个测试文件里（`tests/identity/devices/tailnet/runtime/test_journal.py` 23 条、`tests/identity/devices/tailnet/authority/test_receipt.py` 31 条），拦路点是锁文件描述符（见 KP-140）。这一点取自管理员账户下的分诊实测，该运行的结果文件里只有这一个错误码、看不到原因（`public_gate` 换掉了底层异常链，`src/hyprial/identity/impl/device/tailnet/runtime/schema.py:26-38`）。修完之后 Windows 上转绿多少条未实测；在托管 runner 上，本条单独修完转绿的条数可能是 0，要等测试夹具的私有目录加固与 KP-140 也修完才显出效果。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：无条件调用 `hyprial.kernel` 公共面，不写平台分支：删除 `transport_storage.py:84-85`（前一行 `secure_private_directory(create=True)` 默认 `mode=0o700`，返回前已用同一模式做过 `private_metadata_violation`，POSIX 上这是不可达的重复检查；调用方本来就把 `PrivateAccessUnsupported` 包装成同一个公开错误）；`_complete_paths_present` 把 `st_uid` 加模式位比较换成 `private_metadata_violation(path, metadata, mode=mode)`，符号链接、类型与 `st_nlink` 判断保留；`slot._file_safe` 增加 `path` 参数，保留 `S_ISREG` 与 `st_nlink == 1`，以 `private_metadata_violation` 替换 `st_uid` 加模式位比较。公开错误码与消息不变，POSIX 语义不变（属主加精确模式位，`private_access.py:173-178`），Windows 可移植性门禁基线不新增条目。现有用例里 `chmod(0o644)`/`chmod(0o755)` 仍须被拒（如 `tests/identity/devices/tailnet/runtime/test_slot.py:64-66`），作为回归保护。修完后更新本条状态，并如实写 Windows 上实测转绿的条数或未测范围。
+- 依据：上述 runner 运行分片 1、4 的结果文件；GitHub 托管 Windows runner 上标准账户与管理员账户的私有目录分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-140 管理员账户下 tailnet `Slot` 的 `operation.lock` 建好后没有加固，私有性检查必然失败
+
+- 现象：`src/hyprial/identity/impl/device/tailnet/runtime/slot.py:117-127` 的 `locked()` 里，`operation.lock` 由 `filelock` 以 `mode=0o600` 新建，Windows 上得到受保护的描述符，只有 SYSTEM、Administrators、OWNER RIGHTS 三条访问项。提升令牌下新建对象的默认属主是 `BUILTIN\Administrators`，`OWNER RIGHTS` 不算当前用户可读，随后的 `_file_safe(path.lstat(), 0o600)` 必然失败。GitHub 托管 Windows runner 上实测：管理员账户下 `Slot` 的 `locked()`、`write()`、`read()` 全部报 `TAILNET_STORAGE_UNSAFE`，原因正是锁文件描述符；标准账户下描述符检查通过，失败在模式位比较（即 KP-139）。
+- 影响：只有 Windows 管理员账户（提升令牌），包括 GitHub 托管 runner。全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457 分片 1、4 的 54 条 `TAILNET_STORAGE_UNSAFE` 的拦路点即此（归因见 KP-139）。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：`locked()` 在 `lock.acquire()` 成功之后、第一次 `_file_safe` 之前，对锁文件调一次 `harden_private_path(path, mode=0o600)`。此刻本进程持有该锁，加固自家锁文件的访问控制表不改变互斥语义；`src/hyprial/daemon/impl/provider_keys/storage/local.py:292-299` 对 `.cas.lock` 已是同样做法。这是修正访问控制表，不放宽检查，`_file_safe` 原样保留。它是这几条里唯一要改产品“建完再加固”行为的一处，所以单列；若 owner 认为应归入 KP-123，可整体挪走，不影响 KP-139。修完后更新本条状态，并如实写未测范围。
+- 依据：GitHub 托管 Windows runner 上管理员账户与标准账户的私有目录分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+
+## KP-141 Pi workspace 信任根只看 `st_mode & 0o077`，不查属主，Windows 上这项判定没有意义
+
+- 现象：`src/hyprial/daemon/impl/harnesses/pi/loader.py:394` 以 `root.stat().st_mode & 0o077` 判定 workspace 信任根是否私有：只看组与其他用户位，不看属主；Windows 上 `stat` 的模式位不代表访问控制，这项判定没有意义：该式恒为非零（目录模式位为 `0o777`），workspace 范围的信任根会被拒绝（读码推断，未在 GitHub 托管 Windows runner 上实测）。KP-134 的 2026-11-25 更新已记下这处同类问题。
+- 影响：POSIX 上属主不是当前用户的目录也可能被当作私有信任根。Windows 上的具体后果是推断，未在全量试跑里分出这一类：`tests/daemon/harnesses/pi/configuration/launch_trust/test_pi_workspace_trust.py:89` 用 `chmod(0o755)` 构造的拒绝用例与接受私有 workspace 的用例不能按预期区分。
+- 规避：无。
+- 决定：先修，不用 xfail，修复：无条件改为 `private_tree_violation(root, metadata) is not None`（`hyprial.kernel` 已导出，`src/hyprial/kernel/__init__.py:84`）。POSIX 上它正是“属主为当前 uid 且 `S_IMODE & 0o077 == 0`”，模式位语义与原式逐位相同；Windows 上走同一套安全描述符判定。不用 `private_metadata_violation(..., mode=S_IMODE & 0o700)`：那是相等比较，会多拒带 setgid 或 sticky 位的目录（如 `0o2700`）。POSIX 上唯一的变化是新增属主检查（变严），owner 已于 2026-11-26 批准。Windows 可移植性门禁基线不新增条目。修完后更新本条状态，并如实写未测范围。
+- 依据：2026-11-26 Windows 测试分诊时读代码核对上述行号；KP-134 的 2026-11-25 更新。
+- 负责人：Windows 可移植性线。
+
+## KP-142 Windows 上读 agent 配置项报 `changed while being read`（待探测）
+
+- 现象：`src/hyprial/identity/impl/agents/home/config.py:787-815` 的 `_read_regular_file` 报 `config item … changed while being read`。GitHub 托管 Windows runner 全量试跑 https://github.com/Hyprial/hyprial/actions/runs/45627738457（管理员账户）分片 1、4 实测 15 条，全在 `tests/identity/agents/configuration/test_agent_config_loading.py`，全部停在 `:814` 的 `len(body) != after.st_size` 或 `st_mtime_ns` 比较（前一道 `:794-798` 的 inode 比较通过）；标准账户下另见 8 条（`test_pi_provider_credentials`、`test_pi_sdk_required`）。
+- 原因（推断，未实测）：测试用 `Path.write_text(body, encoding="utf-8")` 写源文件，Windows 文本模式把 `\n` 写成 `\r\n`；产品以 `os.open(..., O_RDONLY)` 读原始字节，标志里没有 `O_BINARY` 时 CRT 文本模式把 `\r\n` 折成 `\n`，`len(body)` 就小于 `after.st_size`。
+- 影响：只有 Windows。若推断成立，含 CRLF 的配置项在 Windows 上一律读不出来。
+- 规避：无（推断成立时，配置文件只用 `\n` 换行可以避开，未实测）。
+- 决定：待探测：先探测再修；探测确认后再修，不用 xfail。首个提交在 `test_agent_config_loading.py` 加一条用例：写入含 `\r\n` 的源文件后断言读回字节与 `lstat().st_size` 相等（Linux 上本来相等），在 GitHub 托管 Windows runner 上实测先失败。假设成立则把标志改为 `flags |= getattr(os, "O_BINARY", 0)`（与同一行的 `O_NOFOLLOW` 同形，非平台分支；POSIX 上 `getattr` 返回 0，行为不变），修完把本条状态改为“已修复（GitHub 托管 Windows runner 验证；真机未测）”；假设不成立则把实测到的比较项写进本条，关闭本条并退回分诊。
+- 依据：上述 runner 运行分片 1、4 的结果文件；标准账户下的分诊实测（https://github.com/Hyprial/hyprial/actions/runs/45651791091、https://github.com/Hyprial/hyprial/actions/runs/45658042708）；读代码核对上述行号。
+- 负责人：Windows 可移植性线。
+**OrgFS 精简实现的已知限制（2026-11-25 起）**
+
+下面 KP-143 至 KP-158 是 OrgFS 改为“只保存当前状态”的精简实现之后仍然存在、并且决定暂不修的问题。术语：**空间**是一个 OrgFS 文件空间；**节点门**是每个节点在与对端交换某空间的数据之前做的检查（对端在线，且对端节点所属的用户是该空间的当前成员）；**准入**是接收方在应用一个远端更新之前，比较应用前后的结果状态、拒绝违反规则的更新；**blob** 是二进制文件内容。设计见 `docs/design/orgfs-minimal-design-2026-11-25.md`，迁移见 `docs/guides/migration-orgfs-minimal.md`。
+
+## KP-143 OrgFS 的节点名与作者是自报的，签名今天不强制
+
+- 现象：传输层不提供已认证的对端身份。节点门、准入与写进文档和目录行的作者字段，用的都是对端自己报出的节点名与用户名。仓库里有签名原语，记录格式也预留了签名字段，但生产上注入的校验实现恒返回“不可用”，没有任何记录被要求带有效签名。
+- 影响：这些检查防的是如实报告身份的节点，不防伪造身份的节点。一个仍是成员的节点可以把写入署成另一个成员的名字。旧实现同样如此，不是回归。
+- 规避：不要把 OrgFS 的作者字段当作身份证明或审批证据；需要可验证的审批时用显式的 PAC 审批节点。
+- 决定：接受（owner 2026-11-25）。签名强制等用户密钥签发上线后另行接入，不需要改磁盘格式与同步协议。
+- 依据：设计 §0.1–§0.3、§3.1、§3.8。
+- 负责人：OrgFS 维护者。
+
+## KP-144 只读成员与被降级成员的写入只在写入节点本地与第一跳节点门被拒
+
+- 现象：只读成员与非成员的写入，在写入节点本地被拒，并在第一跳的节点门被拒；节点门只看对端节点所属的用户是否是成员，不看读写模式。接收节点不依据内容里的作者再查当前成员资格与模式。因此：被降为只读的成员，在它的节点得知降级之前写的内容会被接受；某个写入一旦被任何一个成员节点合并，之后随该节点转发，不再被拦。被移除的成员在分区期间的新写入会被节点门拒绝。
+- 影响：读写模式不是跨节点强制执行的边界。旧实现同样接受降级之前的写入，不是回归。
+- 规避：需要硬隔离的内容放进只有可信成员的空间。降级或移除成员后，检查该成员在变化前后写入的内容。
+- 决定：接受（owner 2026-11-25：成员资格的变化在各节点得知之后才生效）。
+- 依据：设计 §3.1、§3.5；旧实现上的同场景对照测试。
+- 负责人：OrgFS 维护者。
+
+## KP-145 blob 拉取请求带自报的请求方，只能拦住未改动的软件
+
+- 现象：二进制内容按内容摘要拉取。请求帧带请求方的节点名与作者，应答方拒绝作者不是该空间当前成员的请求。节点名与作者是请求方自己填的，应答方无法核实。
+- 影响：未改动的软件在被移出空间后取不到二进制内容（真实三节点实测）。改动过的客户端如果仍能连到持有该内容的节点、又知道摘要，可以冒用成员的作者取到内容（推断，未实测）。
+- 规避：把成员移出组织，使其设备离开组织网络；不属于任何组织的空间没有这一层。
+- 决定：接受，与 KP-143 同一限制。
+- 依据：设计 §9.2“真实节点第三、四轮之后的裁定”；`contract/wire/orgfs-sync.md`。
+- 负责人：OrgFS 维护者。
+
+## KP-146 并发写同一受保护记录时，在合并中输掉的伪造更新被接受
+
+- 现象：准入比较的是合并之后的结果状态。两个写者并发修改同一条受保护记录（例如设备记录）时，如果伪造的一方在 CRDT 合并中输掉、结果状态不变，这次更新被接受、不计入 `rejected_updates`。输掉的那部分结构留在目录文档里，不改变任何可见的行。
+- 影响：可见数据不受影响；目录文档里多留一点不可见的结构。
+- 规避：无需处理。
+- 决定：不改。
+- 依据：设计 §9.2“准入规则的补充”末段。
+- 负责人：OrgFS 维护者。
+
+## KP-147 递归列目录不分页
+
+- 现象：一次递归列出整个空间的目录树没有分页。实测根目录递归列出 25 100 项约 174 ms，耗时与返回项数成正比。
+- 影响：极大的空间里，一次递归列出的结果与耗时随空间大小线性增长。CLI 的 `org fs ls` 只列一层，不受影响。
+- 规避：按层列出。
+- 决定：不修（测量后决定不加分页）。
+- 依据：写入成本调查中的只读测量（计划 §9 写入成本一行）。
+- 负责人：OrgFS 维护者。
+
+## KP-148 统计“正文未到”的文档时周期性扫描整张节点表
+
+- 现象：OrgFS 维护“本地还没拿到正文的文本文档”的集合（`org fs space status` 的 `content_pending` 由它得出）时，每核对 128 篇文档扫描一次整张节点表。2.5 万篇文档的空间合计约 0.8 秒。
+- 影响：核对一个大空间的积压时有一段与空间大小成正比的额外 CPU 开销。
+- 规避：无需处理。
+- 决定：暂不改，空间规模明显更大时再看。
+- 依据：同 KP-147 的测量。
+- 负责人：OrgFS 维护者。
+
+## KP-149 带 `--base-version` 的写入在同一行冲突时后写者胜，不报错
+
+- 现象：`org fs write --base-version <版本>`（以某个旧版本为基准做三方合并的写入）按行合并：两边在基准上修改了不同的行时都保留；修改了同一行时取后写者的这一行，先写者对这一行的修改被丢弃，不报错。同一行里两处互不重叠的字符修改也算冲突。
+- 影响：并发编辑同一行时，一方的修改会无声地消失。
+- 规避：不能接受丢失修改的场合用 `--expect-version`（版本不符时返回 `stale-write`，调用方重读后再写）。
+- 决定：待负责人决定是否改为对重叠行返回 `stale-write`。
+- 依据：设计 §9.2“真实节点第二轮之后的裁定”第 2 行；真实多节点验证中发现的旧算法文本损坏已改为按行合并。
+- 负责人：OrgFS 维护者。
+
+## KP-150 很旧的 `--base-version` 不再能合并，返回 `stale-write`
+
+- 现象：OrgFS 不再保存历史，三方合并所需的基准正文只来自一个进程内缓存：保存本进程交给过调用方的正文，最多 256 条、合计 16 MiB，最久未用者先淘汰。基准不在缓存里时（被淘汰、daemon 重启之后，或基准版本是在别的节点上读到的）返回 `stale-write`。最后一种情形是从“只缓存本进程交出的正文”推断的，未单独实测。
+- 影响：以前很旧的基准版本也能合并，现在不行。
+- 规避：收到 `stale-write` 后重读，再基于新版本重写。
+- 决定：接受。
+- 依据：设计 §9 表格第 1 行。
+- 负责人：OrgFS 维护者。
+
+## KP-151 二进制文件没有人读就不会取回，也没有到达事件；`content_pending` 不计二进制
+
+- 现象：远端写入的二进制文件按需取回：只有本机有人读取或导出它时才去拉。取回入库之后，为引用它的每个节点发一次 watch 的 `modified` 事件；没有人读就不会取回，因此也没有事件。`org fs space status` 的 `content_pending` 只统计文本文档，不统计二进制文件，所以 `content_pending` 为 0、`synced` 为 `true` 并不表示二进制文件都已在本地。
+- 影响：订阅方不能靠 watch 得知远端二进制何时可读；断网前若要保证二进制在本地，需要先读一遍。
+- 规避：需要本地副本时显式 `org fs read` 或 `org fs export`。
+- 决定：接受（不做后台补齐）。
+- 依据：设计 §9.2“真实节点第二轮之后的裁定”第 3 行；真实多节点验证。
+- 负责人：OrgFS 维护者。
+
+## KP-152 删除留下的墓碑随删除次数增长
+
+- 现象：文档开启垃圾回收，被覆盖与被删除内容的正文在下一次合并后不再占用磁盘，但每个被删除的键仍留下约 15 字节的墓碑；被多次覆盖过的行删除后留下更多（实测覆盖过 20 次的行约 137 字节）。
+- 影响：长期频繁删除的空间，状态文件会缓慢增长。
+- 规避：无需处理。
+- 决定：接受（量级小）。
+- 依据：设计 §6；规模测试。
+- 负责人：OrgFS 维护者。
+
+## KP-153 移动操作的时钟是进程内计数
+
+- 现象：决定并发移动先后的时钟值 `ts` 是进程内的计数，不是跨重启、跨节点一致的时钟。这是旧实现就有的问题，精简实现沿用。
+- 影响：并发移动同一节点时，哪一次生效可能与真实时间顺序不一致（推断，未验证）。
+- 规避：避免在多个节点上同时移动同一节点。
+- 决定：不在本次修。
+- 依据：设计 §9 表格 R10 行。
+- 负责人：OrgFS 维护者。
+
+## KP-154 被拒绝的远端更新不会自动对账
+
+- 现象：准入拒绝的远端更新不应用、不落盘，计入该空间的 `rejected_updates` 并记日志 `orgfs.update.rejected`。同样的内容对端每次同步都会再提供，本节点只在有界的记忆里静默丢弃。被拒绝的内容使该文档在本节点上无法与该对端收敛，没有自动修复。
+- 影响：`rejected_updates` 大于 0 的空间可能有文档在不同节点上长期不一致。
+- 规避：用 `org fs space status <空间> --json` 查看 `rejected_updates`，按日志里的 `docId`、`peer` 找到来源，在对端修正或永久删除（`org fs rm --permanent`）该文档。
+- 决定：接受（没有逐提交历史的代价）。
+- 依据：设计 §3.7。
+- 负责人：OrgFS 维护者。
+
+## KP-155 网络可达性门在同名定义超过 8 个时不连边
+
+- 现象：`scripts/ci/check_network_reachability.py` 按方法短名把调用连到定义；某个名字的定义超过 8 个时，门不为它连边。类层次里重复的方法名（例如 mixin 与子类各定义一次）会让门静默地漏掉经过它的路径，表现只是基线条目变成“陈旧”，不会报新违规。
+- 影响：门的覆盖面可能悄悄变窄。OrgFS 切换时出现过一次：两套实现并存让若干名字越过 8，基线中 20 条变为陈旧，合并重复定义后恢复。
+- 规避：门报陈旧条目时，先查是否有方法名的定义数刚越过 8，不要直接删条目。
+- 决定：登记，待门的维护者决定是否改为报警。
+- 依据：OrgFS 切换时对可达性门的查证（设计 §9.2 末段）。
+- 负责人：CI / daemon 网络边界维护者。
+
+## KP-156 `orgfs.checkout` 对未知空间报 `checkout-io`，不说明原因
+
+- 现象：checkout 的权威层把所有失败包装成 `checkout-io`。旧格式空间现在单独透传 `ORGFS_LAYOUT_UNSUPPORTED`，但空间不存在等其他查找错误仍报 `checkout-io`，没有能区分原因的错误码。
+- 影响：调用方分不清“空间不存在”和真实的读写故障。
+- 规避：先 `org fs space list` 确认空间存在。
+- 决定：暂不改（改了会变更已发布的请求例子 `orgfs.checkout:missing-space`），待 OrgFS 负责人决定。
+- 依据：公共面收窄时的查证。
+- 负责人：OrgFS 维护者。
+
+## KP-157 加入空间时，供给方信任加入者自报的作者
+
+- 现象：加入（join）一个空间时，供给方根据加入者自己报出的作者判断它是否已被邀请。今天经组织邀请加入时，冒名会被组织成员授权的邀请兑换规则挡住：兑换绑定的是会话所属设备的 owner，而不是 daemon 自报的作者。测试 `tests/daemon/org/test_org_join_identity.py::test_another_identity_declaring_itself_the_invitee_is_refused` 标为非严格 xfail，实际通过（XPASS），原因就在这里。
+- 影响：去掉兑换规则的对照实验里，自称为受邀者的另一台机器经 OrgFS 完成了加入。直接经 OrgFS 加入而绕过组织邀请的路径上，这个缺口仍在。
+- 规避：成员只经组织邀请加入。
+- 决定：待加入与身份负责人决定：是否拆分该测试，一条钉住兑换规则，另一条以严格 xfail 钉住 OrgFS 的缺口。
+- 依据：加入身份测试的对照实验（去掉兑换规则后该测试变为 “DID NOT RAISE”）。
+- 负责人：org 加入与身份维护者。
+
+## KP-158 GUI 回收站列表只显示默认上限内的条目
+
+- 现象：GUI 读取回收站时不传条数上限，使用 daemon 的默认上限（旧注释写的是 100 条）。
+- 影响：条目多的空间里，一部分回收站条目不出现在 GUI 列表中，也就无法从 GUI 恢复。
+- 规避：用 CLI `hyprial org fs trash list <空间> --limit <N>` 列出，再 `hyprial org fs trash restore <空间> <节点>`。
+- 决定：原有行为，登记；是否分页由 GUI 维护者决定。
+- 依据：GUI 回收站改接时的查证。
+- 负责人：GUI 组织页维护者。
+
+**多节点验证中发现、不属于 OrgFS 改动的问题**
+
+下面 KP-159 至 KP-165 是 OrgFS 精简实现的真实多节点验证中观察到、但原因在 OrgFS 之外的问题。**它们不是这次 OrgFS 改动引入的**，也不随这次改动修复；已报 owner。
+
+## KP-159 一个对端被分区时，重启的节点连不上其他对端
+
+- 现象：三节点 A、B、C，A 是 owner。停 C；A 被分区；再启动 C。C 在 60 秒（第二次试验 180 秒）内都连不上 B，读取 B 已有的文件一直失败；A 恢复后约 1 秒 C 就拿到了内容。同时观察到：全员在线时 C 也不主动拨任何对端，B 与 C 之间的连接只靠 B 一侧拨号。
+- 影响：owner 不在时，重启的成员节点可能与其余成员失联。
+- 规避：重启成员节点时保证 owner 在线。
+- 决定：待查（传输层的对端发现；推断：重启的节点只经 owner 得知其他对端）。
+- 依据：真实三节点验证第二轮。
+- 负责人：传输与 tailnet 维护者。
+
+## KP-160 侧车停顿约 3 分钟后，转发一直宕到 daemon 重启
+
+- 现象：把一个节点的转发侧车（sidecar）冻结约 3 分钟后，daemon 先报转发应答超时、`forwarding.failed status-unreachable`，随后两次重启侧车都以 `start_failed MEMBERSHIP_STORE_INVALID` 失败，接着报 “sidecar relaunch budget exhausted; forwarding stays down until the daemon restarts”。之后该节点的转发状态为 failed，直到 daemon 重启。冻结不超过 20 秒时没有这个现象。
+- 影响：侧车长时间卡住一次之后，节点长期失联。
+- 规避：出现后重启 daemon。
+- 决定：待查（侧车内部原因没有查）。
+- 依据：真实三节点验证第二轮。
+- 负责人：转发侧车维护者。
+
+## KP-161 `org invite` 返回 `USER_DELIVERY_TIMEOUT` 但成员已经加入
+
+- 现象：邀请成员时命令返回 `ok:false`、`USER_DELIVERY_TIMEOUT`，而成员实际上已经加入。
+- 影响：调用方会把成功误判为失败，可能重复邀请。
+- 规避：收到这个错误后先查成员表再决定是否重试。
+- 决定：待查。
+- 依据：真实三节点验证第二轮。
+- 负责人：org 成员与用户投递维护者。
+
+## KP-162 本机 IPC 请求超过 8 MiB 时直接断开，不回错误
+
+- 现象：发给 daemon 的本机 IPC 请求超过 8 MiB 时，连接被直接关闭，客户端只看到 BrokenPipe，没有错误应答。
+- 影响：调用方不知道失败原因，例如用 `org fs write` 写入很大的文本时。
+- 规避：大文件用 `org fs import`（二进制，上限 64 MiB，经本地文件路径传递）。
+- 决定：待查。
+- 依据：真实三节点验证第二轮。
+- 负责人：daemon IPC 维护者。
+
+## KP-163 离开组织的请求在等待 owner 确认时没有日志
+
+- 现象：成员离开组织后，owner 一侧把该请求记为“待确认”（自 2026-10-27 起离开需要 owner 确认才撤销成员资格），处理循环遇到未确认的请求直接跳过，不写任何日志。owner 上看不到任何 `org.leaves.*` 事件，成员资格也不撤销。
+- 影响：看起来像是离开请求丢失了；验证者曾误判为 OrgFS 缺陷。
+- 规避：owner 确认离开请求。
+- 决定：待 org 负责人决定是否补一条“待确认”日志（需要避免每 30 秒重复打印）。
+- 依据：真实三节点验证第二轮与随后的代码查证。
+- 负责人：org 维护者。
+
+## KP-164 真实 daemon 上 `org join` 以 `IDENTITY_CONFLICT` 失败
+
+- 现象：`org join` 要求已验证的 OIDC 身份声明，而 dev 上没有代码给真实 daemon 提供它，所以真实 daemon 上的加入必然以 `IDENTITY_CONFLICT` 失败。多节点验证只能经测试钩子注入身份后进行。
+- 影响：dev 上无法在真实 daemon 之间完成组织加入。
+- 规避：无（测试中经钩子注入身份）。
+- 决定：dev 上既有的问题，已报 owner，不在 OrgFS 改动里修。
+- 依据：真实三节点验证第一轮与读码。
+- 负责人：org 加入与身份维护者。
+
+## KP-165 请求注册表把带数据的已声明错误改写成 `DAEMON_ERROR`
+
+- 现象：处理函数抛出的错误码已在方法里声明、但带的数据与声明的 schema 不符（例如数值字段以字符串到达）时，注册表把整个错误改写为 `DAEMON_ERROR`（“error data violates its declared schema”），原始错误码与数据不进日志。
+- 影响：调用方看不到真实的失败原因。与 KP-041 是同类现象。
+- 规避：查 daemon 日志里处理函数一侧的事件。
+- 决定：dev 上既有的问题，已报 owner，不在 OrgFS 改动里修。
+- 依据：真实三节点验证第一轮的最小复现。
+- 负责人：daemon 请求契约维护者。
+
+**OrgFS 精简实现：真实多节点验证第三至五轮之后登记的限制**
+
+## KP-166 一次广播丢失后，其余节点在约一分钟内仍可能报 `synced: true`
+
+- 现象：`org fs space status` 的 `synced` 依据本节点已经拿到的对端观察。一个节点持有别人没有的更新、而它的广播丢了时，其余节点在下一次与它交换向量之前仍报 `synced: true`。
+- 影响：窗口至多约一个定时周期（60 s ± 20%）。之后领先的节点向落后的节点发起拉取，对方反向取回缺的更新。真实三节点实测：重新邀请后约 1 s 触发、约 4 s 内容一致；会话断开 60 s 后恢复用 3–5 s。“会话保持而广播丢失、只靠定时周期补齐”的路径只有进程内测试，没有在真实节点上造出来。
+- 规避：需要确认某次写入已到达对端时，在对端读取该文件，不要只看 `synced`。
+- 决定：接受。
+- 依据：设计 §4.6 末段；真实三节点验证第五轮。
+- 负责人：OrgFS 维护者。
+
+## KP-167 被移出空间的成员只在未改动的软件上收不到新内容；已取到的内容不追回
+
+- 现象：成员被移出空间后，它的节点只继续收到成员表（以便得知自己被移除），不再收到目录、正文与二进制内容；读本地没有的内容报 `not-a-member`。这些规则由各节点上未改动的软件执行。移除之前已经取到本地的内容仍然可读。
+- 影响：广播不加密，节点名与作者自报。改动过的客户端只要还连在同一网络上，就可能继续收到广播。成员得知移除之前有一个很短的传播窗口（实测约 0.13 s），窗口内它仍可取到移除之前的内容。
+- 规避：需要真正切断时，把成员移出组织，使其设备离开组织网络。不属于任何组织的空间没有传输层的切断。
+- 决定：接受，与 KP-143 同一限制。
+- 依据：设计 §9.2“真实节点第三、四轮之后的裁定”；真实三节点验证第三至五轮。
+- 负责人：OrgFS 维护者。
+
+## KP-168 成员在被移除但尚不知情时做的写入，重新邀请后被接受
+
+- 现象：成员的节点在分区期间被移出空间，它还不知道，本地写入成功。此后如果它被重新邀请，这些写入按当前成员表通过准入，同步到所有成员，作者是该成员。
+- 影响：其他成员会看到一批“移除期间”写下的内容。如果不重新邀请，这些写入一直被拒绝，只留在该成员的节点上。
+- 规避：重新邀请之前，请该成员确认本地在移除期间有没有改动。
+- 决定：这是“按结果状态准入”的既定语义，本次不改；是否应当丢弃这类写入，待负责人决定。
+- 依据：设计 §9.2“真实节点第三、四轮之后的裁定”；真实三节点验证第四、五轮。
+- 负责人：OrgFS 维护者。
+
+## KP-169 删除迁移前的旧空间目录后，只被它引用的二进制内容不回收
+
+- 现象：按迁移指南手工删除旧格式的空间目录之后，只被旧空间引用的二进制内容仍留在 `<state>/orgfs/blobs/` 里，`blob-refs.sqlite3` 里也留着已删空间的记录。没有命令可以清理。
+- 影响：只占磁盘空间，不影响使用。
+- 规避：无。
+- 决定：暂不改。
+- 依据：迁移指南 `docs/guides/migration-orgfs-minimal.md` 第 10 节；真实节点上的迁移演练。
+- 负责人：OrgFS 维护者。
+
+## KP-170 `org fs member invite` 接受不属于该组织的用户名
+
+- 现象：向组织里的一个空间邀请一个不是该组织成员的用户名，命令返回成功，成员表里出现这一行。
+- 影响：这个用户没有组织网络里的设备，实际同步不到任何内容；成员表里多一行无效成员。
+- 规避：邀请前对照组织的成员名单核对用户名。
+- 决定：是否应当拒绝，待负责人决定。
+- 依据：真实三节点验证第五轮的附带观察（一次）。
+- 负责人：OrgFS 与 org 成员维护者。
+
+## KP-171 接受邀请在一次性 token 消费之后失败，重试只得到 `INVITE_CONSUMED`
+
+- 现象：`org.invites.accept` 或 `org join` 在身份校验通过、一次性 token 已消费之后的某一步失败（例如设备登记失败、持有方在加入后掉线），再用同一链接重试报 `INVITE_CONSUMED`。本机的接受记录停在 `partial`，邀请列表仍显示可重试。
+- 影响：这次邀请作废，需要邀请方重新发邀请。OrgFS 精简实现里"join 未完成、再接受一次续做"的恢复在身份门开启时因此走不到；已登记但缺常驻同步的空间仍由维护 tick 自行补建。
+- 规避：请邀请方重新邀请。
+- 决定：不在现有邀请流程上单独修（负责人 2026-11-27）。加入方式将改为链接即凭证、兑换时绑定公钥，一次性由组织一侧记账，届时这个问题随旧流程一起消失。校验先于读取接受记录的顺序在 OrgFS 精简之前就有。按本机接受记录放行重试的修法（包 F9）实测可重放已消费的邀请，未合入；正确的修法需要把接受记录与 token、身份绑定，并且不在校验之前写记录。
+- 依据：真实三节点验证第六轮（R6-1）；包 F9 及其只读复审。
+- 负责人：org 成员与身份维护者。
+
+## KP-172 持有方不在线或组织 actor 被占用时，加入组织约 30 秒后报 `DAEMON_ERROR`
+
+- 现象：接受邀请或加入组织时，持有方一直不在线，约 30 秒后线路上返回 `DAEMON_ERROR`（"handler raised an undeclared error code"），不是 `no-holder-online`。同一组织的 actor 被另一条命令占用 20 多秒、而持有方在加入后掉线时也是如此。
+- 影响：调用方拿不到准确的失败原因。加入动作在后台继续跑到自己的超时，本机接受记录随后才落到 `partial`。
+- 规避：确认持有方在线后用新邀请重试。
+- 决定：修，排在 OrgFS 精简合入之后（负责人 2026-11-27）：让加入类命令在组织 actor 上的等待上限与 join 预算对齐，并对齐 `org.invites.accept` 的 IPC 超时。原因是 join 的重试上限与组织 actor 的调用等待上限同为 30 秒，actor 先超时，而 `ORG_ACTOR_TIMEOUT` 不在这些方法声明的错误码里。修它要改 actor 的等待上限或把这个错误码加进冻结的词表。持有方一直不在线的情形在 OrgFS 精简之前就有；actor 被占用的情形在精简之前返回 `no-holder-online`，加入后的正文等待（最多 5 秒）使它越过了上限。
+- 依据：包 F10、F10b 及其只读复审的进程内实测。
+- 负责人：org 成员维护者。
+
+## KP-173 加入组织后最初几毫秒，两篇必有文档之外的内容可能还没到
+
+- 现象：OrgFS 的 join 在目录到齐后返回，正文随后送达。组织层只等组织元数据与权限文档两篇；其他成员的设备记录等内容可能晚几毫秒到，加入后立刻映射到的成员设备可能偏少。持有方在加入后恰好掉线时，`org join` 等满 5 秒后仍然成功，权限文档要等持有方回来才补齐，这段时间权限判断会拒绝。
+- 影响：短暂；常驻同步与周期刷新会补齐。
+- 规避：稍后重试；设备列表里的 `contentPending` 字段标出了尚未到达的行。
+- 决定：接受。这是"目录先到、内容按需"的既定语义。
+- 依据：设计 §9.2"真实节点第六轮之后的裁定"；包 F10、F10b 的只读复审。
+- 负责人：OrgFS 维护者。
+
+## KP-174 Lark worker 的 ready 观测与 stale 健康状态存在竞态
+
+- 现象：`test_exit_75_worker_is_restarted_with_supervisor_backoff` 在并发或调度受限环境中偶发在第二个 exit 75 worker 后错误地再次启动 worker，`reconcile()` 返回 `1` 而不是退避窗口内的 `0`。
+- 影响：CI 合并门可能间歇失败，且 Lark adapter 的失败计数与退避状态可能被一次尚未完整观测的 `online` 状态清除。
+- 规避：无；不跳过、不放宽断言。
+- 决定：已修复。`LarkWorkerProcess._run_ready` 现在先消费同一读取批次中已完整缓冲的健康行，再解除 `wait_ready()`；测试假 worker 将 `online` 与 `health(streamHealth="stale")` 合并为一次原子管道写入。`handler.py` 保持不变，健康 worker 上线后立即清除失败与重试状态的既有契约仍由 `test_quarantine_retries_then_online_clears_all_failure_state` 固定。另有独立的产品语义候选：健康状态驻留一段时间后再执行 `_clear_failures`，该候选需要单独评审，不在本修复中实现。
+- 依据：`src/hyprial/daemon/impl/adapters/lark/worker/process.py` 的 ready 与健康流读取顺序；`src/hyprial/daemon/impl/adapters/lark/runtime/effects.py` 的 ready 后观测；本条新增的确定性回归测试与 exit 75 退避测试。
+- 负责人：Lark adapter 生命周期维护者 / CI 稳定性线。

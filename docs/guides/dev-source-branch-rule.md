@@ -3,7 +3,7 @@
 Allen, 2026-11-08: completed changes enter `dev` first; releases select a tested
 commit from dev history. This replaces the 2026-10-31 release-first source rule.
 
-The machine-readable policy is [`.forgejo/git-flow.json`](../../.forgejo/git-flow.json).
+The machine-readable policy is [`.github/git-flow.json`](../../.github/git-flow.json).
 It defines the integration branch, unrestricted PR source names, Draft WIP,
 release preparation, candidate identity and track roles. `ci-plan.mjs` reads and
 validates this file from the checked-out tree before producing a plan; missing

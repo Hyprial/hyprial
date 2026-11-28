@@ -311,6 +311,7 @@ def test_accept_resource_exhaustion_retries_with_bounded_backoff(
 
 
 @pytest.mark.skipif(sys.platform not in {"linux", "darwin"}, reason="Unix RLIMIT")
+@pytest.mark.posix_only("resource")
 def test_real_low_fd_pressure_recovers_without_restarting_daemon(
     request: pytest.FixtureRequest,
 ) -> None:

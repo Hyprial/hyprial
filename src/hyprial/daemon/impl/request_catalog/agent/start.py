@@ -315,6 +315,18 @@ def _start_launch_errors() -> tuple[MethodError, ...]:
     )
 
 
+def _model_launch_errors() -> tuple[MethodError, ...]:
+    from hyprial.daemon.impl.harnesses.pi.bindings.errors import MODEL_START_FAILURES
+
+    return tuple(MethodError(code, data_schema={
+        "type": "object", "additionalProperties": False,
+        "properties": {"lastError": {"type": "string"}, "phase": {"const": phase},
+                       "reason": {"type": "string", "enum": list(reasons)}},
+        "dependentRequired": {"phase": ["reason"], "reason": ["phase"]},
+    }, description="The Pi connection/session precondition refused this start without credential fallback.")
+        for code, (phase, reasons) in MODEL_START_FAILURES.items())
+
+
 _START_ERRORS = _WRITE_ERRORS + (
     MethodError(
         ipc_errors.HARNESS_BINARY_MISSING,
@@ -347,6 +359,7 @@ _START_ERRORS = _WRITE_ERRORS + (
     *_start_inherited_create_errors(),
     *_start_lifecycle_errors(),
     *_start_launch_errors(),
+    *_model_launch_errors(),
 )
 
 AGENT_START_SPEC = MethodSpec(

@@ -308,6 +308,11 @@ class AgentRuntimeContext:
     launch_token: str | None = field(default=None, repr=False)
     notices: tuple[AgentRuntimeNotice, ...] = ()
 
+    @staticmethod
+    def session_root_for(agent_home: Path, harness: str) -> Path:
+        """The identity-owned session layout shared by derivation and admission."""
+        return agent_home / "state" / "pi" if harness == "pi" else agent_home / "state" / "sessions" / harness
+
     def __post_init__(self) -> None:
         if self.harness not in _P2_HARNESSES:
             raise AgentRuntimeError(f"unsupported P2 harness {self.harness!r}")
@@ -485,11 +490,7 @@ def derive_runtime_roots(
         config_source=config_source,
         projection_root=revision_root / "native" / harness,
         native_root=agent_home / "secrets" / "native" / harness,
-        session_root=(
-            agent_home / "state" / "pi"
-            if harness == "pi"
-            else agent_home / "state" / "sessions" / harness
-        ),
+        session_root=AgentRuntimeContext.session_root_for(agent_home, harness),
         tool_home=agent_home / "state" / "home",
         xdg_config_home=agent_home / "secrets" / "tools" / "xdg",
         xdg_cache_home=xdg_root / "cache",

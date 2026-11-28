@@ -4,8 +4,23 @@ Decision: daemon-first-z2-loop-decisions-20261116.  The fakes below stand for
 the wire host and the serving application only to pin the loop's decisions
 deterministically; the same decisions are exercised against the real daemon in
 ``tests/integration/daemon_lifecycle``.
+
+Decision (2026-11-26): the three tests that stop the loop
+from inside it deliver the stop with ``_thread.interrupt_main(sig)`` instead of
+``os.kill(os.getpid(), sig)``.  On Windows ``os.kill`` with any signal other
+than the two console control events calls ``TerminateProcess`` on the pytest
+worker itself, with the signal number as exit code (``SIGTERM`` gives the xdist
+``rc=15`` node-down, ``SIGINT`` gives ``rc=2``).  ``interrupt_main``
+is how the product delivers a main-thread stop on platforms without
+``signal.pthread_kill`` (``deliver_main_termination`` in
+``kernel/impl/manysys/signals/termination.py``), and the loop under test has
+already installed its Python-level handlers, which ``interrupt_main`` invokes.
+Trade-off: on Linux this also bypasses real kernel signal delivery, so these
+three tests now cover the installed handlers' behaviour rather than the
+kernel-to-handler path.
 """
 
+import _thread
 import json
 import os
 import signal
@@ -166,7 +181,7 @@ def test_sigterm_between_logout_and_the_next_wire_ends_in_exit(monkeypatch, tmp_
         tmp_path,
         [wire.PROMOTE, wire.STOP],
         reasons=["logout"],
-        on_run=lambda: os.kill(os.getpid(), signal.SIGTERM),
+        on_run=lambda: _thread.interrupt_main(signal.SIGTERM),
     )
     before = signal.getsignal(signal.SIGTERM)
 
@@ -180,7 +195,7 @@ def test_sigterm_between_logout_and_the_next_wire_ends_in_exit(monkeypatch, tmp_
 def test_sigint_before_the_first_wire_opens_exits_before_admission(monkeypatch, tmp_path):
     loop = _Loop(monkeypatch, tmp_path, [wire.STOP])
 
-    loop.run(native_loader=lambda: os.kill(os.getpid(), signal.SIGINT))
+    loop.run(native_loader=lambda: _thread.interrupt_main(signal.SIGINT))
 
     assert next(loop.queue) is loop.hosts[0], "a wire was opened although a stop was pending"
 
@@ -190,7 +205,7 @@ def test_a_signal_during_wire_admission_stops_the_new_wire(monkeypatch, tmp_path
     opened = lifecycle.BootstrapWireHost.open
 
     def open_after_signal(*args, **kwargs):
-        os.kill(os.getpid(), signal.SIGTERM)
+        _thread.interrupt_main(signal.SIGTERM)
         return opened(*args, **kwargs)
 
     monkeypatch.setattr(lifecycle.BootstrapWireHost, "open", open_after_signal)

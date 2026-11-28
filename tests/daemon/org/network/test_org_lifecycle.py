@@ -1,3 +1,10 @@
+# Decisions:
+# - Phase D T1: ``test_process_leave_requests_ignores_a_foreign_author_set``
+#   runs on ``OrgFsRuntime`` whatever the rehearsal switch says.  A
+#   leave record co-written by another member cannot exist on the state host
+#   (local write ``protected-path``, design §3.4; the same row from a peer is
+#   ``Rejected("protected-path")``, §3.6), so the test now has Bob try to file
+#   Alice's leave through both entries and pins that nothing is fulfilled.
 """Org lifecycle against a real local OrgFS runtime: leave/remove/delete/list.
 
 Unlike test_org_network_service.py (recording fake, service logic), these
@@ -17,7 +24,9 @@ from typing import Any
 import pytest
 
 from hyprial.kernel import DaemonRequestError
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.membership import Accepted, Rejected
 from hyprial.daemon.impl.org.network.directory import (
     InvalidDeviceQuarantine,
     OrgFsDirectoryStore,
@@ -26,11 +35,13 @@ from hyprial.daemon.impl.org.network.ipc import ipc_org_delete, ipc_org_list
 from hyprial.daemon.impl.org.network.service import OrgNetworkError, OrgNetworkService
 from hyprial.daemon.impl.org.network.state import left_orgs_path, read_left_orgs
 from hyprial.identity.impl.device import DeviceRecord, write_device_record
+from hyprial.identity import protected_directory_doc_id, protected_directory_node_id
 from hyprial.identity.impl.org_directory import (
     ORG_META_DOC,
     DirectoryDevice,
 )
 
+from tests.daemon.orgfs.membership.support import forge_content, forge_tree_row
 from tests.support.tailnet_membership import FakeMembershipSidecar, key, member, confirm_removal, confirmation
 
 OWNER = "owner@example"
@@ -174,6 +185,14 @@ def _member_users(runtime: OrgFsRuntime, org: str) -> set[str]:
     return {
         member.user for member in runtime.facade.members(_space_id(runtime, org))
     }
+
+
+def _bob_added_at(runtime: OrgFsRuntime, org: str = "group-acme") -> str:
+    return next(
+        member.added_at
+        for member in runtime.facade.members(_space_id(runtime, org))
+        if member.user == f"user:{BOB}"
+    )
 
 
 def _acl_space_id(runtime: OrgFsRuntime, org: str) -> str:
@@ -493,7 +512,10 @@ def test_process_leave_requests_retains_members_until_confirmation(
     # bob's node left: its leave request is in the directory.
     with _as_bob(runtime):
         store.put_leave_request(
-            "group-acme", BOB, {"org": "group-acme", "user": BOB, "requestedAt": "t1"}
+            "group-acme", BOB, {
+                "org": "group-acme", "user": BOB, "requestedAt": "t1",
+                "memberAddedAt": _bob_added_at(runtime),
+            }
         )
     device = runtime.facade.stat(
         _space_id(runtime, "group-acme"), f"directory/devices/{BOB}/node-b.json"
@@ -536,7 +558,10 @@ def test_process_leave_requests_skips_invalid_member_written_names(
             )
     with _as_bob(runtime):
         store.put_leave_request(
-            "group-acme", BOB, {"org": "group-acme", "user": BOB, "requestedAt": "t1"}
+            "group-acme", BOB, {
+                "org": "group-acme", "user": BOB, "requestedAt": "t1",
+                "memberAddedAt": _bob_added_at(runtime),
+            }
         )
 
     result = service.process_leave_requests()
@@ -563,50 +588,6 @@ def test_process_leave_requests_is_owner_admin_business_only(
     assert OrgFsDirectoryStore(runtime.facade).list_leave_requests("group-acme") != {}
 
 
-def test_process_leave_requests_ignores_a_foreign_author_set(
-    runtime: OrgFsRuntime,
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """R3-B defense in depth: path user must equal every durable author."""
-
-    victim = "alice@example"
-    service = _service(runtime, home)
-    service.create("group-acme")
-    space_id = _space_id(runtime, "group-acme")
-    runtime.facade.invite(space_id, f"user:{BOB}", "rw")
-    runtime.facade.invite(space_id, f"user:{victim}", "rw")
-    store = OrgFsDirectoryStore(runtime.facade)
-    previous = runtime.facade.author
-    runtime.facade.author = f"user:{victim}"
-    try:
-        store.put_leave_request(
-            "group-acme", victim, {"user": victim, "requestedAt": "legitimate"}
-        )
-    finally:
-        runtime.facade.author = previous
-
-    physical_store = runtime.stores[space_id]
-    with monkeypatch.context() as bypass:
-        bypass.setattr(
-            physical_store,
-            "_org_device_update_allowed",
-            lambda *_args, **_kwargs: True,
-        )
-        runtime.facade.author = f"user:{BOB}"
-        try:
-            runtime.facade.write_text(
-                space_id,
-                f"directory/leaves/{victim}.json",
-                json.dumps({"user": victim, "requestedAt": "forged"}),
-            )
-        finally:
-            runtime.facade.author = previous
-
-    assert service.process_leave_requests()["processed"] == []
-    assert f"user:{victim}" in _member_users(runtime, "group-acme")
-
-
 def test_r11_stale_leave_does_not_remove_a_rejoined_member_with_skewed_clocks(
     runtime: OrgFsRuntime,
     home: Path,
@@ -623,11 +604,15 @@ def test_r11_stale_leave_does_not_remove_a_rejoined_member_with_skewed_clocks(
         store.put_leave_request(
             "group-acme",
             BOB,
-            {"user": BOB, "requestedAt": "2099-01-01T00:00:00+00:00"},
+            {
+                "user": BOB,
+                "requestedAt": "2099-01-01T00:00:00+00:00",
+                "memberAddedAt": _bob_added_at(runtime),
+            },
         )
     runtime.facade.remove_member(space_id, f"user:{BOB}")
     monkeypatch.setattr(
-        "hyprial.daemon.impl.orgfs.document.operations.spaces._now",
+        "hyprial.daemon.impl.orgfs.document.coordinator.spaces.timestamp",
         lambda: "2000-01-01T00:00:00+00:00",
     )
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
@@ -650,7 +635,7 @@ def test_r11_fresh_leave_records_pending_removal_with_skewed_clocks(
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
     runtime.facade.remove_member(space_id, f"user:{BOB}")
     monkeypatch.setattr(
-        "hyprial.daemon.impl.orgfs.document.operations.spaces._now",
+        "hyprial.daemon.impl.orgfs.document.coordinator.spaces.timestamp",
         lambda: "2099-01-01T00:00:00+00:00",
     )
     runtime.facade.invite(space_id, f"user:{BOB}", "rw")
@@ -659,7 +644,11 @@ def test_r11_fresh_leave_records_pending_removal_with_skewed_clocks(
         store.put_leave_request(
             "group-acme",
             BOB,
-            {"user": BOB, "requestedAt": "2000-01-01T00:00:00+00:00"},
+            {
+                "user": BOB,
+                "requestedAt": "2000-01-01T00:00:00+00:00",
+                "memberAddedAt": _bob_added_at(runtime),
+            },
         )
 
     result = service.process_leave_requests()
@@ -728,3 +717,69 @@ def test_left_orgs_file_is_local_state_under_the_home(
     other_home.mkdir()
     other = _service(runtime, other_home, owner=BOB, node_id="node-b")
     assert [item["org"] for item in other.list()["orgs"]] == ["group-acme"]
+
+
+@pytest.fixture
+def state_runtime(tmp_path: Path) -> OrgFsRuntime:
+    runtime = OrgFsRuntime(
+        tmp_path / "state", node_id=NODE_ID, author=f"user:{OWNER}"
+    )
+    yield runtime
+    runtime.close()
+
+
+def test_process_leave_requests_ignores_a_foreign_author_set(
+    state_runtime: OrgFsRuntime,
+    home: Path,
+) -> None:
+    """R3-B: a leave record for one member written by another is never fulfilled."""
+
+    runtime = state_runtime
+    victim = "alice@example"
+    service = _service(runtime, home)
+    service.create("group-acme")
+    space_id = _space_id(runtime, "group-acme")
+    runtime.facade.invite(space_id, f"user:{BOB}", "rw")
+    runtime.facade.invite(space_id, f"user:{victim}", "rw")
+    added_at = next(
+        member.added_at
+        for member in runtime.facade.members(space_id)
+        if member.user == f"user:{victim}"
+    )
+    path = f"directory/leaves/{victim}.json"
+    record = json.dumps({"user": victim, "requestedAt": "forged", "memberAddedAt": added_at})
+
+    previous = runtime.facade.author
+    runtime.facade.author = f"user:{BOB}"
+    try:
+        with pytest.raises(OrgFsError) as refused:
+            runtime.facade.write_text(space_id, path, record)
+    finally:
+        runtime.facade.author = previous
+    assert refused.value.code == "protected-path"
+
+    host = runtime.facade.sync_host(space_id)
+    owner = f"user:{OWNER}"
+    node_id = protected_directory_node_id(space_id, path, space_owner=owner)
+    doc_id = protected_directory_doc_id(space_id, path, space_owner=owner)
+    parent = runtime.facade.stat(space_id, "directory/leaves").node_id
+    assert node_id is not None and doc_id is not None
+    tree = host.read_update("tree", b"\x00")
+    assert tree is not None
+    row = forge_tree_row(
+        tree[0],
+        node_id,
+        {"node_id": node_id, "parent": parent, "name": f"{victim}.json", "kind": "doc",
+         "doc_id": doc_id, "blob_hash": None, "deleted": False},
+        author=f"user:{BOB}",
+        client_id=7301,
+    )
+    content = forge_content(doc_id, None, record, author=f"user:{BOB}", clock=True, client_id=7301)
+    outcome = host.apply_remote(row.doc_id, row.update, row.vector, "node-b")
+    assert isinstance(outcome, Rejected) and outcome.code == "protected-path"
+    assert not isinstance(
+        host.apply_remote(content.doc_id, content.update, content.vector, "node-b"), Accepted
+    )
+
+    assert service.process_leave_requests() == {"processed": [], "skipped": [], "unbound": []}
+    assert f"user:{victim}" in _member_users(runtime, "group-acme")

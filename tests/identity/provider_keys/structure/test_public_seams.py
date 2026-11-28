@@ -149,32 +149,8 @@ def test_interface_and_context_have_room_for_following_slices():
     for relative, budget in (
         ("daemon/interface.py", 950),
         ("identity/impl/agents/runtime/context.py", 850),
-        ("daemon/impl/orgfs/storage/store/admission.py", 850),
     ):
         assert len((SRC / relative).read_text().splitlines()) <= budget, relative
-
-
-def test_pending_extraction_has_no_second_state_owner():
-    directory = SRC / "daemon/impl/orgfs/storage/store"
-    helper = directory / "admission_support/pending.py"
-    assert helper.is_file(), "pending operations need a stateless responsibility mixin"
-    tree = ast.parse(helper.read_text())
-    pending = next(node for node in tree.body if isinstance(node, ast.ClassDef))
-    methods = {node.name for node in pending.body if isinstance(node, ast.FunctionDef)}
-    assert {"_pending", "_drain_pending", "_expire_pending_locked"} <= methods
-    assert "__init__" not in methods
-    assert not any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "connect"
-        for node in ast.walk(tree)
-    )
-    admission = ast.parse((directory / "admission.py").read_text())
-    host = next(node for node in admission.body if isinstance(node, ast.ClassDef))
-    assert any(isinstance(base, ast.Name) and base.id == pending.name for base in host.bases)
-    assert not methods.intersection(
-        node.name for node in host.body if isinstance(node, ast.FunctionDef)
-    ), "pending methods must have one implementation on the original store"
 
 
 def test_shared_helpers_are_delegated_without_replacing_public_functions():

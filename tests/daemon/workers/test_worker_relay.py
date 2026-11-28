@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -531,7 +532,6 @@ def test_close_never_unlinks_a_socket_the_relay_did_not_bind(isolated):
     _, _, relay, _ = isolated
     info = relay.socket_path.lstat()
     assert relay._socket_identity == (info.st_dev, info.st_ino)
-    relay._server.close()
     relay.socket_path.unlink()
     replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     replacement.bind(str(relay.socket_path))
@@ -540,5 +540,51 @@ def test_close_never_unlinks_a_socket_the_relay_did_not_bind(isolated):
         relay.close()
         assert relay.socket_path.exists()
     finally:
+        replacement.close()
+        relay.socket_path.unlink(missing_ok=True)
+
+
+def test_close_does_not_unlink_a_rebind_that_reuses_the_freed_inode(
+    isolated, monkeypatch: pytest.MonkeyPatch
+):
+    """A rebind racing close() cannot borrow the relay's identity once freed.
+
+    ext4 hands a just-freed inode number to the next socket file at the same
+    path; the ``lstat`` seam reports that collision on every filesystem.
+    """
+
+    _, _, relay, _ = isolated
+    server = relay._server
+    recorded = relay._socket_identity
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+    class RebindWhenListenerCloses:
+        def __getattr__(self, name):
+            return getattr(server, name)
+
+        def close(self):
+            server.close()
+            relay.socket_path.unlink(missing_ok=True)
+            replacement.bind(str(relay.socket_path))
+            replacement.listen(1)
+
+    real_lstat = Path.lstat
+
+    def lstat_reusing_freed_inode(path):
+        info = real_lstat(path)
+        if path != relay.socket_path or not stat.S_ISSOCK(info.st_mode):
+            return info
+        return types.SimpleNamespace(
+            st_mode=info.st_mode, st_dev=recorded[0], st_ino=recorded[1]
+        )
+
+    relay._server = RebindWhenListenerCloses()
+    monkeypatch.setattr(Path, "lstat", lstat_reusing_freed_inode)
+    try:
+        relay.close()
+        assert relay.socket_path.exists()
+    finally:
+        monkeypatch.undo()
+        relay._server = server
         replacement.close()
         relay.socket_path.unlink(missing_ok=True)

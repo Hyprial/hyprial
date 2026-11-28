@@ -57,7 +57,7 @@ named fake-sidecar fixture.
 Known prose files are exempt. Exact rules live in `component()`.
 
 CI governance is shared infrastructure, not GUI/sidecar product ownership:
-`.forgejo/`, `scripts/ci-*`, `scripts/pytest*`, `tests/test_ci_*` (except the
+`.github/`, `scripts/ci-*`, `scripts/pytest*`, `tests/test_ci_*` (except the
 sidecar-only `test_ci_go_modules.py`),
 `tests/test_pytest_*`, `tests/test_gui_ci_migration.py`, and GUI `scripts/ci-*`.
 Changing these inputs runs all relevant suites. Adding product changes beside
@@ -80,18 +80,11 @@ Each workflow computes the common plan once, in its existing first job:
   E2E jobs require both test success and the selected sidecar output. A rejected
   route fails the first job rather than starting expensive downstream jobs.
 
-Python `--grouped` keeps the four audited early files (URI import boundaries,
-workflow schema, CI origin policy and the consumer selector), then runs CI
-policy, storage, runtime, harness/MCP, transport and CLI/GUI Python groups.
-The last catch-all traverses `tests/` with explicit ignores for files already
-assigned: unknown/new files and custom collectors are not dropped. Groups
-own whole files and remain sequential within the same required unit job, using
-at most two xdist workers in total. The first nonzero result stops execution;
-later groups are not claimed as tested. There are no automatic test retries or
-worker restarts. Each group has a distinct basetemp, JUnit artifact and logged
-duration/exit code. Tests verify full collection union/disjointness, including
-parameterized cases, partial selections and failure propagation. The old
-`--staged` two-wave mode remains available locally.
+Python pull requests use `scripts/ci/pytest_impact.py` to select tracked test files from the verified merge
+commit diff. A selected plan includes reverse dependencies and the six cross-repository Python guard tests.
+Unreferenced documentation maps to `tests/tooling/`; source, support, fixture, dependency and uncertain inputs
+fail closed to the complete suite. Pushes to `dev` and `main`, release targets and scheduled runs always use
+all tracked test files. Four shards own whole files and collection errors remain visible.
 
 New pushes supersede older Python runs of the same integration branch, just
 as new PR revisions supersede their older checks. Dev/main publication runs

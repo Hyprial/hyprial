@@ -28,7 +28,7 @@ GUI_PREFIX = "src/gui/"
 # these writable.
 PROTECTED_PREFIXES = (
     ".git/",
-    ".forgejo/",
+    ".github/",
     ".github/",
     ".agents/",
     ".claude/",

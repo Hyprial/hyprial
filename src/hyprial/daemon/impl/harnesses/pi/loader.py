@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
+from .bindings import PiModelBinding, validated_snapshot
+from .bindings.launch import bind_launch
 from hyprial.kernel import git_subprocess_environment
 from hyprial.kernel import ipc_errors
 
@@ -208,6 +210,7 @@ class PiLoaderReceipt:
     skills: tuple[PiLoadedSkill, ...]
     effective_settings: PiEffectiveSettings
     session_proof: PiSessionLoadProof
+    model_binding: Mapping[str, object] | None = None
 
     @classmethod
     def from_json(cls, value: object) -> "PiLoaderReceipt":
@@ -228,7 +231,7 @@ class PiLoaderReceipt:
                 "skills",
                 "effectiveSettings",
                 "sessionProof",
-            },
+            } | ({"modelBinding"} if "modelBinding" in value else set()),
             "pi loader receipt",
         )
         if value["schema"] != PI_LOADER_RECEIPT_SCHEMA:
@@ -260,6 +263,7 @@ class PiLoaderReceipt:
                 value["effectiveSettings"]
             ),
             session_proof=PiSessionLoadProof.from_json(value["sessionProof"]),
+            model_binding=validated_snapshot(value["modelBinding"]) if "modelBinding" in value else None,
         )
 
     @classmethod
@@ -426,10 +430,61 @@ def _runtime_root(value: object, label: str) -> Path:
     return path.resolve(strict=True)
 
 
+_PI_SDK_PACKAGE = "@earendil-works/pi-coding-agent"
+
+
+def _pi_sdk_manifest_root(directory: Path) -> Path | None:
+    manifest = directory / "package.json"
+    if not manifest.is_file():
+        return None
+    try:
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(body, dict) and body.get("name") == _PI_SDK_PACKAGE:
+        return directory
+    return None
+
+
+_PI_SHIM_READ_LIMIT = 64 * 1024
+_PI_SHIM_TARGET = re.compile(
+    r"node_modules[\\/]"
+    + r"[\\/]".join(re.escape(part) for part in _PI_SDK_PACKAGE.split("/"))
+    + r"[\\/]"
+)
+
+
+def _shim_names_pi_sdk(shim: Path) -> bool:
+    try:
+        with shim.open("rb") as handle:
+            head = handle.read(_PI_SHIM_READ_LIMIT)
+    except OSError:
+        return False
+    return _PI_SHIM_TARGET.search(head.decode("utf-8", errors="replace")) is not None
+
+
 def find_pi_package_root(
     command: tuple[str, ...], environment: Mapping[str, str]
 ) -> Path:
-    """Resolve the installed SDK beside the exact Pi command being replaced."""
+    """Resolve the installed SDK beside the exact Pi command being replaced.
+
+    Two npm layouts place the SDK beside the command.  When the command
+    resolves into the package (the POSIX global bin is a symlink to the
+    package's CLI), the package root is an ancestor of the resolved file.
+    When npm writes a launcher shim instead (the Windows global layout puts
+    ``pi.cmd``/``pi.ps1``/``pi`` in the prefix directory), the package is in
+    ``node_modules`` next to that shim.  Only these two places are checked,
+    and both require the SDK package name.  The ancestor walk ties the SDK
+    to the command structurally (the command file lives inside the package).
+    The sibling branch is taken only when the command file's first 64 KiB,
+    read as UTF-8, name ``node_modules/@earendil-works/pi-coding-agent/``
+    (either slash), as every npm cmd/ps1/sh shim for the package does; an
+    unrelated executable or a shim for another package beside an installed
+    SDK is rejected.  This checks what the shim text names, not what it
+    executes.  No wider search and no npm configuration lookup is performed.  The ``<prefix>/bin`` to ``<prefix>/lib/node_modules``
+    hop is deliberately not followed: npm always links that layout, which
+    the ancestor walk already covers.
+    """
 
     if not command:
         raise PiStartPreconditionError("Pi command must not be empty")
@@ -443,18 +498,17 @@ def find_pi_package_root(
         raise PiStartPreconditionError(f"Pi command is unavailable: {executable!r}")
     resolved = Path(candidate).resolve(strict=True)
     for parent in (resolved, *resolved.parents):
-        manifest = parent / "package.json"
-        if not manifest.is_file():
-            continue
-        try:
-            body = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if body.get("name") == "@earendil-works/pi-coding-agent":
-            return parent
+        root = _pi_sdk_manifest_root(parent)
+        if root is not None:
+            return root
+    shim_sibling = resolved.parent / "node_modules" / _PI_SDK_PACKAGE
+    if shim_sibling.is_dir() and _shim_names_pi_sdk(resolved):
+        root = _pi_sdk_manifest_root(shim_sibling.resolve(strict=True))
+        if root is not None:
+            return root
     raise PiStartPreconditionError(
         f"Pi SDK package root not found beside {resolved}; a pi installation "
-        "with the @earendil-works/pi-coding-agent SDK is required for P2 launches"
+        f"with the {_PI_SDK_PACKAGE} SDK is required for P2 launches"
     )
 
 
@@ -658,6 +712,7 @@ def pi_sdk_launch_from_runtime_context(
     session_name: str | None = None,
     initial_message: str | None = None,
     containerized: bool = False,
+    model_binding: PiModelBinding | None = None,
 ) -> PiSdkLaunch:
     """Consume P22's context without deriving or rewriting any agent root."""
 
@@ -681,6 +736,8 @@ def pi_sdk_launch_from_runtime_context(
         session_name=session_name,
         initial_message=initial_message,
         containerized=containerized,
+        model_binding=model_binding,
+        agent_home=context.roots.agent_home,
     )
 
 
@@ -756,6 +813,8 @@ def _pi_sdk_launch(
     session_name: str | None,
     initial_message: str | None,
     containerized: bool,
+    model_binding: PiModelBinding | None = None,
+    agent_home: Path | None = None,
 ) -> PiSdkLaunch:
     if containerized:
         raise ValueError("Pi controlled SDK bridge is not supported in containers")
@@ -763,6 +822,7 @@ def _pi_sdk_launch(
         raise ValueError("Pi session id must be non-empty")
     if (model_provider is None) != (model is None):
         raise ValueError("Pi model provider and model must be supplied together")
+    lexical_session_root = session_root
     projection_root = _runtime_root(projection_root, "Pi projection root")
     native_root = _runtime_root(native_root, "Pi native root")
     session_root = _runtime_root(session_root, "Pi session root")
@@ -813,6 +873,11 @@ def _pi_sdk_launch(
         payload["sessionName"] = session_name
     if initial_message is not None:
         payload["initialMessage"] = initial_message
+    if model_binding is not None:
+        if agent_home is None:
+            raise ValueError("model binding requires the trusted agent home")
+        bind_launch(payload, environment, binding=model_binding, agent_home=agent_home, mode=mode,
+                    session_root=lexical_session_root)
     return PiSdkLaunch(
         argv=(
             node,

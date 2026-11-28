@@ -97,6 +97,6 @@ npm --prefix gui run check:refactoring-ui -- --base origin/dev --annotations
 - `--base <ref>`：只报告相对 `<ref>` 新增行上的命中；CI 用它给 PR 发 `::warning` 注解。
 - `--strict`：有命中即退出 1。CI 当前不传此参数。
 
-CI 位置：`.forgejo/workflows/gate-gui.yml` 的 “Remind on Refactoring UI findings” 步骤，`continue-on-error: true`。
+CI 位置：`.github/workflows/gate-gui.yml` 的 “Remind on Refactoring UI findings” 步骤，`continue-on-error: true`。
 升级为门禁时在该步骤加 `--strict` 并去掉 `continue-on-error`，其余不变。
 规则测试见 `gui/tests/tooling/refactoring-ui-check.test.mjs`。

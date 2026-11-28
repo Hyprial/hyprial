@@ -1,7 +1,7 @@
 # E2E-032: switching the viewed organization in `hyprial gui`
 
 Runner: `run-org-switch-browser.py` (isolated; runs in
-`.forgejo/workflows/gate-gui.yml` `gui-acceptance`, see "CI" below).
+`.github/workflows/gate-gui.yml` `gui-acceptance`, see "CI" below).
 Scenario package: `_org_switch/` (`phases.py` for the Python run and
 assertions, `browser.mjs` for the browser steps). Shared browser-scenario
 pieces: `_gui_browser/` (`session.py` for the processes, `page.mjs` for the
@@ -191,7 +191,7 @@ fragments and long opaque tokens.
 
 ## CI
 
-`E2E-032` runs in `.forgejo/workflows/gate-gui.yml` (the `gui-acceptance` job,
+`E2E-032` runs in `.github/workflows/gate-gui.yml` (the `gui-acceptance` job,
 with `HYPRIAL_ACTOR_BACKEND=native` on schedule and `reference-abi` on pull
 requests after the GUI build and Chromium provisioning steps).
 `tests/tooling/ci/runner/test_ci_e2e_baseline.py` enforces the invariant that

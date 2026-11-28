@@ -1,4 +1,4 @@
-// Dev-first policy is defined in .forgejo/git-flow.json. Every source branch
+// Dev-first policy is defined in .github/git-flow.json. Every source branch
 // may target dev; suites follow the complete diff rather than its branch name.
 // Exact checkout/comparison validation and optional integration lanes remain.
 // Allen 2026-11-03: the component-source rule (gui/sidecar changes must come
@@ -13,8 +13,8 @@
 // Allen 2026-11-14: queue time is the constraint, so the widening is narrow.
 // Besides the product tree the Python suite is selected by what decides
 // WHICH tests run and WITH WHAT: Python files under tests/, the dependency
-// pins (pyproject.toml, uv.lock), and the suite's own runner (pytest_impact.py,
-// pytest-durations.json, gate-python.yml). #2757 changed the shard planner
+// pins (pyproject.toml, uv.lock), and the suite's own runner
+// (pytest_impact.py, gate.yml). #2757 changed the shard planner
 // and the workflow and merged with every pytest job skipped, on the PR and on
 // dev. pytest_impact.py keeps the cost down: a changed test module that no
 // other test refers to runs alone.
@@ -51,11 +51,11 @@ const guiBranch = ref => typeof ref === 'string' && ref.startsWith('intg/gui');
 const sidecarBranch = ref => typeof ref === 'string' && ref.startsWith('intg/sidecar');
 const batchBranch = ref => typeof ref === 'string' && /^intg\/batch-.+/.test(ref);
 const pythonRunnerInputs = new Set([
-  'pyproject.toml', 'uv.lock', 'scripts/ci/pytest_impact.py', 'scripts/ci/pytest-durations.json',
+  'pyproject.toml', 'uv.lock', 'scripts/ci/pytest_impact.py',
   'scripts/ci/check_windows_portability.py', 'scripts/ci/windows_portability_semantics.py',
   'scripts/ci/windows-portability-baseline.json', 'scripts/ci/check_node_platform_idioms.py',
   'scripts/ci/node-platform-idioms-baseline.json', 'scripts/ci/check_pyright_windows.py',
-  '.forgejo/workflows/gate-python.yml',
+  '.github/workflows/gate-python.yml',
 ]);
 const pythonDocumentInputs = new Set([
   'GLOSSARY.md', 'docs/domains/squire/SKILL-template.md', 'docs/guides/cutover-runbook.md',
@@ -69,11 +69,12 @@ const nativeExactInputs = new Set([
   'docs/design/actor-rustify-build-distribution-adr-2026-10-24.md',
   'src/hyprial/kernel/interface.py', 'src/hyprial/kernel/__init__.py',
   'src/hyprial/shell/impl/packaging/native_engine.py', 'src/hyprial/gui_build_hook.py',
+  'src/hyprial/shell/impl/packaging/native_editable.py',
   'scripts/build/build_native_engine.sh', 'scripts/build/manylinux_native_evidence.sh',
   'scripts/build/build-wheel.sh', 'scripts/ci/ci-ensure-rust.sh', 'scripts/ci/ci-ensure-uv.sh',
   'scripts/ci/ci-ensure-cpython-mirror.sh', 'scripts/ci/ci-uv-cache.sh',
-  '.forgejo/workflows/native-conformance.yml', '.forgejo/workflows/gate-python.yml',
-  '.forgejo/workflows/kp027-native-candidate.yml', '.forgejo/workflows/wheel-release.yml',
+  '.github/workflows/native-conformance.yml', '.github/workflows/gate-python.yml',
+  '.github/workflows/kp027-native-candidate.yml', '.github/workflows/wheel-release.yml',
 ]);
 export const nativeInput = path => path.startsWith('crates/') || path.startsWith('conformance/')
   || path.startsWith('src/hyprial/_core/') || path.startsWith('src/hyprial/kernel/impl/actor_runtime/')
@@ -85,7 +86,7 @@ const pacBranch = ref => ref === 'intg/pac-v2-full-impl';
 const deepRefactorBranch = 'refactor/reconstruct-modules';
 const prose = path => isDocumentation(path.startsWith('src/gui/') ? path.slice(8) : path.startsWith('gui/') ? path.slice(4) : path);
 export function infrastructure(path) {
-  return path.startsWith('.forgejo/') || path.startsWith('scripts/ci/') || /^scripts\/(ci-|pytest)/.test(path)
+  return path.startsWith('.github/') || path.startsWith('scripts/ci/') || /^scripts\/(ci-|pytest)/.test(path)
     || /^tests\/test_(ci_|pytest_)/.test(path) || path === 'tests/test_gui_ci_migration.py'
     || path.startsWith('tests/tooling/ci/') || path.startsWith('tests/tooling/pytest/')
     || path.startsWith('tests/shell/gui/ci/')

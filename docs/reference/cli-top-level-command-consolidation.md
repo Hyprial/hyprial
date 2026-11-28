@@ -105,7 +105,7 @@
 | 一级命令 | 可见性 | 实际用途（含完整二级面） | 调用者（仓内证据） | 证据类别 / 边界 |
 |---|---|---|---|---|
 | `login` | 可见 | 以 OIDC device flow 登录本 home 的用户身份并生成设备 key（`cc/setup/login.py:18`，`c2a73dff` 2026-09-04 引入） | 人；`skills/hyprial-ops/SKILL.md:61-62`、`.agents/skills/hyprial-e2e/SKILL.md:150`；`contract/migration/drill-run.py`。原 desktop 账户窗口所用的 Python 模块（`desktop_network.py`）已删除，从来不是 CLI argv | **仓内调用证据** |
-| `help` | 可见 | 由 Typer 注册树生成一级清单，含“Hidden commands (internal)”段（`cc/observe/meta.py:52`，`shell/impl/cli/inventory.py:20-57`） | `contract/cli-blackbox/run.py:155-161`（sealed schema 要求清单含 `hyprial service`）；CI `cli-help-inventory`（`.forgejo/workflows/gate-python.yml:32,128` → `scripts/verify/check_cli_help_inventory.py`） | **仓内调用证据**；CI 硬门 |
+| `help` | 可见 | 由 Typer 注册树生成一级清单，含“Hidden commands (internal)”段（`cc/observe/meta.py:52`，`shell/impl/cli/inventory.py:20-57`） | `contract/cli-blackbox/run.py:155-161`（sealed schema 要求清单含 `hyprial service`）；CI `cli-help-inventory`（`.github/workflows/gate-python.yml:32,128` → `scripts/verify/check_cli_help_inventory.py`） | **仓内调用证据**；CI 硬门 |
 | `version` | 可见 | 本地包版本、安装 revision、update source（`cc/observe/meta.py:70`） | E2E-005 `contract/e2e/run-uv-install-flow.py`、`cli-blackbox`、`daemon/impl/autoupdate/alert.py` 文案、`scripts/build/docker/build-worker-image.sh` | **仓内调用证据** |
 | `install` | 可见 | 已退役占位：接受并忽略一切参数，恒失败 `COMING_SOON`、退出 1（`cc/lifecycle/install.py:18-40`）；Allen 2026-10-03 裁决保留名字 | `skills/hyprial-ops/SKILL.md:76-77` 记载占位语义；`gui-workflow`、`hyprial-e2e` skill 提及 | **代码确认**：无业务效果 |
 | `ps` | 可见 | daemon、managed connector、adapter、interactive session 概览（`cc/observe/status.py:17`） | 约 30 个 contract 文件（如 `contract/e2e/_daemon_runner.py`）；`daemon/impl/transfer/execution/container.py`；skills。desktop 用的是 IPC `ps`（`desktop/src-tauri/src/runtime/daemon.rs:22`），不是 CLI | **仓内调用证据** |
@@ -526,7 +526,7 @@ help 自称 prototype（`cc/transfer/credentials.py:15,130`），却是可见一
 4. S：Tailcat 切换完成后再设计 `network peers`。
 5. fs 分层（可选）：保留高频节点动词 `ls/read/write/...` 在 `fs` 下，只把
    `purge-plan/purge/purge-status/unban` 收为 `fs purge plan|run|status|unban`、空间管理收为
-   `fs space ...`。27 个叶子本身是“大但同域”，不违反方向 1，优先级最低。
+   `fs space ...`。27 个叶子本身是“大但同域”，不违反方向 1，优先级最低。（2026-11-25 注：OrgFS 精简实现删除了 `fs purge plan|status|unban`，只保留 `fs purge run`。）
 
 ## 7. 破坏面总表
 

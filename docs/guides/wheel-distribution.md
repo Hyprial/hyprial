@@ -139,7 +139,7 @@ pyproject: 0.4.2          →  wheel: hyprial-0.4.2+g8cd97b4-py3-none-any.whl
 scripts/build/build-wheel.sh [outdir]   # trap 恢复 pyproject/uv.lock;树脏会警告
 ```
 
-CI(`.forgejo/workflows/wheel-release.yml`):
+CI(`.github/workflows/wheel-release.yml`):
 
 - `nightly`/`stable`:由 `on.push.tags` 的字面 tag push 触发。
 - CI 自己写 tag 不会再触发 tag-push workflow。`gate-python.yml` 在核对 internal
@@ -205,10 +205,10 @@ Hatch hook（`src/hyprial/gui_build_hook.py`）在 tailcat 与 GUI 之后运行 
 - 只为构建主机构建：`HYPRIAL_TAILCAT_TARGET` 指向其他平台时 native 阶段失败（尚无交叉构建矩阵）。
 - worker 精简 wheel（`HYPRIAL_BUILD_WORKER_WHEEL=1`）保留 native 阶段，只省 GUI 与 sidecar。
 - sdist 按 Hatch 默认携带 `crates/`（排除 `crates/target*` 与开发暂存模块），hook 校验 manifest 与 lockfile 存在。
-- editable（`uv sync`）默认不编译：若 `src/hyprial/_core/actors.abi3.so` 已暂存，按
+- editable（`uv sync`）默认不编译：若 `src/hyprial/_core/actors.abi3.so`（Windows 为 `actors.pyd`）已暂存，按
   `actors.stamp.json`（`scripts/build/build_native_engine.sh` 写入的 crates/ 摘要与模块 SHA-256）和
   ABI 版本校验，过期/不符即失败；错误信息提示用 `HYPRIAL_BUILD_NATIVE=1 uv sync` 或该脚本重建；未暂存只提示。
-  源码开发者可显式设置 `HYPRIAL_BUILD_NATIVE=1`，让 hook 调用同一脚本，自动构建缺失或过期的本机模块后再校验。
+  源码开发者可显式设置 `HYPRIAL_BUILD_NATIVE=1`，让 hook 在进程内调用 `native_editable.build_editable`（不再执行 `.sh`，KP-135），自动构建缺失或过期的本机模块后再校验；`scripts/build/build_native_engine.sh` 的默认路径委托给同一个 `native_editable.py build`，`--free-threaded` 仍只在脚本里。debug 或 free-threaded 解释器会明确报错，不暂存。
   editable 路径的 `PYO3_PYTHON` 是稳定 realpath（优先 `sys._base_executable`，避免一次性 uv build 路径）；
   wheel 路径不变，仍用 `sys.executable` 的绝对路径。
   摘要只覆盖 cargo 输入（`Cargo.toml`、`Cargo.lock`、`*.rs`，不含顶层 `crates/target*`）；`pyproject.toml`
@@ -233,7 +233,7 @@ Hatch hook（`src/hyprial/gui_build_hook.py`）在 tailcat 与 GUI 之后运行 
   `HYPRIAL_BUILD_SKIP_NATIVE=1`（只认值 `1`）构建不含 native 引擎的 wheel 并在 stderr 警告；这种 wheel
   不得发布。`HYPRIAL_TAILCAT_ALLOW_MISSING` 不是 native 退出开关。
 
-现状（未改 `.forgejo` workflow）：`wheel-release.yml` 在一台 Ubuntu 上循环五个 Go 目标且无 Rust，
+现状（未改 `.github` workflow）：`wheel-release.yml` 在一台 Ubuntu 上循环五个 Go 目标且无 Rust，
 `github-publish.yml` 的 publish-github runner 也没有 Rust（`scripts/ci/github_publish.py` 的快照白名单已含
 `crates/` 构建源码）；本线进入任何构建 wheel 的分支前须先落 ADR 第 4 节的 native 目标矩阵（每目标原生
 runner，Rust 1.93.1），否则这两条链路按设计 fail closed。Cargo 依赖尚未 vendor：构建时按

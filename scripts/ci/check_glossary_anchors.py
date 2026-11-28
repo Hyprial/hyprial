@@ -23,8 +23,8 @@ Decisions (cell model phase B, S9a):
   at all is a failure: the gate never passes by checking nothing.
 - Output follows check_module_boundaries.py: a JSON report on stdout, one line
   per violation on stderr, exit 1 on FAIL.  The CI gate is
-  tests/tooling/documentation/test_glossary_anchors.py, and GLOSSARY.md is an
-  exact test input in scripts/ci/docs_only.py, so a glossary-only change runs it.
+  tests/tooling/documentation/test_glossary_anchors.py.  GLOSSARY.md is part of
+  the runtime reference corpus used by scripts/ci/docs_only.py.
 """
 from __future__ import annotations
 

@@ -90,7 +90,7 @@ def test_the_header_states_the_shared_runner_consequence_and_the_search_list_mea
 
 
 def test_no_workflow_runs_the_script() -> None:
-    for path in sorted((ROOT / ".forgejo" / "workflows").glob("*.yml")):
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         assert "setup-macos-signing-identity" not in path.read_text(encoding="utf-8"), path.name
 
 
@@ -171,7 +171,7 @@ def test_the_guide_never_suggests_unwrapped_base64() -> None:
 
 
 def test_no_workflow_runs_the_guide() -> None:
-    for path in sorted((ROOT / ".forgejo" / "workflows").glob("*.yml")):
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         assert "import-app-dev-id" not in path.read_text(encoding="utf-8"), path.name
 
 

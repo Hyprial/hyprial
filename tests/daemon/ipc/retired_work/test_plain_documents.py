@@ -7,16 +7,10 @@ from tests.daemon.org_membership.context.support import org_daemon as _org_daemo
 
 
 @pytest.mark.parametrize("path", ["work/notes.txt", "notes.txt"])
-def test_arbitrary_current_content_uses_normal_orgfs_read_write_and_cas(org_daemon, monkeypatch, path):
+def test_arbitrary_current_content_uses_normal_orgfs_read_write_and_cas(org_daemon, path):
     app, space = org_daemon
-    fs = app._require_orgfs_runtime().facade
     content = "# Ordinary document\n\n```yaml\nownerActions: [not-an-approval]\n```\n"
     first = app.handle("orgfs.write", {"spaceId": space, "path": path, "text": content})
-
-    def history_unavailable(*args, **kwargs):
-        raise AssertionError("a current document read must not consult history")
-
-    monkeypatch.setattr(fs, "journal_history", history_unavailable)
     read = app.handle("orgfs.read", {"spaceId": space, "path": path})
     assert read["text"] == content
     assert read["version"] == first["version"]

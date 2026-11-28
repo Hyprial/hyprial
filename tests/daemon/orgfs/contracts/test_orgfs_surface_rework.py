@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from hyprial.daemon.impl.application import DaemonApplication
 
 
-def test_daemon_wraps_serve_and_checkout_results_as_orgfs_json() -> None:
+def test_daemon_wraps_checkout_results_as_orgfs_json() -> None:
     @dataclass(frozen=True)
     class Result:
         operation: str
@@ -14,9 +14,6 @@ def test_daemon_wraps_serve_and_checkout_results_as_orgfs_json() -> None:
 
     runtime = SimpleNamespace(
         facade=SimpleNamespace(spaces=lambda: ()),
-        serve=lambda space_id, backend: Result(
-            f"serve:{space_id}:{backend}", ("resident",)
-        ),
         checkout=lambda space_id, enabled: Result(
             f"checkout:{space_id}:{enabled}", ("projected",)
         ),
@@ -24,9 +21,6 @@ def test_daemon_wraps_serve_and_checkout_results_as_orgfs_json() -> None:
     application = object.__new__(DaemonApplication)
     application._orgfs_runtime = runtime
 
-    assert application._handle_orgfs(
-        "orgfs.serve", {"spaceId": "space-1", "backend": "memory"}
-    ) == {"operation": "serve:space-1:memory", "values": ["resident"]}
     assert application._handle_orgfs(
         "orgfs.checkout", {"spaceId": "space-1", "enabled": True}
     ) == {"operation": "checkout:space-1:True", "values": ["projected"]}

@@ -10,7 +10,7 @@ Decision (Allen, 2026-10-17, relayed by the coordinator):
   tree, so the backlog is worked down gradually.  A clean run exits 0; a run
   with findings also exits 0 unless ``--strict`` is passed.  ``--strict`` is
   the single upgrade point when Allen decides to block.
-* The CI step in ``.forgejo/workflows/gate-python.yml`` is ``continue-on-error`` and
+* The CI step in ``.github/workflows/gate-python.yml`` is ``continue-on-error`` and
   emits ``::warning`` annotations, so a finding is visible without reddening
   the job.  That step is the single upgrade point: to block, add ``--strict``
   and drop ``continue-on-error`` there; nothing else in this file changes.
@@ -60,7 +60,7 @@ SCOPE_PREFIXES = (
     "sidecar/",
     "desktop/",
     "app/",
-    ".forgejo/workflows/",
+    ".github/workflows/",
 )
 
 PYTHON_SUFFIXES = {".py"}

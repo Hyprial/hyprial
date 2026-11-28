@@ -13,7 +13,9 @@
 #   the image-supplied sidecar; it keeps the native stage.
 # - Editable builds verify an already staged src/hyprial/_core/actors.abi3.so
 #   against its stamp and ABI version.  With HYPRIAL_BUILD_NATIVE=1 they first
-#   rebuild a missing or stale module using the current build interpreter.
+#   rebuild a missing or stale module using the current build interpreter,
+#   in-process through native_editable.build_editable (no shell script, so the
+#   same path runs from PowerShell on Windows; KP-135 item 1).
 #   Before building they touch scripts/build/native-engine.epoch: uv records
 #   its cache-key state before the hook runs, so without that tracked file a
 #   staged module deleted after the first build would match the recorded
@@ -70,7 +72,7 @@ Decisions (2026-11-03, infra-ops/release-0.5.5.3.2, brief ``publish-gui``):
 
 Decisions (2026-11-03, infra-ops/release-0.5.5.3.3, brief ``wheel-release``):
 
-* ``.forgejo/workflows/wheel-release.yml`` stamps the disposable build copy
+* ``.github/workflows/wheel-release.yml`` stamps the disposable build copy
   of ``VERSION`` to ``<base>+g<short sha>`` before ``uv build --wheel``,
   which the clean-source check rejected and red every wheel-release run
   since 10-30.  The git-checkout path now tolerates exactly one tracked
@@ -99,7 +101,7 @@ Decisions (2026-11-16, release wheels and the GUI source remote):
   variable, and ``scripts/ci/verify_tailcat_wheels.py``,
   ``publish_wheels.py`` and ``attach_wheel_assets.py`` refuse a wheel whose
   ``release.json`` records another remote (decisions in
-  ``.forgejo/workflows/README.md``).
+  ``.github/workflows/README.md``).
 """
 
 from __future__ import annotations
@@ -125,9 +127,10 @@ TailcatWheelError = _TAILCAT_TOOLS["TailcatWheelError"]
 _GUI_TOOLS = runpy.run_path(
     str(Path(__file__).parent / "shell/impl/gui/install/resources.py")
 )
-_NATIVE_TOOLS = runpy.run_path(
-    str(Path(__file__).parent / "shell/impl/packaging/native_engine.py")
+_NATIVE_EDITABLE = runpy.run_path(
+    str(Path(__file__).parent / "shell/impl/packaging/native_editable.py")
 )
+_NATIVE_TOOLS = _NATIVE_EDITABLE["ENGINE"]
 NativeEngineError = _NATIVE_TOOLS["NativeEngineError"]
 build_gui_manifest = _GUI_TOOLS["build_manifest"]
 write_gui_manifest = _GUI_TOOLS["write_manifest"]
@@ -144,7 +147,6 @@ ALLOW_MISSING_ENV = "HYPRIAL_TAILCAT_ALLOW_MISSING"
 WORKER_WHEEL_ENV = "HYPRIAL_BUILD_WORKER_WHEEL"
 SKIP_NATIVE_ENV = _NATIVE_TOOLS["SKIP_ENV"]
 BUILD_NATIVE_ENV = "HYPRIAL_BUILD_NATIVE"
-_NATIVE_BUILD_SCRIPT = "scripts/build/build_native_engine.sh"
 _NATIVE_EPOCH = "scripts/build/native-engine.epoch"
 _GUI_BUILD_TIMEOUT_SECONDS = 900.0
 _GENERATED_GUI_DIRS = frozenset({"node_modules", "dist"})
@@ -321,33 +323,9 @@ class CustomBuildHook(BuildHookInterface):
             ) from error
 
     def _build_editable_native(self, root: Path, python: str) -> None:
-        script = root / _NATIVE_BUILD_SCRIPT
-        if not script.is_file():
-            raise NativeEngineError(f"native build helper is missing: {script}")
         self._advance_native_epoch(root)
-        environment = dict(os.environ)
-        environment["PYO3_PYTHON"] = python
-        try:
-            completed = subprocess.run(
-                [str(script)],
-                cwd=str(root),
-                env=environment,
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-            )
-        except OSError as error:
-            raise NativeEngineError(f"cannot run native build helper {script}: {error}") from error
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip()[-3000:]
-            raise NativeEngineError(
-                f"native editable build failed (exit {completed.returncode}): {detail}"
-            )
-        if completed.stdout:
-            print(completed.stdout, end="", file=sys.stderr)
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
+        module, library, stamp = _NATIVE_EDITABLE["build_editable"](root, python=python)
+        print(f"staged {module} (from {library}); stamped {stamp}", file=sys.stderr)
 
     def _stage_native(self, root: Path, build_data: dict) -> None:
         tools = _NATIVE_TOOLS

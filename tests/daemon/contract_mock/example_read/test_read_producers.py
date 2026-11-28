@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 
 import pytest
 
@@ -10,7 +9,7 @@ from hyprial.daemon.impl.request_catalog.org.orgfs.read_examples import ORGFS_RE
 from hyprial.kernel import DaemonRequestError, parse_orgfs_uri
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 
-from .producers import PLAN, PLAN_UNSIGNED, observation, plain
+from .producers import observation, plain
 
 CASES = [
     (example_set.method, case)
@@ -72,12 +71,3 @@ def test_doc_projection_invariants_are_preserved():
     for _method, case in CASES:
         if case.result:
             check(plain(case.result))
-
-
-def test_fixed_plan_id_is_a_real_synthetic_plan_digest():
-    from hyprial.daemon.impl.orgfs.projection.purge import canonical_bytes
-
-    assert hashlib.sha256(canonical_bytes(PLAN_UNSIGNED)).hexdigest() == PLAN
-    example_set = next(item for item in ORGFS_READ_EXAMPLES if item.method == "orgfs.purge_status")
-    assert example_set.cases[0].params["planId"] == PLAN
-    assert example_set.cases[0].result["plan_id"] == PLAN

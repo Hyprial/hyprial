@@ -1,3 +1,21 @@
+# Decisions:
+# - Phase D T1: rewritten onto the state host (``device_rows/support``).
+#   Honest writes are local facade calls delivered by the in-process cluster;
+#   forged rows, move records and non-object values are C2 forgeries through
+#   ``SyncHost.apply_remote``.  Receivers say ``protected-path`` for an author
+#   the path does not allow and ``invalid-argument`` for a malformed row
+#   (design §3.6); both were ``not-a-member`` in the journal.
+# - Design §3.6 judges the result state.  In the member-encoded create race,
+#   the owner's concurrent write of the same row loses the CRDT merge when it
+#   arrives after Alice's; it then changes nothing and the state host accepts
+#   it.  The test therefore asserts the verdict where the owner's write would
+#   change the row (it arrives first) and the converged row in both orders.
+# - A corrupt row can no longer be planted in a store; the old "legacy
+#   corrupt row" test became "a corrupt row from a peer is rejected and does
+#   not block that peer's later healthy rows".
+# - Removal-filter checks on the physical node objects were dropped: the
+#   readers (directory store, ``listdir``, ``directory_peers``) are what users
+#   see.
 """ROUND 9 stateless member rows, root squats, and corrupt-row tolerance."""
 
 from __future__ import annotations
@@ -7,43 +25,33 @@ import json
 import time
 
 import pytest
-from pycrdt import Map
 
-from hyprial.daemon.impl.org.network.directory import (
-    InvalidDeviceQuarantine,
-    OrgFsDirectoryStore,
-)
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceQuarantine
 from hyprial.daemon.impl.org.network.service import OrgNetworkService
-from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.daemon.impl.orgfs.membership import Accepted, Rejected
 from hyprial.identity import (
     identity_slug,
     protected_directory_doc_id,
     protected_directory_node_id,
 )
-
 from hyprial.identity.impl.device import DeviceRecord, write_device_record
+
 from tests.support.tailnet_membership import FakeMembershipSidecar, member
 
-from .test_round4 import (
-    ALICE,
-    BOB,
-    OWNER,
-    _add_tree_doc,
-    _deliver_all,
-    _device,
-    _position,
-    _receive,
-    replicas,
-)
-from .test_round7 import _add_dir, _move, _rewrite, _tree_envelope
-
-_IMPORTED_REPLICAS_FIXTURE = replicas
+from .support import ALICE, BOB, CAROL, ORG, OWNER, Org, device, new_row
 
 
 @pytest.fixture
-def round9_replicas(request):
-    assert _IMPORTED_REPLICAS_FIXTURE is not None
-    return request.getfixturevalue("replicas")
+def org():
+    value = Org()
+    try:
+        yield value
+    finally:
+        value.close()
+
+
+def _code(outcome: object) -> str | None:
+    return outcome.code if isinstance(outcome, Rejected) else None
 
 
 def _unverified_proof(*, expires_at: int) -> str:
@@ -63,97 +71,60 @@ def _unverified_proof(*, expires_at: int) -> str:
     ],
 )
 def test_r9_member_encoded_create_is_member_only_in_every_order(
-    round9_replicas, order: tuple[str, str], receiver_name: str
+    org: Org, order: tuple[str, str], receiver_name: str
 ) -> None:
-    """The update's own deterministic id decides, even when its CRDT op loses."""
+    """The member's row wins in every order; the owner's write never lands."""
 
-    _tmp_path, space_id, owner, alice, _bob, carol = round9_replicas
+    space_id = org.space_id
     path = f"directory/people/{ALICE}"
-    node_id = protected_directory_node_id(
-        space_id, path, space_owner=f"user:{OWNER}"
-    )
+    node_id = protected_directory_node_id(space_id, path, space_owner=f"user:{OWNER}")
     assert node_id is not None
-    parent = owner.facade.stat(space_id, "directory/people")
-    envelopes = {
-        actor: _tree_envelope(
-            runtime,
-            space_id,
-            author=actor_name,
-            mutate=lambda doc: _add_dir(
-                doc,
-                node_id=node_id,
-                parent=parent.node_id,
-                name=ALICE,
-            ),
-        )
-        for actor, actor_name, runtime in (
-            ("owner", OWNER, owner),
-            ("alice", ALICE, alice),
-        )
-    }
-    receiver = owner if receiver_name == "owner" else carol
-    suppliers = {"owner": owner.node_id, "alice": alice.node_id}
-    verdicts = {}
-
-    for actor in order:
-        result = _receive(receiver, space_id, envelopes[actor], suppliers[actor])
-        verdicts[actor] = (result.status, result.code)
-
-    assert verdicts == {
-        "owner": ("rejected", "not-a-member"),
-        "alice": ("applied", None),
-    }
-    assert receiver.facade.stat(space_id, path).node_id == node_id
-
-
-def test_r2_other_member_cannot_link_people_binding_row_on_any_replica(
-    round9_replicas,
-) -> None:
-    _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    user_key = identity_slug(ALICE)
-    alice.facade.mkdir(space_id, f"directory/people/{user_key}")
-    _deliver_all(alice, (owner, bob, carol), space_id, before)
-    parent = owner.facade.stat(space_id, f"directory/people/{user_key}")
-    path = f"directory/people/{user_key}/agents-node-1.json"
-    node_id = protected_directory_node_id(
-        space_id, path, space_owner=f"user:{OWNER}"
-    )
-    doc_id = protected_directory_doc_id(
-        space_id, path, space_owner=f"user:{OWNER}"
-    )
-    assert node_id is not None and doc_id is not None
-    envelope = _tree_envelope(
-        bob,
-        space_id,
-        author=BOB,
-        mutate=lambda doc: _add_tree_doc(
-            doc.get("nodes", type=Map),
-            node_id=node_id,
-            parent=parent.node_id,
-            name="agents-node-1.json",
-            doc_id=doc_id,
+    parent = org.node_id(OWNER, "directory/people")
+    frames = {
+        "owner": org.forge_rows(
+            OWNER, [new_row(node_id, parent=parent, name=ALICE, kind="dir")], author=OWNER
         ),
+        "alice": org.forge_rows(
+            ALICE, [new_row(node_id, parent=parent, name=ALICE, kind="dir")], author=ALICE
+        ),
+    }
+    receiver = OWNER if receiver_name == "owner" else CAROL
+
+    verdicts = {actor: org.apply(receiver, frames[actor], peer=f"node-{actor}") for actor in order}
+
+    assert verdicts["alice"] == Accepted()
+    if order[0] == "owner":
+        assert _code(verdicts["owner"]) == "protected-path"
+    assert org.fs(receiver).stat(space_id, path).node_id == node_id
+    assert org.rows(receiver)[node_id]["author"] == f"user:{ALICE}"
+
+
+def test_r2_other_member_cannot_link_people_binding_row_on_any_replica(org: Org) -> None:
+    space_id = org.space_id
+    user_key = identity_slug(ALICE)
+    org.fs(ALICE).mkdir(space_id, f"directory/people/{user_key}")
+    org.deliver()
+    parent = org.node_id(OWNER, f"directory/people/{user_key}")
+    path = f"directory/people/{user_key}/agents-node-1.json"
+    node_id = protected_directory_node_id(space_id, path, space_owner=f"user:{OWNER}")
+    doc_id = protected_directory_doc_id(space_id, path, space_owner=f"user:{OWNER}")
+    assert node_id is not None and doc_id is not None
+    forged = org.forge_rows(
+        BOB,
+        [new_row(node_id, parent=parent, name="agents-node-1.json", doc_id=doc_id)],
+        author=BOB,
     )
 
-    for replica in (owner, alice, carol):
-        result = _receive(replica, space_id, envelope, bob.node_id)
-        assert (result.status, result.code) == ("rejected", "not-a-member")
-        with pytest.raises(OrgFsError) as missing:
-            replica.facade.stat(space_id, path)
-        assert missing.value.code == "unknown-doc"
+    for receiver in (OWNER, ALICE, CAROL):
+        assert _code(org.apply(receiver, forged, peer="node-bob")) == "protected-path"
+        assert org.missing(receiver, path)
 
 
-def test_a_people_row_written_by_its_member_replicates_to_every_replica(
-    round9_replicas,
-) -> None:
+def test_a_people_row_written_by_its_member_replicates_to_every_replica(org: Org) -> None:
     """R3: no publication-time gate; a member's own ``people`` row replicates
     whatever its content, including an unexpired proof-shaped value."""
 
-    _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
+    space_id = org.space_id
     row = {
         "user": ALICE,
         "larkUnionId": "on_alice",
@@ -161,109 +132,70 @@ def test_a_people_row_written_by_its_member_replicates_to_every_replica(
         "publishedAt": "2026-10-07T12:00:00+00:00",
     }
     path = f"directory/people/{identity_slug(ALICE)}/agents-node-1.json"
-    alice.facade.mkdir(space_id, path.rsplit("/", 1)[0])
-    alice.facade.write_text(space_id, path, json.dumps(row))
-    _deliver_all(alice, (owner, bob, carol), space_id, before)
+    org.fs(ALICE).mkdir(space_id, path.rsplit("/", 1)[0])
+    org.fs(ALICE).write_text(space_id, path, json.dumps(row))
+    org.deliver()
 
-    for replica in (owner, alice, bob, carol):
-        text, _version = replica.facade.read_text(space_id, path)
-        assert json.loads(text) == row
+    for user in (OWNER, ALICE, BOB, CAROL):
+        assert json.loads(org.text(user, path)) == row
 
 
-def test_r9_move_cannot_squat_the_shared_directory_root(round9_replicas) -> None:
+def test_r9_move_cannot_squat_the_shared_directory_root(org: Org) -> None:
     """A move result cannot give a random node a protected ancestor name."""
 
-    _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    squatter = alice.facade.mkdir(space_id, "S")
-    alice.facade.mkdir(space_id, "S/devices")
-    _deliver_all(alice, (owner, bob, carol), space_id, before)
-    envelope = _tree_envelope(
-        alice,
-        space_id,
-        author=ALICE,
-        mutate=lambda doc: _move(
-            doc,
-            node_id=squatter.node_id,
-            old_parent="root",
-            new_parent="root",
-            name="directory",
-            peer=alice.node_id,
-        ),
+    space_id = org.space_id
+    squatter = org.fs(ALICE).mkdir(space_id, "S")
+    org.fs(ALICE).mkdir(space_id, "S/devices")
+    org.deliver()
+    forged = org.forge_move(
+        ALICE, squatter.node_id, old_parent="root", new_parent="root", name="directory"
     )
 
-    for receiver in (owner, bob, carol):
-        result = _receive(receiver, space_id, envelope, alice.node_id)
-        assert (result.status, result.code) == ("rejected", "not-a-member")
-        assert OrgFsDirectoryStore(receiver.facade).list_devices("group-acme") == []
-        assert receiver.facade.stat(space_id, "S/devices").kind == "dir"
+    for receiver in (OWNER, BOB, CAROL):
+        assert _code(org.apply(receiver, forged, peer="node-alice")) == "protected-path"
+        assert org.directory(receiver).list_devices(ORG) == []
+        assert org.fs(receiver).stat(space_id, "S/devices").kind == "dir"
 
 
-def test_r9_owner_cannot_delete_a_member_encoded_row(round9_replicas) -> None:
+def test_r9_owner_cannot_delete_a_member_encoded_row(org: Org) -> None:
     """Member identity, not org ownership, authorizes a protected deletion."""
 
-    _tmp_path, space_id, owner, alice, bob, _carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    row = _device(ALICE, "kept", address="tcp://10.0.0.7:7447#kept")
-    OrgFsDirectoryStore(alice.facade).put_device("group-acme", row)
-    _deliver_all(alice, (owner, bob), space_id, before)
-    node = owner.facade.stat(
-        space_id, f"directory/devices/{ALICE}/kept.json"
-    )
-    envelope = _tree_envelope(
-        owner,
-        space_id,
-        author=OWNER,
-        mutate=lambda doc: _rewrite(doc, node.node_id, deleted=True),
-    )
+    row = device(ALICE, "kept", address="tcp://10.0.0.7:7447#kept")
+    org.directory(ALICE).put_device(ORG, row)
+    org.deliver()
+    node_id = org.node_id(OWNER, f"directory/devices/{ALICE}/kept.json")
+    forged = org.forge_rewrite(OWNER, node_id, author=OWNER, deleted=True)
 
-    for receiver in (owner, bob):
-        result = _receive(receiver, space_id, envelope, owner.node_id)
-        assert (result.status, result.code) == ("rejected", "not-a-member")
-        assert OrgFsDirectoryStore(receiver.facade).list_devices("group-acme") == [row]
+    for receiver in (OWNER, BOB):
+        assert _code(org.apply(receiver, forged, peer="node-owner")) == "protected-path"
+        assert org.directory(receiver).list_devices(ORG) == [row]
 
 
 def test_r9_removed_member_rows_are_inert_for_devices_people_and_peers(
-    round9_replicas,
+    org: Org, tmp_path
 ) -> None:
     """Active meta membership filters both protected read trees on each replica."""
 
-    tmp_path, space_id, owner, alice, bob, carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    row = _device(
-        ALICE, "alice-device", address="tcp://10.0.0.7:7447#alice-secret"
-    )
-    OrgFsDirectoryStore(alice.facade).put_device("group-acme", row)
-    alice.facade.mkdir(space_id, f"directory/people/{ALICE}")
-    profile = alice.facade.write_text(
-        space_id, f"directory/people/{ALICE}/profile.json", "{}"
-    )
-    _deliver_all(alice, (owner, bob, carol), space_id, before)
-    device = alice.facade.stat(
-        space_id, f"directory/devices/{ALICE}/alice-device.json"
-    )
-    for replica in (owner, alice, bob, carol):
-        assert OrgFsDirectoryStore(replica.facade).list_devices("group-acme") == [row]
-        assert [
-            item.name for item in replica.facade.listdir(space_id, "directory/people")
-        ] == [ALICE]
+    space_id = org.space_id
+    row = device(ALICE, "alice-device", address="tcp://10.0.0.7:7447#alice-secret")
+    org.directory(ALICE).put_device(ORG, row)
+    org.fs(ALICE).mkdir(space_id, f"directory/people/{ALICE}")
+    org.fs(ALICE).write_text(space_id, f"directory/people/{ALICE}/profile.json", "{}")
+    org.deliver()
+    for user in (OWNER, ALICE, BOB, CAROL):
+        assert org.directory(user).list_devices(ORG) == [row]
+        assert [item.name for item in org.fs(user).listdir(space_id, "directory/people")] == [ALICE]
 
-    owner._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(owner, space_id)
-    owner.facade.remove_member(space_id, f"user:{ALICE}")
-    _deliver_all(owner, (alice, bob, carol), space_id, before)
+    org.fs(OWNER).remove_member(space_id, f"user:{ALICE}")
+    org.deliver()
 
-    for replica in (owner, alice, bob, carol):
-        assert OrgFsDirectoryStore(replica.facade).list_devices("group-acme") == []
-        assert replica.facade.listdir(space_id, "directory/people") == ()
-        home = tmp_path / f"home-{replica.node_id}"
+    for user in (OWNER, ALICE, BOB, CAROL):
+        assert org.directory(user).list_devices(ORG) == []
+        assert org.fs(user).listdir(space_id, "directory/people") == ()
+        home = tmp_path / f"home-{org[user].node_id}"
         home.mkdir()
-        # A direct OrgFS removal is not a tailnet revoke (§6).
         local = member(OWNER, "observer")
-        local["masterPublic"] = "nodekey:" + "f" * 64  # This fixture initiates the dial.
+        local["masterPublic"] = "nodekey:" + "f" * 64
         peer = member(ALICE, "alice-device")
         sidecar = FakeMembershipSidecar(local=local)
         sidecar.seed(space_id, members=[local, peer])
@@ -272,7 +204,7 @@ def test_r9_removed_member_rows_are_inert_for_devices_people_and_peers(
             server_public=local["serverPublic"], client_public=local["masterPublic"],
         ))
         service = OrgNetworkService(
-            fs=replica.facade,
+            fs=org.fs(user),
             home=home,
             node_id="observer",
             owner=OWNER,
@@ -286,67 +218,41 @@ def test_r9_removed_member_rows_are_inert_for_devices_people_and_peers(
             "confirmed": True, "reason": "fixture-explicit-removal",
         })
         assert service.directory_peers() == {}
-        physical = replica.facade._space(space_id).nodes
-        assert not physical[device.node_id].deleted
-        assert not physical[profile.node_id].deleted
 
 
-def test_r9_non_json_tree_row_does_not_block_later_updates(
-    round9_replicas, caplog
-) -> None:
-    """A legacy corrupt row is warning-only during admission of healthy work."""
+def test_r9_non_json_tree_row_does_not_block_later_updates(org: Org) -> None:
+    """A corrupt row from a peer is refused without blocking its healthy rows."""
 
-    _tmp_path, space_id, owner, alice, bob, _carol = round9_replicas
-    tree_doc_id = owner.stores[space_id].active_tree_doc_id()
-    assert tree_doc_id is not None
-    for receiver in (owner, alice):
-        receiver.stores[space_id]._docs[tree_doc_id].get("nodes", type=Map)[
-            "legacy-invalid-json"
-        ] = "not-json"
-    healthy = _tree_envelope(
-        bob,
-        space_id,
-        author=BOB,
-        mutate=lambda doc: _add_dir(
-            doc,
-            node_id="round9-healthy-node",
-            parent="root",
-            name="round9-healthy",
-        ),
+    space_id = org.space_id
+    corrupt = org.forge_tree(
+        BOB, lambda nodes: nodes.__setitem__("legacy-invalid-json", "not-json"), author=BOB
     )
-    caplog.set_level("WARNING")
+    healthy = org.forge_rows(
+        BOB,
+        [new_row("round9-healthy-node", parent="root", name="round9-healthy", kind="dir")],
+        author=BOB,
+    )
 
-    for receiver in (owner, alice):
-        result = _receive(receiver, space_id, healthy, bob.node_id)
-        assert (result.status, result.code) == ("applied", None)
-        assert receiver.facade.stat(space_id, "round9-healthy").kind == "dir"
+    for receiver in (OWNER, ALICE):
+        assert _code(org.apply(receiver, corrupt, peer="node-bob")) == "invalid-argument"
+        assert org.apply(receiver, healthy, peer="node-bob") == Accepted()
+        assert org.fs(receiver).stat(space_id, "round9-healthy").kind == "dir"
+        assert "legacy-invalid-json" not in org.rows(receiver)
 
-    assert "orgfs skipped invalid tree row" in caplog.text
 
-
-def test_r11_row_rewrite_cannot_rename_an_ordinary_node_to_directory(
-    round9_replicas,
-) -> None:
+def test_r11_row_rewrite_cannot_rename_an_ordinary_node_to_directory(org: Org) -> None:
     """A direct row rewrite obeys the same protected-result rule as a move."""
 
-    _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
-    alice._meshes[space_id].broadcast_pending = lambda _space_id=None: 0
-    before = _position(alice, space_id)
-    squatter = alice.facade.mkdir(space_id, "S")
-    alice.facade.mkdir(space_id, "S/devices")
-    _deliver_all(alice, (owner, bob, carol), space_id, before)
-    envelope = _tree_envelope(
-        alice,
-        space_id,
-        author=ALICE,
-        mutate=lambda doc: _rewrite(doc, squatter.node_id, name="directory"),
-    )
+    space_id = org.space_id
+    squatter = org.fs(ALICE).mkdir(space_id, "S")
+    org.fs(ALICE).mkdir(space_id, "S/devices")
+    org.deliver()
+    forged = org.forge_rewrite(ALICE, squatter.node_id, author=ALICE, name="directory")
 
-    for receiver in (owner, bob, carol):
-        result = _receive(receiver, space_id, envelope, alice.node_id)
-        assert (result.status, result.code) == ("rejected", "not-a-member")
-        assert OrgFsDirectoryStore(receiver.facade).list_devices("group-acme") == []
-        assert receiver.facade.stat(space_id, "S/devices").kind == "dir"
+    for receiver in (OWNER, BOB, CAROL):
+        assert _code(org.apply(receiver, forged, peer="node-alice")) == "protected-path"
+        assert org.directory(receiver).list_devices(ORG) == []
+        assert org.fs(receiver).stat(space_id, "S/devices").kind == "dir"
 
 
 @pytest.mark.parametrize(
@@ -359,46 +265,25 @@ def test_r11_row_rewrite_cannot_rename_an_ordinary_node_to_directory(
     ],
 )
 def test_r11_non_object_protected_node_write_is_rejected_in_every_order(
-    round9_replicas, order: tuple[str, str], receiver_name: str
+    org: Org, order: tuple[str, str], receiver_name: str
 ) -> None:
     """An incoming non-object node value cannot win or erase a protected row."""
 
-    _tmp_path, space_id, owner, alice, bob, carol = round9_replicas
+    space_id = org.space_id
     path = f"directory/devices/{ALICE}"
-    node_id = protected_directory_node_id(
-        space_id, path, space_owner=f"user:{OWNER}"
-    )
+    node_id = protected_directory_node_id(space_id, path, space_owner=f"user:{OWNER}")
     assert node_id is not None
-    parent = owner.facade.stat(space_id, "directory/devices")
-    envelopes = {
-        "alice": _tree_envelope(
-            alice,
-            space_id,
-            author=ALICE,
-            mutate=lambda doc: _add_dir(
-                doc,
-                node_id=node_id,
-                parent=parent.node_id,
-                name=ALICE,
-            ),
+    parent = org.node_id(OWNER, "directory/devices")
+    frames = {
+        "alice": org.forge_rows(
+            ALICE, [new_row(node_id, parent=parent, name=ALICE, kind="dir")], author=ALICE
         ),
-        "bob": _tree_envelope(
-            bob,
-            space_id,
-            author=BOB,
-            mutate=lambda doc: doc.get("nodes", type=Map).__setitem__(node_id, 7),
-        ),
+        "bob": org.forge_tree(BOB, lambda nodes: nodes.__setitem__(node_id, 7), author=BOB),
     }
-    receiver = owner if receiver_name == "owner" else carol
-    suppliers = {"alice": alice.node_id, "bob": bob.node_id}
-    verdicts = {}
+    receiver = OWNER if receiver_name == "owner" else CAROL
 
-    for actor in order:
-        result = _receive(receiver, space_id, envelopes[actor], suppliers[actor])
-        verdicts[actor] = (result.status, result.code)
+    verdicts = {actor: org.apply(receiver, frames[actor], peer=f"node-{actor}") for actor in order}
 
-    assert verdicts == {
-        "alice": ("applied", None),
-        "bob": ("rejected", "not-a-member"),
-    }
-    assert receiver.facade.stat(space_id, path).node_id == node_id
+    assert verdicts["alice"] == Accepted()
+    assert _code(verdicts["bob"]) == "invalid-argument"
+    assert org.fs(receiver).stat(space_id, path).node_id == node_id

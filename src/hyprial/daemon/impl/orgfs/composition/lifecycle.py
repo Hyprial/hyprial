@@ -1,26 +1,21 @@
-# Re-serve/reuse decision record (2026-11-03, brief-replica.md Round 3, RM2
-# review REJECT 8e6a2d7701).
-#
-# Defect: `_create_or_reuse_replica`'s reuse branch primed the replica directly
-# (`existing.prime_from`) before looking at the mesh, and skipped
-# `attach_replica` when the mesh already served that same replica. The prime
-# therefore ran on the replica actor while the mesh stayed ready, so
-# ready-path mirror puts blocked behind the prime on the single effect lane —
-# exactly the serialization the Round 2 NOT-READY gate forbids.
-#
-# Decision: when a mesh exists, the reuse branch never primes directly. If the
-# mesh serves that replica, `refresh_replica` reruns the delta check inside
-# the same NOT-READY / non-blocking-mirror / backfill window as first attach;
-# otherwise `attach_replica` runs unchanged. Only mesh-less runtimes keep the
-# direct prime (no ingress state exists to gate).
-
+# Decision record (phase D, package S, 2026-11-25):
+# - The journal mesh, replica attach, retirement reconciliation and the
+#   outbox broadcast entry points are deleted with the journal store.  This
+#   mixin keeps the per-space lifecycle actor (open, join, checkout commands)
+#   that the state runtime drives; ``composition/state/sync.py`` supplies the
+#   per-space ``SpaceSync`` creation and the join.
+# - Package F8b (review of F8, item 3): a join of a space whose join is
+#   already queued or running does not take a worker of its own; like a
+#   second open-mesh command it waits for that command and gets its outcome
+#   (``running`` / ``aliases``).  Repeated joins of one space (a caller's
+#   retries after a lifecycle wait timeout, repeated clicks) therefore hold
+#   at most one of the four workers, however long that join takes.
+# - Package F8c (review of F8b item 4): a command the effect lane refuses as
+#   ``CLOSED``, whether at its first submit or from the deferred queue, is
+#   answered "effects are closed" together with every command waiting on it,
+#   and its ``running`` entry goes, so a later command is not parked on it.
 from __future__ import annotations
 
-
-
-
-
-from threading import Lock
 
 import threading
 
@@ -41,27 +36,20 @@ from hyprial.kernel import (
 from hyprial.kernel import EffectCompleted, EffectRequest
 
 
-
 from hyprial.daemon.impl.orgfs.api  import OrgFsError, SpaceInfo
 
 
-
-
-from hyprial.daemon.impl.orgfs.mesh  import (
-    OrgFsMesh)
-
-from hyprial.daemon.impl.orgfs.storage.replica  import FsReplicaBackend, MemoryReplicaBackend, ReplicaStore
-
-from hyprial.daemon.impl.orgfs.storage.replica_authority  import ReplicaAuthority
-
-from hyprial.daemon.impl.orgfs.storage.space_authority  import _ReadStore
-
-from hyprial.daemon.impl.orgfs.storage.store  import CommitRecord, LocalSpaceStore, StoreError
-
-
-from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _ServeSpace, _SpaceResourceHandle
+from hyprial.daemon.impl.orgfs.composition.vocabulary import _CheckoutSpace, _DirectoryCallOperation, _JoinSpace, _LifecycleAuthority, _LifecycleCommand, _LifecycleFailure, _LifecycleOutcome, _LifecycleWaiter, _MeshCreation, _OpenSpaceMesh, _SpaceResourceHandle
 
 ORGFS_LIFECYCLE_WAIT_SECONDS = 120.0
+
+
+def _coalescing_key(operation: object) -> tuple[str, str] | None:
+    if isinstance(operation, _OpenSpaceMesh):
+        return ("open-mesh", operation.space_id)
+    if isinstance(operation, _JoinSpace):
+        return ("join", operation.space_id)
+    return None
 
 
 class RuntimeLifecycle:
@@ -139,8 +127,6 @@ class RuntimeLifecycle:
             operation = command.operation
             if isinstance(operation, _JoinSpace):
                 value = self._join_sync(operation.space_id)
-            elif isinstance(operation, _ServeSpace):
-                value = self._serve_sync(operation.space_id, operation.backend)
             elif isinstance(operation, _CheckoutSpace):
                 value = self._checkout_sync(operation.space_id, operation.enabled)
             elif isinstance(operation, _OpenSpaceMesh):
@@ -187,9 +173,10 @@ class RuntimeLifecycle:
                     authority.commands.pop(command.operation_id, None)
                     authority.submitted.discard(command.operation_id)
                     waiter = authority.waiters.pop(command.operation_id, None)
-                    aliases = tuple(authority.mesh_aliases.pop(command.operation_id, ()))
-                    if isinstance(current.operation, _OpenSpaceMesh):
-                        authority.mesh_opening.pop(current.operation.space_id, None)
+                    aliases = tuple(authority.aliases.pop(command.operation_id, ()))
+                    key = _coalescing_key(current.operation)
+                    if key is not None and authority.running.get(key) == command.operation_id:
+                        authority.running.pop(key, None)
             if waiter is not None:
                 outcome = command.result
                 if isinstance(outcome, _LifecycleOutcome):
@@ -221,15 +208,16 @@ class RuntimeLifecycle:
             return
         if not isinstance(command, _LifecycleCommand):
             raise TypeError("orgfs lifecycle actor received an invalid command")
-        if isinstance(command.operation, _OpenSpaceMesh):
+        key = _coalescing_key(command.operation)
+        if key is not None:
             with self._lifecycle_lock:
-                opening = authority.mesh_opening.get(command.operation.space_id)
-                if opening is not None and opening != command.operation_id:
-                    aliases = authority.mesh_aliases.setdefault(opening, [])
+                running = authority.running.get(key)
+                if running is not None and running != command.operation_id:
+                    aliases = authority.aliases.setdefault(running, [])
                     if command.operation_id not in aliases:
                         aliases.append(command.operation_id)
                     return
-                authority.mesh_opening[command.operation.space_id] = command.operation_id
+                authority.running[key] = command.operation_id
         admission = authority.effects.submit(
             EffectRequest(command.operation_id, command.generation, command)
         )
@@ -245,6 +233,35 @@ class RuntimeLifecycle:
             if all(item.operation_id != command.operation_id for item in authority.deferred):
                 authority.deferred.append(command)
             return
+        if admission is AdmissionResult.CLOSED:
+            authority.deferred = [
+                item for item in authority.deferred
+                if item.operation_id != command.operation_id
+            ]
+            self._fail_closed_command(authority, command)
+
+
+    def _fail_closed_command(self, authority: _LifecycleAuthority, command: _LifecycleCommand) -> None:
+        """Answer a command the closed effect lane refused, and every command waiting on it."""
+
+        operation_id = command.operation_id
+        with self._lifecycle_lock:
+            authority.commands.pop(operation_id, None)
+            authority.submitted.discard(operation_id)
+            waiters = [authority.waiters.pop(operation_id, None)]
+            for alias_id in authority.aliases.pop(operation_id, ()):
+                authority.commands.pop(alias_id, None)
+                waiters.append(authority.waiters.pop(alias_id, None))
+            key = _coalescing_key(command.operation)
+            if key is not None and authority.running.get(key) == operation_id:
+                authority.running.pop(key, None)
+        for waiter in waiters:
+            if waiter is None:
+                continue
+            waiter.error = _LifecycleFailure(
+                "OrgFsError", "unavailable", "directory lifecycle effects are closed", ()
+            )
+            waiter.done.set()
 
 
     def _pump_lifecycle(self, authority: _LifecycleAuthority) -> None:
@@ -260,14 +277,7 @@ class RuntimeLifecycle:
                 authority.submitted.add(command.operation_id)
         elif admission is AdmissionResult.CLOSED:
             authority.deferred.pop(0)
-            with self._lifecycle_lock:
-                authority.commands.pop(command.operation_id, None)
-                waiter = authority.waiters.pop(command.operation_id, None)
-            if waiter is not None:
-                waiter.error = _LifecycleFailure(
-                    "OrgFsError", "unavailable", "directory lifecycle effects are closed", ()
-                )
-                waiter.done.set()
+            self._fail_closed_command(authority, command)
 
 
     def _on_lifecycle_event(self, event: ActorEvent) -> None:
@@ -302,8 +312,6 @@ class RuntimeLifecycle:
         if getattr(self._lifecycle_context, "running", False):
             if isinstance(operation, _JoinSpace):
                 return self._join_sync(operation.space_id)
-            if isinstance(operation, _ServeSpace):
-                return self._serve_sync(operation.space_id, operation.backend)
             if isinstance(operation, _CheckoutSpace):
                 return self._checkout_sync(operation.space_id, operation.enabled)
             if isinstance(operation, _OpenSpaceMesh):
@@ -340,8 +348,8 @@ class RuntimeLifecycle:
             if self.logger is not None:
                 self.logger(
                     "warn", "orgfs.lifecycle.wait-timeout",
-                    operation={_JoinSpace: "join", _ServeSpace: "serve",
-                               _CheckoutSpace: "checkout", _OpenSpaceMesh: "open-mesh"}[type(operation)],
+                    operation={_JoinSpace: "join", _CheckoutSpace: "checkout",
+                               _OpenSpaceMesh: "open-mesh"}[type(operation)],
                     waitedSeconds=max(0.0, time.monotonic() - started),
                     budgetSeconds=wait,
                     commandId=operation_id,
@@ -433,83 +441,7 @@ class RuntimeLifecycle:
         return handle
 
 
-    def _create_mesh_sync(self, space_id: str) -> _SpaceResourceHandle | None:
-        with self._resource_lock:
-            session = self._session
-            if self._closing or session is None:
-                return None
-            existing = self._meshes.get(space_id)
-        if existing is not None:
-            return _SpaceResourceHandle(space_id, self._directory_generation)
-
-        def applied(envelope: bytes) -> tuple[str, ...]:
-            self.facade.apply_envelope(space_id, envelope)
-            self._reconcile_retirements(space_id)
-            return self.facade.retained_blob_digests(space_id)
-
-        def replacement(
-            old_doc_id: str, new_doc_id: str, snapshot_bytes: bytes
-        ) -> None:
-            if space_id in self.facade._spaces:  # noqa: SLF001
-                self.facade.install_replacement_snapshot(
-                    space_id, old_doc_id, new_doc_id, snapshot_bytes
-                )
-                self._reconcile_retirements(space_id)
-
-        mesh = OrgFsMesh(
-            session,
-            self.stores.get(space_id),
-            self.node_id,
-            author=self.author,
-            blob_store=self.blobs,
-            supplier_online=self._supplier_online,
-            supplier_owner=(None if self._trust_tailnet_members else self._supplier_owner_for_space(space_id)),
-            trust_tailnet_members=self._trust_tailnet_members,
-            announcement_source=self._announcement_spaces,
-            holder_discovery=lambda: self._holder_snapshot(space_id),
-            recovery_candidates=lambda: (
-                *self._holder_snapshot(space_id), *self._holder_candidates()
-            ),
-            on_applied=applied,
-            on_replacement=replacement,
-            logger=self.logger,
-            announce_instrumentation_enabled=self._announce_instrumentation_enabled,
-            supplier_sync_health=self._supplier_sync_health,
-            actor_host=self._actor_hosts.host,
-            space_authority=self.facade.space_authority(
-                space_id, self.stores.get(space_id)
-            ),
-        )
-        if mesh._supplier_sync_health is not self._supplier_sync_health:
-            raise RuntimeError(
-                "orgfs mesh was built without the daemon-wide supplier health"
-            )
-        with self._resource_lock:
-            if self._closing or self._session is not session:
-                current = None
-                discard = True
-            else:
-                current = self._meshes.get(space_id)
-                if current is None:
-                    current = mesh
-                    self._meshes[space_id] = mesh
-                discard = current is not mesh
-            replica = self._replicas.get(space_id)
-        if discard:
-            mesh.close()
-            return (
-                _SpaceResourceHandle(space_id, self._directory_generation)
-                if current is not None
-                else None
-            )
-        if replica is not None:
-            mesh.attach_replica(replica)
-        self.facade.request_broadcast_drain(space_id)
-        self._announce_all()
-        return _SpaceResourceHandle(space_id, self._directory_generation)
-
-
-    def _mesh(self, space_id: str) -> OrgFsMesh | None:
+    def _mesh(self, space_id: str) -> Any:
         with self._resource_lock:
             if self._closing or self._session is None:
                 return None
@@ -528,151 +460,16 @@ class RuntimeLifecycle:
             return self._meshes.get(handle.space_id)
 
 
-    def _reconcile_retirements(self, space_id: str) -> None:
-        """Finish G2 cleanup and ack after all replacement bytes are local."""
-
-        store = self.stores.get(space_id)
-        authority = self.facade.space_authority(space_id, store)
-        records = tuple(authority.read(_ReadStore("retirement_records")))
-        if authority.read(_ReadStore("pending_replacements")):
-            return
-        with self._resource_lock:
-            replica = self._replicas.get(space_id)
-        purge_entries = dict(authority.read(_ReadStore("purge_list_entries")))
-        retirement_plan_ids = {record.plan_id for record in records}
-        for record in records:
-            snapshot = authority.read(
-                _ReadStore("snapshot", doc_id=record.replacement_doc_id)
-            )
-            if replica is not None:
-                plan_blobs = tuple(
-                    {"sha": digest}
-                    for digest, plan_id in sorted(purge_entries.items())
-                    if plan_id == record.plan_id
-                )
-                replica.apply_retirement(
-                    {
-                        "oldPhysicalDocId": record.old_physical_doc_id,
-                        "replacementDocId": record.replacement_doc_id,
-                        "snapshotId": record.snapshot_id,
-                        "replacementSnapshotBytes": snapshot.snapshot_bytes,
-                    },
-                    {
-                        # R4: this replicated purge-list inventory is owner-authored
-                        # and survives replica log retention.  Reconstructing the
-                        # delete set from remaining rows loses trimmed updateBlob
-                        # digests and can acknowledge with forbidden residue.
-                        "blobs": plan_blobs,
-                    },
-                )
-            authority.delete_retired_objects(record.old_physical_doc_id)
-            if authority.read(
-                _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
-            ):
-                raise StoreError("invalid-argument", "retired document residue remains")
-
-        if replica is not None:
-            replica.apply_blob_purge(
-                digest
-                for digest, plan_id in purge_entries.items()
-                if plan_id not in retirement_plan_ids
-            )
-            for doc_id in authority.read(_ReadStore("document_ids")):
-                if authority.read(_ReadStore("snapshot_point", doc_id=doc_id)) is not None:
-                    replica.apply_retention(doc_id)
-        for digest in purge_entries:
-            self.blobs.release(space_id, digest)
-            self.blobs.delete_if_unreferenced(digest)
-
-        plans = {record.plan_id for record in records} | set(purge_entries.values())
-        for plan_id in sorted(plans):
-            if any(
-                record.plan_id == plan_id
-                and authority.read(
-                    _ReadStore("retired_residue", doc_id=record.old_physical_doc_id)
-                )
-                for record in records
-            ):
-                continue
-            self.facade.acknowledge_purge(space_id, plan_id)
-
-
-    def broadcast_pending(self, space_id: str) -> int:
-        with self._resource_lock:
-            mesh = self._meshes.get(space_id)
-        if mesh is None:
-            mesh = self._mesh(space_id)
-        return 0 if mesh is None else mesh.broadcast_pending()
-
-
-    def broadcast_records(
-        self, space_id: str, records: tuple[CommitRecord, ...]
-    ) -> int:
-        with self._resource_lock:
-            mesh = self._meshes.get(space_id)
-        if mesh is None:
-            mesh = self._mesh(space_id)
-        if mesh is None:
-            return 0
-        if "broadcast_pending" in vars(mesh):
-            return mesh.broadcast_pending(space_id)
-        return mesh.broadcast_records(records)
-
-
-    def reconcile_replica_blobs(self, space_id: str) -> tuple[str, ...]:
-        """Reconcile retained local blob refs through the per-space authority."""
-
-        with self._resource_lock:
-            replica = self._replicas.get(space_id)
-        if replica is None:
-            return ()
-        reconciled = replica.reconcile_blobs()
-        for digest in reconciled:
-            self.blobs.pin(space_id, digest, "replica")
-        return reconciled
-
-
     def join(self, space_id: str, *, timeout: float | None = None) -> SpaceInfo:
+        info = self._join_shortcut(space_id)
+        if info is not None:
+            return info
         return self._ask_lifecycle(_JoinSpace(space_id), timeout=timeout)  # type: ignore[return-value]
 
+    def _join_shortcut(self, space_id: str) -> SpaceInfo | None:
+        """A space whose join already finished, answered without queueing."""
 
-    def _join_sync(self, space_id: str) -> SpaceInfo:
-        holders = sorted(
-            {
-                *(
-                    node
-                    for node in self._holder_snapshot(space_id)
-                    if node != self.node_id
-                ),
-                *(node for node in self._holder_candidates() if node != self.node_id),
-            }
-        )
-        if not holders:
-            raise OrgFsError("no-holder-online", {"spaceId": space_id})
-        mesh = self._mesh(space_id)
-        assert mesh is not None
-        last_error: Exception | None = None
-        for holder in holders:
-            try:
-                mesh.sync_from(holder)
-                info = self.facade.load_space(space_id)
-                self._reconcile_retirements(space_id)
-                self._announce_all()
-                return info
-            except (StoreError, OrgFsError) as exc:
-                last_error = exc
-        if last_error is not None:
-            code = str(getattr(last_error, "code", "no-holder-online"))
-            message = str(last_error).removeprefix(f"{code}: ")
-            details = getattr(last_error, "details", {})
-            raise OrgFsError(
-                code,
-                {
-                    **(dict(details) if isinstance(details, dict) else {}),
-                    "message": message,
-                },
-            ) from last_error
-        raise OrgFsError("no-holder-online", {"spaceId": space_id})
+        return None
 
 
     def watch_events(
@@ -687,115 +484,3 @@ class RuntimeLifecycle:
             }
             for event in self.facade.changes_since(space_id, glob, since_version)
         )
-
-
-    def serve(self, space_id: str, backend: str = "fs") -> dict[str, object]:
-        return self._ask_lifecycle(_ServeSpace(space_id, backend))  # type: ignore[return-value]
-
-
-    def _serve_sync(self, space_id: str, backend: str = "fs") -> dict[str, object]:
-        if backend not in {"fs", "memory"}:
-            raise OrgFsError(
-                "invalid-argument", {"message": "backend must be fs or memory"}
-            )
-        try:
-            self.facade.stat(space_id, "id:root")
-        except OrgFsError as exc:
-            if exc.code != "unknown-space":
-                raise
-            self.join(space_id)
-        local_store = self.stores.get(space_id)
-        with self._resource_lock:
-            creation_lock = self._replica_creation_locks.setdefault(space_id, Lock())
-        with creation_lock:
-            return self._create_or_reuse_replica(space_id, backend, local_store)
-
-
-    def _create_or_reuse_replica(
-        self, space_id: str, backend: str, local_store: LocalSpaceStore
-    ) -> dict[str, object]:
-        """Own one space's replica construction before touching its backend."""
-
-        with self._resource_lock:
-            if self._closing:
-                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
-            existing = self._replicas.get(space_id)
-        if existing is not None:
-            existing_backend = "fs" if existing.backend_kind == "FsReplicaBackend" else "memory"
-            if existing_backend != backend:
-                raise OrgFsError(
-                    "invalid-argument",
-                    {
-                        "message": "space is already served by another backend",
-                        "spaceId": space_id,
-                        "backend": existing_backend,
-                    },
-                )
-            mesh = self._mesh(space_id)
-            if mesh is None:
-                existing.prime_from(local_store, self.blobs)
-            elif mesh.replica_store is existing:
-                mesh.refresh_replica(existing)
-            else:
-                mesh.attach_replica(existing)
-            for digest in existing.pinned_blobs():
-                self.blobs.pin(space_id, digest, "replica")
-            self._reconcile_retirements(space_id)
-            return {
-                "spaceId": space_id,
-                "backend": backend,
-                "durable": existing.durable(),
-                "pinnedBlobs": list(existing.pinned_blobs()),
-            }
-        replica_backend = (
-            FsReplicaBackend(space_id, self.state_dir)
-            if backend == "fs"
-            else MemoryReplicaBackend(space_id)
-        )
-
-        def conflict_event(event: str, details: Any) -> None:
-            if self.logger is not None:
-                self.logger("error", f"orgfs.{event}", **dict(details))
-
-        def owner_notice(event: str, details: Any) -> None:
-            owner = next(
-                info.owner for info in self.facade.spaces() if info.space_id == space_id
-            )
-            if self.logger is not None:
-                self.logger(
-                    "warn",
-                    "orgfs.owner-notice",
-                    notice=event,
-                    owner=owner,
-                    **dict(details),
-                )
-            if self.owner_notifier is not None:
-                self.owner_notifier(owner, event, dict(details))
-
-        replica_core = ReplicaStore(
-            space_id, replica_backend, local_store,
-            event_callback=conflict_event, owner_notifier=owner_notice,
-        )
-        replica = ReplicaAuthority(
-            replica_core, local_store, self.blobs,
-            actor_host=self._actor_hosts.host,
-        )
-        with self._resource_lock:
-            if self._closing:
-                replica.close(timeout=5.0)
-                raise OrgFsError("unavailable", {"message": "orgfs runtime is closing"})
-            self._replicas[space_id] = replica
-        mesh = self._mesh(space_id)
-        if mesh is not None:
-            mesh.attach_replica(replica)
-        else:
-            replica.prime_from(local_store, self.blobs)
-        for digest in replica.pinned_blobs():
-            self.blobs.pin(space_id, digest, "replica")
-        self._reconcile_retirements(space_id)
-        return {
-            "spaceId": space_id,
-            "backend": backend,
-            "durable": replica.durable(),
-            "pinnedBlobs": list(replica.pinned_blobs()),
-        }

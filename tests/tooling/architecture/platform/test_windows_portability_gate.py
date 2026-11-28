@@ -452,13 +452,25 @@ def test_the_baseline_only_shrinks_and_every_entry_is_reviewed() -> None:
 def test_rule_ids_agree_across_gate_ci_and_pr_template() -> None:
     assert GATE.ADVISORY_RULES == frozenset()
     assert sorted(GATE.AST_RULES) == [f"W{n:03d}" for n in (*range(1, 16), 19, 20, 21)]
-    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
-    template = (ROOT / ".forgejo" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
-    assert "W001-W015, W019-W021" in workflow and "--base-ref" in workflow
+    template = (ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
     assert "kernel/impl/manysys/**" in template
     for rule in ("W015", "W017", "W018", "W019", "W020", "W021"):
         assert rule in template, rule
     assert "W001-W015 and W019-W021" in (GATE.__doc__ or "")
+
+
+def test_the_windows_ratchet_is_not_yet_wired_into_the_merge_gate() -> None:
+    """The per-key ratchet (``--base-ref``) ran in the retired internal gate.
+
+    ``gate.yml`` runs the gate with its fixed baseline only. This test goes red
+    when the ratchet is wired back, which is the reminder to pin it properly:
+    a PR must not be able to add a Windows anti-pattern by editing the
+    baseline. Until then the fixed ceiling above is the only control.
+    """
+
+    workflow = (ROOT / ".github" / "workflows" / "gate.yml").read_text(encoding="utf-8")
+    assert "check_windows_portability" in workflow
+    assert "--base-ref" not in workflow
 
 
 def test_the_fixed_0_5_5_3_4_blockers_stay_out_of_the_baseline() -> None:

@@ -232,7 +232,7 @@ function stats(scale: number): OrgStats {
   };
 }
 
-const EMPTY_FILES = { files: {}, trash: {}, history: {} } as const;
+const EMPTY_FILES = { files: {}, trash: {} } as const;
 
 export function teamDetail(): OrgDetail {
   return {
@@ -272,13 +272,6 @@ export function teamDetail(): OrgDetail {
     trash: {
       'space-docs': [{ id: 't-1', path: 'drafts/old-plan.md', deletedBy: '周屿', deletedAt: '10-25 19:20' }],
     },
-    history: {
-      'space-docs:guides/onboarding.md': [
-        { version: 3, modifiedBy: '林澄', modifiedAt: '10-28 17:45', content: ONBOARDING },
-        { version: 2, modifiedBy: ME, modifiedAt: '10-27 12:10', content: '# 新成员入门\n\n1. 安装 hyprial 并登录。\n' },
-        { version: 1, modifiedBy: '林澄', modifiedAt: '10-26 10:00', content: '# 新成员入门\n' },
-      ],
-    },
     config: {
       adopted: ADOPTED_V3,
       candidate: {
@@ -310,7 +303,6 @@ export function partnerDetail(): OrgDetail {
       'space-lab': [file('results.md', '林澄', '10-29 10:20', 6, '# 实验记录\n\n只读：你是成员，没有写权限。\n')],
     },
     trash: {},
-    history: {},
     config: { adopted: null, candidate: null, spaceId: 'space-lab' },
     routes: [],
     stats: { 1: stats(1), 7: stats(2) },

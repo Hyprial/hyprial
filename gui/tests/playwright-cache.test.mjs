@@ -73,7 +73,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "ci", "ci-playwright-cache.sh");
-const WORKFLOW = path.join(REPO_ROOT, ".forgejo", "workflows", "gate-gui.yml");
+const WORKFLOW = path.join(REPO_ROOT, ".github", "workflows", "gate-gui.yml");
 const GUI_DIR = path.join(REPO_ROOT, "gui");
 const TMP_ROOT = process.env.GUI_CACHE_TEST_TMP_ROOT || os.tmpdir();
 const REAL_LIBS = "/tmp/wp6-browser-libs/usr/lib/x86_64-linux-gnu";

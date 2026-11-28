@@ -37,6 +37,7 @@ from .network.test_org_lifecycle import (  # noqa: F401 - fixtures
     OWNER,
     _acl_member_users,
     _as_bob,
+    _bob_added_at,
     _member_users,
     _service,
     _space_id,
@@ -252,7 +253,10 @@ def _bob_requests_leave(runtime) -> OrgFsDirectoryStore:  # type: ignore[no-unty
     store = OrgFsDirectoryStore(runtime.facade)
     with _as_bob(runtime):
         store.put_leave_request(
-            "group-acme", BOB, {"org": "group-acme", "user": BOB, "requestedAt": "t1"}
+            "group-acme", BOB, {
+                "org": "group-acme", "user": BOB, "requestedAt": "t1",
+                "memberAddedAt": _bob_added_at(runtime),
+            }
         )
     return store
 

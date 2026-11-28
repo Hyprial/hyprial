@@ -123,6 +123,7 @@ def test_artifact_is_created_private(monkeypatch, tmp_path):
     assert modes == [0o600]
 
 
+@pytest.mark.posix_only("SIGTERM-exit-143")
 def test_sigterm_preserves_metadata_and_removes_owned_root(tmp_path):
     root = Path(__file__).resolve().parents[4]
     marker = tmp_path / "root-path"

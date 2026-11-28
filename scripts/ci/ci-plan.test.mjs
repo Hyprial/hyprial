@@ -16,8 +16,8 @@ function repo(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-b', 'dev'); git('config', 'user.email', 'ci@example.invalid'); git('config', 'user.name', 'CI fixture');
-  mkdirSync(join(root, '.forgejo'), { recursive: true });
-  writeFileSync(join(root, '.forgejo/git-flow.json'), readFileSync(new URL('../../.forgejo/git-flow.json', import.meta.url)));
+  mkdirSync(join(root, '.github'), { recursive: true });
+  writeFileSync(join(root, '.github/git-flow.json'), readFileSync(new URL('../../.github/git-flow.json', import.meta.url)));
   function commit(path, content = 'fixture') {
     mkdirSync(join(root, path, '..'), { recursive: true }); writeFileSync(join(root, path), content);
     git('add', '-A'); git('commit', '-m', 'fixture'); return git('rev-parse', 'HEAD');
@@ -53,12 +53,12 @@ test('Python selection follows the product tree, Python tests, dependency pins a
     ['tests/shell/gui/lifecycle/test_gui_runtime.py', true],
     ['tests/daemon/teleport/test_frames.py', true],
     ['tests/fixtures/network/payload.json', false],
-    ['scripts/ci/pytest_impact.py', true], ['scripts/ci/pytest-durations.json', true],
+    ['scripts/ci/pytest_impact.py', true],
     ['scripts/ci/check_windows_portability.py', true], ['scripts/ci/windows_portability_semantics.py', true],
     ['scripts/ci/windows-portability-baseline.json', true], ['scripts/ci/check_node_platform_idioms.py', true],
     ['scripts/ci/node-platform-idioms-baseline.json', true], ['scripts/ci/check_pyright_windows.py', true],
-    ['.forgejo/workflows/gate-python.yml', true],
-    ['.forgejo/workflows/gate-gui.yml', false],
+    ['.github/workflows/gate-python.yml', true],
+    ['.github/workflows/gate-gui.yml', false],
     ['scripts/ci/ci-plan.mjs', false], ['gui/package.json', false],
   ]) {
     const r = repo(t), head = r.commit(path);
@@ -164,10 +164,10 @@ test('missing or invalid central Git flow config fails closed without branch fal
   const r = repo(t), head = r.commit('src/hyprial/daemon/example.py');
   for (const contents of ['{', '{}', JSON.stringify({schemaVersion: 99}),
     JSON.stringify({schemaVersion: 1, mode: 'release-first'})]) {
-    writeFileSync(join(r.root, '.forgejo/git-flow.json'), contents);
+    writeFileSync(join(r.root, '.github/git-flow.json'), contents);
     assert.throws(() => plan(r, pr(r, head, 'release/current', 'dev')), /CI_ROUTE: invalid Git flow config/);
   }
-  rmSync(join(r.root, '.forgejo/git-flow.json'));
+  rmSync(join(r.root, '.github/git-flow.json'));
   assert.throws(() => plan(r, pr(r, head, 'release/current', 'dev')), /CI_ROUTE: invalid Git flow config/);
 });
 test('deep-refactor exact branch pushes run every gate', t => {
@@ -418,7 +418,7 @@ test('main PR/main push full', t => {
   assert.equal(plan(r, { ref: 'refs/heads/main' }, 'push').python, true);
 });
 test('shared CI changes keep every non-Python gate while Python follows Python inputs', t => {
-  const r = repo(t), head = r.commit('.forgejo/workflows/gate-gui.yml');
+  const r = repo(t), head = r.commit('.github/workflows/gate-gui.yml');
   const result = plan(r, pr(r, head));
   assert.equal(result.sidecar, true);
   assert.equal(result.gui, true);
@@ -446,8 +446,8 @@ test('manual and main full plans omit the retired package gate unless src/gui ex
 test('actual A04 shared delta keeps full validation without the retired package gate', t => {
   const r = repo(t);
   const paths = [
-    '.forgejo/workflows/gate-python.yml',
-    '.forgejo/workflows/gate-gui.yml',
+    '.github/workflows/gate-python.yml',
+    '.github/workflows/gate-gui.yml',
     'scripts/ci/ci-plan.mjs',
     'scripts/verify/check_cli_help_inventory.py',
     'docs/reference/cli-command-inventory.json',
@@ -463,7 +463,7 @@ test('actual A04 shared delta keeps full validation without the retired package 
 
   const present = repo(t);
   present.base = present.commit('src/gui/package.json');
-  const presentHead = present.commit('.forgejo/workflows/gate-gui.yml');
+  const presentHead = present.commit('.github/workflows/gate-gui.yml');
   const restored = plan(present, pr(present, presentHead, 'ci/a04-command-surface', 'intg/cli-command-surface'));
   assert.equal(restored.package, true);
 });
@@ -497,7 +497,7 @@ test('CLI invalid policy exits nonzero without success outputs or config content
   const payload = join(r.root, 'event.json'), output = join(r.root, 'output');
   writeFileSync(payload, JSON.stringify(pr(r, head)));
   writeFileSync(output, '');
-  writeFileSync(join(r.root, '.forgejo/git-flow.json'), '{private-fixture-marker');
+  writeFileSync(join(r.root, '.github/git-flow.json'), '{private-fixture-marker');
   const result = spawnSync(process.execPath, [new URL('./ci-plan.mjs', import.meta.url).pathname], {
     cwd: r.root, env: { ...process.env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: payload, GITHUB_OUTPUT: output }, encoding: 'utf8',
   });
@@ -752,19 +752,20 @@ test('native conformance selects engine inputs and keeps document test inputs on
     ['src/hyprial/kernel/interface.py', true, true],
     ['src/hyprial/kernel/__init__.py', true, true],
     ['src/hyprial/shell/impl/packaging/native_engine.py', true, true],
+    ['src/hyprial/shell/impl/packaging/native_editable.py', true, true],
     ['src/hyprial/gui_build_hook.py', true, true],
     ['scripts/build/build_native_engine.sh', true, false],
     ['scripts/build/manylinux_native_evidence.sh', true, false],
     ['scripts/ci/ci-ensure-rust.sh', true, false],
     ['pyproject.toml', true, true],
     ['uv.lock', true, true],
-    ['.forgejo/workflows/native-conformance.yml', true, false],
-    ['.forgejo/workflows/gate-python.yml', true, true],
-    ['.forgejo/workflows/kp027-native-candidate.yml', true, false],
-    ['.forgejo/workflows/wheel-release.yml', true, false],
+    ['.github/workflows/native-conformance.yml', true, false],
+    ['.github/workflows/gate-python.yml', true, true],
+    ['.github/workflows/kp027-native-candidate.yml', true, false],
+    ['.github/workflows/wheel-release.yml', true, false],
     ['gui/src/App.tsx', false, false],
     ['sidecar/hyprial-tailcat/internal/serve/main.go', false, false],
-    ['.forgejo/workflows/gate-gui.yml', true, false],
+    ['.github/workflows/gate-gui.yml', true, false],
     ['new-component/config.json', true, false],
     ['src/hyprial/daemon/impl/example.py', false, true],
     ['tests/kernel/actors/port/test_port_backend_selection.py', false, true],

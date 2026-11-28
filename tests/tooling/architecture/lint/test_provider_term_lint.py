@@ -46,6 +46,7 @@ from pathlib import Path
 import pytest
 
 from tests.tooling.architecture.lint.adapter_source_terms import ADAPTER_SOURCE_PROVIDER_LINES
+from tests.tooling.architecture.lint.pi_model_connection_terms import PI_MODEL_CONNECTION_LINES
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -214,6 +215,8 @@ _FIRST_RUN_MODEL_VENDOR_LINES = (
     ('daemon/impl/onboarding/first_run_attempt.py', '                provider=selection.provider,'),
     ('daemon/impl/onboarding/first_run_attempt.py', '            and attempt.provider == selection.provider'),
 )
+
+_MODEL_ROUTE_LINES += PI_MODEL_CONNECTION_LINES
 
 _RULES: tuple[tuple[str, str], ...] = (
     *((f"^{re.escape('src/hyprial/' + path)}$", f"^{re.escape(line)}$") for path, line in _FIRST_RUN_MODEL_VENDOR_LINES),

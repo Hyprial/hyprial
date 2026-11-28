@@ -1,3 +1,15 @@
+# Decisions:
+# - Phase D, package T2: the two tests that failed on the state runtime (the
+#   late-binding replay, and the non-host replay that must not use directory
+#   credit) construct ``OrgFsRuntime``; the replayed supplier is observed
+#   on ``StateSpaceSync.sync_from`` and the announce carries ``protocol: 3``.
+#   The presence ordering they pin is ``RuntimeDirectory``'s and unchanged.
+#   The other tests pass on both runtimes and still name ``OrgFsRuntime``,
+#   which package S points at the new runtime.
+# - Package F7 (ruling 4): the node gate now runs before a supplier is
+#   scheduled, and ``node-a`` is a device no member owns here, so the tests
+#   that pull from it run with ``trust_tailnet_members`` (the admitted-node
+#   case); the ordering they pin is unchanged.
 """Catch-up must survive either ordering of two independent actor mailboxes."""
 
 import json
@@ -7,7 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.sync.space import StateSpaceSync
 from hyprial.daemon.impl.transport import KeySpace, LivelinessDirectory, TransportSample
 from hyprial.daemon.impl.transport.presence_actor import PresenceAuthority
 from hyprial.kernel.impl.actor_runtime.effects import EffectCompleted
@@ -75,7 +88,9 @@ def test_query_confirmed_delete_notifies_orgfs_and_preserves_inbox_slot(
 
     monkeypatch.setattr(session, "get_liveliness", query)
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     try:
         space = runtime.facade.create_space("query confirmed supplier")
         inbox_observer = inbox_wakes.append
@@ -159,7 +174,9 @@ def test_catchup_survives_presence_settlement_order(tmp_path, monkeypatch, prese
     monkeypatch.setattr(PresenceAuthority, "_receive", controlled_receive)
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     try:
         space = runtime.facade.create_space("restart")
         runtime.bind_transport(
@@ -220,7 +237,9 @@ def test_catchup_survives_presence_settlement_order(tmp_path, monkeypatch, prese
 def test_committed_supplier_delete_still_fences_queued_sync(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     entered, release, finished = (threading.Event() for _ in range(3))
     calls = []
     try:
@@ -269,16 +288,16 @@ def test_committed_supplier_delete_still_fences_queued_sync(tmp_path, monkeypatc
 def test_late_binding_replays_supplier_without_replacing_inbox_wake(tmp_path, monkeypatch):
     session = ControlledSession()
     directory = LivelinessDirectory(session)
-    runtime = OrgFsRuntime(tmp_path / "reader", node_id="node-b", author="user:reader")
+    runtime = OrgFsRuntime(
+        tmp_path / "reader", node_id="node-b", author="user:reader", trust_tailnet_members=True
+    )
     observed = threading.Event()
     inbox_wakes = []
     try:
         directory._actor_event(TransportSample(KeySpace().actor_liveliness("node-a"), b""))
         wait_until(lambda: directory.actor_online("node-a"))
         runtime.facade.create_space("replayed supplier")
-        from hyprial.daemon.impl.orgfs.mesh import OrgFsMesh
-
-        monkeypatch.setattr(OrgFsMesh, "sync_from", lambda *_a, **_kw: observed.set())
+        monkeypatch.setattr(StateSpaceSync, "sync_from", lambda *_a, **_kw: observed.set())
         runtime.bind_transport(
             session, supplier_online=directory.actor_online,
             observe_supplier_online=directory.observe_actor_online,
@@ -336,7 +355,7 @@ def test_non_host_replay_cannot_consume_directory_credit_or_drop_announce(tmp_pa
         mesh = runtime._meshes[space.space_id]
         monkeypatch.setattr(mesh, "sync_from", lambda *_a, **_kw: None)
         announcement = {
-            "schemaVersion": 1, "type": "orgfs-announce", "node": "node-a",
+            "schemaVersion": 1, "type": "orgfs-announce", "protocol": 3, "node": "node-a",
             "spaces": [{"spaceId": space.space_id, "roles": ["member"], "mode": "rw"}],
         }
         runtime._admit_directory_sample("announce", TransportSample(

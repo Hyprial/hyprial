@@ -1,0 +1,3 @@
+path	reason	run_id
+tests/tooling/architecture/platform/test_windows_portability_gate.py	one case reads workflow files that are not in the tree on this base (it fails on Linux too); the whole file is deferred so the first wave only carries files that are green on the base	none
+# prerequisite: the pull request that brings the workflow definitions back; re-entry: after that lands and this branch is rebased, the file passes on the hosted Windows runner, then move it back with a data-only change

@@ -691,4 +691,4 @@ on_task_timeout: {action: escalate, escalate_to: 'user:owner'}
 - 派单编排:`.agents/skills/hyprial-workflow/SKILL.md`(repo 内)
 - E2E 验收:`.agents/skills/hyprial-e2e/SKILL.md`(repo 内)
 - 本 skill 与实现有出入时:以 `--help` 和源码为准,并在同一 PR 更新本文件
-  (CI 要求每个 PR 显式声明 Skill-Impact,见 .forgejo/workflows)。
+  (CI 要求每个 PR 显式声明 Skill-Impact,见 .github/workflows)。

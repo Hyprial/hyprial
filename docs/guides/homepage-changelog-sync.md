@@ -33,7 +33,7 @@ in a URL or argv.
 - Status is bound to a commit: every run dispatches with the latest head, so a
   new candidate head always gets a new guard run.
 - There are exactly two suppression conditions:
-  1. the diff touches `.forgejo/workflows/**` (new or previous path of a
+  1. the diff touches `.github/workflows/**` (new or previous path of a
      rename). The PR gate owns that row and emits failure, so the guard stays
      silent: one commit, one emitter.
   2. the `/pulls/{n}/files` list cannot be read, times out, or is a full page
@@ -65,8 +65,8 @@ removed from this sync. Until then, keep it.
 
 ## Cross-repo references
 
-- Gate: `HyprialOS/homepage` `.forgejo/workflows/homepage-release-gate.yml`
-  (PR #166), filter `startsWith(".forgejo/workflows/")`.
+- Gate: `HyprialOS/homepage` `.github/workflows/homepage-release-gate.yml`
+  (PR #166), filter `startsWith(".github/workflows/")`.
 - Guard tree: `HyprialOS/homepage` `ci/release-origin-guard` at `cd3e9a1`
   (`scripts/changelog-release-origin-guard.mjs`,
   `src/lib/changelog-origin.js`; `evaluateReleaseOrigin`).

@@ -20,8 +20,10 @@ HYPRIAL_BUILD_NATIVE=1 uv sync --extra test
 构建流程按以下顺序执行：
 
 1. 检查当前源码树中的 native module 和 stamp；模块存在、ABI 正确、源码 digest 匹配时复用它。
-2. 模块缺失或过期时，调用现有 `scripts/build/build_native_engine.sh`，使用当前主机的 Python、Rust
-   toolchain、target 和 Cargo cache 编译并暂存 `actors.abi3.so`。
+2. 模块缺失或过期时，在构建钩子进程内调用 `src/hyprial/shell/impl/packaging/native_editable.py` 的
+   `build_editable`（`scripts/build/build_native_engine.sh` 的默认路径也委托给它），使用当前主机的 Python、Rust
+   toolchain、target 和 Cargo cache 编译并暂存 `actors<解释器的 stable-ABI 扩展后缀>`（Linux/macOS 为
+   `actors.abi3.so`，Windows 为 `actors.pyd`）。
 3. 编译完成后在同一解释器中导入模块，检查 `ENGINE_ABI_VERSION`、模块 SHA-256 和 stamp digest。
 4. 任一步失败都在安装阶段给出明确错误；不回退到 reference backend，也不生成声称可用的纯 Python 安装。
 

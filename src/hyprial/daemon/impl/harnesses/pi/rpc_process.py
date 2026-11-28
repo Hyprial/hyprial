@@ -32,6 +32,7 @@ from hyprial.daemon.impl.harnesses.pi.rpc_client import (
     PiRpcClient,
 )
 from hyprial.daemon.impl.harnesses.model_provider import pi_provider_environment
+from .bindings import KEY_ENV, PiModelBinding
 
 
 #: How long a managed pi RPC worker has to answer its ready probe.  The
@@ -60,6 +61,7 @@ class PiRpcProcess(StreamingTurnProcess):
             Callable[[AgentRuntimeContext], AbstractContextManager[None]] | None
         ) = None,
         actor_host: ActorHost | None = None,
+        model_binding: PiModelBinding | None = None,
     ) -> None:
         if spec.harness != "pi" or not spec.headless:
             raise ValueError("pi RPC requires a managed headless spec")
@@ -69,6 +71,7 @@ class PiRpcProcess(StreamingTurnProcess):
                 "partial env mapping"
             )
         self.spec = spec
+        self._model_binding = model_binding
         self._complete_launch = complete_launch
         self._runtime_launch_custody = runtime_launch_custody
         # One stable session id across client reconnects: pi's --session-id
@@ -102,7 +105,7 @@ class PiRpcProcess(StreamingTurnProcess):
         # launch with no grant refuses here instead of running secretless and
         # being blocked credential-invalid after its first failed turns.
         proof = getattr(complete_launch, "native_auth_launch", None)
-        self._provider_environment = pi_provider_environment(
+        self._provider_environment = {KEY_ENV: model_binding.key} if model_binding is not None else pi_provider_environment(
             spec,
             (
                 complete_launch.environment.for_exec()
@@ -199,6 +202,7 @@ class PiRpcProcess(StreamingTurnProcess):
         last = self._last_client
         if (
             self._persisted_ref is not None
+            and self._model_binding is None
             and ref == self._persisted_ref
             and last is not None
             and not last.reached_ready
@@ -224,6 +228,8 @@ class PiRpcProcess(StreamingTurnProcess):
             runtime_launch_custody=self._runtime_launch_custody,
             trust_receipt=self._p2_trust,
             provider_environment=self._provider_environment,
+            model_binding=self._model_binding,
+            require_existing_session=self._model_binding is not None and self._persisted_ref is not None,
         )
         self._last_client = client
         return client

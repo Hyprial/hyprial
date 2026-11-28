@@ -43,7 +43,7 @@ def test_network_example_matches_real_three_pane_producer():
         org_state=lambda name: "active",
         scan_devices=lambda name: (
             [device],
-            {"contentPending": [], "parkedCommits": None},
+            {"contentPending": []},
         ),
     )
     from hyprial.daemon.impl.application.netendpoints.forwarding import (

@@ -188,7 +188,7 @@ class AdapterRuntime:
                 admission = cell.tell(result)
                 if admission is AdmissionResult.ACCEPTED:
                     return
-                if time.monotonic() >= deadline:
+                if admission is AdmissionResult.CLOSED or time.monotonic() >= deadline:
                     self._authority.retain_completion(result)
                     self._authority.fail_correlation(
                         result.correlation_id,
