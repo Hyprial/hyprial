@@ -190,10 +190,11 @@ def test_isolated_client_injects_worker_server_and_excludes_ambient() -> None:
 
 
 def test_worker_cli_policy_allows_the_product_cli_but_denies_state_changes() -> None:
-    """Allow ``hyprial`` but never daemon/org/init or destructive operations.
+    """Allow ``hyprial`` but deny the irreversible state-changing commands.
 
     The allow half is useless for a headless worker without the deny half:
-    ``Bash(hyprial:*)`` also matches ``hyprial daemon restart``.
+    ``Bash(hyprial:*)`` also matches ``hyprial daemon restart``.  B-min (owner
+    2026-11-24) keeps ``org`` subcommands allowed except ``org fs``.
     """
 
     channel = _worker_channel()
@@ -204,8 +205,7 @@ def test_worker_cli_policy_allows_the_product_cli_but_denies_state_changes() -> 
         "Bash(hyprial agent destroy:*)",
         "Bash(hyprial daemon:*)",
         "Bash(hyprial init:*)",
-        "Bash(hyprial org:*)",
-        "Bash(hyprial daemon upgrade:*)",
+        "Bash(hyprial org fs:*)",
     }
 
 
@@ -215,13 +215,16 @@ def test_worker_cli_policy_denies_deploy_and_destructive_commands() -> None:
 
     2026-11-04 ruling (Allen, relayed by hq-manager and hr-steward): the
     2026-10-17 'infra controlled window' covered DAEMON stop, not AGENT stop;
-    ``agent stop`` left this list on that ruling. ``daemon``/``init``/``org``
-    stay denied, so a managed worker still cannot restart the daemon.
+    ``agent stop`` left this list on that ruling. ``daemon``/``init`` stay
+    denied, so a managed worker still cannot restart the daemon; B-min (owner
+    2026-11-24) keeps only ``org fs`` denied under the ``org`` subtree and
+    drops the redundant ``daemon upgrade`` rule, which ``daemon`` already
+    covers.
     """
 
     channel = _worker_channel()
     deny = (
-        "Bash(hyprial daemon upgrade:*)",
+        "Bash(hyprial daemon:*)",
         "Bash(hyprial agent destroy:*)",
     )
     for rule in deny:
@@ -330,11 +333,11 @@ class ResultMessage:
     assert "mcp__harness-bridge__harness_send" in dumped["allowed_tools"]
     assert "Bash(hyprial:*)" in dumped["allowed_tools"]
     assert dumped["disallowed_tools"] == list(WORKER_CLI_DENY_TOOLS)
-    # The deploy/destructive rules must survive the daemon -> worker hand-off,
+    # The destructive rules must survive the daemon -> worker hand-off,
     # not only exist in the constant.
     for rule in (
-        "Bash(hyprial daemon upgrade:*)",
         "Bash(hyprial agent destroy:*)",
+        "Bash(hyprial org fs:*)",
     ):
         assert rule in dumped["disallowed_tools"]
 
