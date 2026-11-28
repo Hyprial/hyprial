@@ -7,6 +7,33 @@ metadata; in particular it never serializes auth/model credential values.
 Missing Pi commands or SDK installations are launch precondition failures.
 The streaming pump must settle startup instead of retrying their lookup
 until the readiness and lifecycle deadlines expire.
+
+Decision (2026-11-26, KP-141): the private-workspace trust root is judged by
+``hyprial.kernel.private_tree_violation``, not by ``st_mode & 0o077``.  Mode
+bits alone do not answer "may only this account reach this path": they
+ignore the owner, and on platforms whose ``stat`` mode bits are synthesised
+the old expression was non-zero for every directory, refusing every private
+workspace root.  On POSIX the kernel check is the owner plus the same
+group/other bits, so only the owner requirement is new.  A platform with
+neither a comparable uid nor a security descriptor, and Windows without
+pywin32, is now always refused where the bits alone used to decide.  It is
+deliberately not ``private_metadata_violation(..., mode=...)``: that compares
+for equality and would refuse a private directory that also carries a setgid
+or sticky bit.  Judging by the kernel check makes the workspace scope
+reachable where it was refused for every directory before, so the chain
+check before it has to hold there too: the workspace and its agent-home
+ancestors must be real directories, refusing a reparse point of any kind as
+well as a symlink, as the other harnesses' directory checks do.  The symlink
+term alone does not cover a reparse point that ``lstat`` reports as a
+directory, and ``resolve`` follows a reparse point onto its target, where the
+privacy check would judge the target and sign it as the workspace.  When the
+kernel cannot inspect privacy at all (its descriptor check raises
+``OSError``), the root is refused as a trust error: trust is resolved
+synchronously while the worker process is constructed, and a bare
+``OSError`` from there is an ordinary failed start that the actor retries
+with backoff and charges to the failure budget, while the trust error is a
+permanent start precondition failure that stops at once and is not retried.
+An ``OSError`` from ``stat`` of the root is left as it was.
 """
 
 from __future__ import annotations
@@ -26,6 +53,8 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping
 from hyprial.daemon.impl.harnesses.model_provider import pi_model_definitions
 from hyprial.kernel import git_subprocess_environment
 from hyprial.kernel import ipc_errors
+from hyprial.kernel import path_is_reparse
+from hyprial.kernel import private_tree_violation
 
 if TYPE_CHECKING:
     from hyprial.identity import AgentRuntimeContext
@@ -328,11 +357,12 @@ def _lexical_path(path: Path) -> Path:
 
 
 def _reject_workspace_symlink_chain(workspace: Path) -> None:
-    """Refuse a workspace whose root or agent-home ancestors are symlinks.
+    """Refuse a workspace whose root or agent-home ancestors are links.
 
     Anchored at the agent collection (``workspace.parent.parent``) so that
     system-level ancestors such as macOS ``/var`` are outside the check; the
-    components the runtime context owns must be real directories.
+    components the runtime context owns must be real directories.  A symlink
+    and any other reparse point are both refused.
     """
 
     if not workspace.is_absolute():
@@ -344,7 +374,11 @@ def _reject_workspace_symlink_chain(workspace: Path) -> None:
             raise ValueError(
                 f"Pi workspace trust path {directory} cannot be inspected: {error}"
             ) from error
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or path_is_reparse(metadata)
+            or not stat.S_ISDIR(metadata.st_mode)
+        ):
             raise ValueError(
                 "Pi workspace trust root must be a real directory, not a symlink"
             )
@@ -391,7 +425,14 @@ class PiProjectTrustReceipt:
             # non-Git: a wider or repository-backed root is out of contract.
             if cwd != root:
                 raise ValueError("Pi workspace trust root must equal cwd")
-            if root.stat().st_mode & 0o077:
+            metadata = root.stat()
+            try:
+                violation = private_tree_violation(root, metadata)
+            except OSError as error:
+                raise ValueError(
+                    f"Pi workspace trust root privacy cannot be inspected: {error}"
+                ) from error
+            if violation is not None:
                 raise ValueError("Pi workspace trust root must be private to its owner")
             if (root / ".git").exists():
                 raise ValueError("Pi workspace trust root must not be a Git worktree")
