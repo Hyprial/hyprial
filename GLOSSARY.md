@@ -18,7 +18,7 @@ docs/design/cell-thread-conversation-model-2026-11-03.md（11-03 的原始设计
 | daemon | 持有传输会话、durable inbox、路由与受管运行时状态的长驻进程；消息与恢复的权威边界 | 不是"server"（去中心，无中心服务器） | src/hyprial/daemon/ |
 | host | 运行一个 hyprial daemon 的环境（一个 hyprial home + 其 daemon）；agent 住在 host 上、在 host 之间 move，host 决定是否接纳外来 agent。用户可见的唯一称呼 | ~~node~~、~~machine~~、~~device~~（均改为 host，Allen 2026-10-27）；只作名词，不作动词；不等于网络主机名 | docs/design/daemon-request/handoff-2026-10-27.md §7 |
 | harness | 运行 AI agent 的宿主程序（Claude Code、Codex、Pi 等） | 不指本仓代码本身 | src/hyprial/daemon/impl/harnesses/ |
-| model connection | 模型连接：本机 Secret 内稳定引用、endpoint、协议、认证字段与配置修订；模型 ID 由调用方明确提供 | 不是模型目录或 Harness；不替代 grant | docs/design/model-connections-contract-stage-2026-11-24.md |
+| model connection | 模型连接：本机 Secret 内稳定引用、endpoint、协议、认证字段与配置修订；模型 ID 由调用方明确提供，GUI 在 Agent 配置或临时测试中手填 | 不是模型目录或 Harness；复用 Secret，不替代 grant，不在 Cell 文档保存秘密 | docs/design/model-connections-contract-stage-2026-11-24.md、docs/design/model-connections-harness-auth-2026-11-24.md |
 | connector | 把一个 harness 会话接到 daemon 的进程管理+注入层 | ~~proxy~~（语义偏同协议转发，已弃用） | design.md §2 命名词表 |
 | adapter | 外部平台（Lark 等）接入，映射平台身份到统一寻址/投递模型 | ~~gateway~~、~~room~~（已退役） | src/hyprial/daemon/impl/adapters/ |
 | user settings | 用户设置：当前账号的信息及登录、退出操作 | 不包含本地人员目录、平台身份映射管理或 Agent 凭据；设备和组织使用各自主导航入口 | gui/src/pages/SettingsPage.tsx、gui/src/features/account/impl/AccountLoginSection.tsx |
