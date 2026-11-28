@@ -27,7 +27,7 @@ What is newly accepted is exactly: a regular file, single link, owned by the
 current account, mode not ``0600``, whose ``chmod`` succeeds.  A wrong owner,
 a symlink, a hard link or a failed repair is still refused.
 
-Unlike the ``.cas.lock`` preparation in provider-key storage, hardening runs
+Unlike the ``.cas.lock`` preparation in credential storage, hardening runs
 even when no violation is reported, so both platforms take the same path and
 an already private file is re-applied to the same mode.  ``_file_safe`` stays
 unchanged before and after the body; hardening corrects the permissions and
