@@ -53,7 +53,7 @@ test('Python selection follows the product tree, Python tests, dependency pins a
     ['tests/shell/gui/lifecycle/test_gui_runtime.py', true],
     ['tests/daemon/teleport/test_frames.py', true],
     ['tests/fixtures/network/payload.json', false],
-    ['scripts/ci/pytest_impact.py', true], ['scripts/ci/pytest-durations.json', true],
+    ['scripts/ci/pytest_impact.py', true],
     ['scripts/ci/check_windows_portability.py', true], ['scripts/ci/windows_portability_semantics.py', true],
     ['scripts/ci/windows-portability-baseline.json', true], ['scripts/ci/check_node_platform_idioms.py', true],
     ['scripts/ci/node-platform-idioms-baseline.json', true], ['scripts/ci/check_pyright_windows.py', true],

@@ -13,8 +13,8 @@
 // Allen 2026-11-14: queue time is the constraint, so the widening is narrow.
 // Besides the product tree the Python suite is selected by what decides
 // WHICH tests run and WITH WHAT: Python files under tests/, the dependency
-// pins (pyproject.toml, uv.lock), and the suite's own runner (pytest_impact.py,
-// pytest-durations.json, gate-python.yml). #2757 changed the shard planner
+// pins (pyproject.toml, uv.lock), and the suite's own runner
+// (pytest_impact.py, gate.yml). #2757 changed the shard planner
 // and the workflow and merged with every pytest job skipped, on the PR and on
 // dev. pytest_impact.py keeps the cost down: a changed test module that no
 // other test refers to runs alone.
@@ -51,7 +51,7 @@ const guiBranch = ref => typeof ref === 'string' && ref.startsWith('intg/gui');
 const sidecarBranch = ref => typeof ref === 'string' && ref.startsWith('intg/sidecar');
 const batchBranch = ref => typeof ref === 'string' && /^intg\/batch-.+/.test(ref);
 const pythonRunnerInputs = new Set([
-  'pyproject.toml', 'uv.lock', 'scripts/ci/pytest_impact.py', 'scripts/ci/pytest-durations.json',
+  'pyproject.toml', 'uv.lock', 'scripts/ci/pytest_impact.py',
   'scripts/ci/check_windows_portability.py', 'scripts/ci/windows_portability_semantics.py',
   'scripts/ci/windows-portability-baseline.json', 'scripts/ci/check_node_platform_idioms.py',
   'scripts/ci/node-platform-idioms-baseline.json', 'scripts/ci/check_pyright_windows.py',

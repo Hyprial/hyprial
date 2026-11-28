@@ -1,0 +1,80 @@
+# Decisions (gate-scope, owner ruling 2026-11-27, plan A):
+# - This workflow checks the Submitted-by line of a pull request's body. It is
+#   its own workflow, not a job of gate.yml, so that editing the title or the
+#   body (edited) starts only this check. gate.yml does not listen to edited:
+#   an edited run there would either overwrite an earlier red gate on the same
+#   commit with a green one or cancel the full run in progress. Here an edited
+#   run touches nothing but pr-hygiene, in its own concurrency group.
+# - pr-hygiene is a required check of dev and main, next to gate. Each
+#   pr-hygiene check depends only on its own run, so it does not matter which
+#   of several pr-hygiene checks on one commit the branch rule reads.
+# - The body and created_at are read from the API when the job runs, never
+#   from the event payload. A re-run of an old run would otherwise judge the
+#   body as it was when that run started, and a newer green check could pass a
+#   body that has since been made non-compliant. An API failure fails the job.
+#   The token is the run's read-only token; no secret is referenced.
+# - Triggers match gate.yml's branches and carry no path or branch-ignore
+#   filter: a workflow skipped by a trigger filter leaves its required check
+#   pending for ever. The job has no condition, no matrix and no display name,
+#   so the check is always named pr-hygiene and is never reported as skipped.
+#   It is the only job here and has no needs (a skipped dependency would skip
+#   it, and a skipped job reports Success) and no environment (an approval
+#   rule would leave it pending).
+# - The concurrency group is exactly pr-hygiene-<pull request number>: one
+#   group per pull request, never shared with gate.yml or another pull request.
+# - The event is reached only as github.event.pull_request.number. The step
+#   never reads GITHUB_EVENT_PATH or any other part of the event.
+# - Rollout: PR #78 is merged into dev; the owner adds the required check
+#   pr-hygiene to the dev and main rulesets (until this file is on dev, the
+#   pr-hygiene job of the old gate.yml supplies that check); then this
+#   workflow is merged. Rollback: revert this change first, then remove
+#   pr-hygiene from the rulesets. At any moment this file is on dev, the
+#   rulesets require pr-hygiene.
+# - Changing a pull request's base branch is an edited event, so it reruns
+#   only this check, not gate. A pull request retargeted onto dev or main
+#   (a stacked pull request whose base was merged) needs one push, or a close
+#   and reopen, before gate reports.
+# - Actions are pinned to the same commit SHAs as gate.yml.
+name: pr-hygiene
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-hygiene-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+  NO_COLOR: "1"
+
+jobs:
+  pr-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Require the Submitted-by identity line
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "${RUNNER_TEMP}/pr.json"
+          jq -j '.body // ""' "${RUNNER_TEMP}/pr.json" > "${RUNNER_TEMP}/pr-body.txt"
+          created_at="$(jq -er '.created_at' "${RUNNER_TEMP}/pr.json")"
+          uv run --no-project --python "${PYTHON_VERSION}" python scripts/ci/check_pr_hygiene.py \
+            submitted-by --body-file "${RUNNER_TEMP}/pr-body.txt" \
+            --pr-number "${PR_NUMBER}" --created-at "${created_at}"
