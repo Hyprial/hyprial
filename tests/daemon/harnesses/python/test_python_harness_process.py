@@ -1,4 +1,8 @@
-"""Parent-side Jev admission, result, and JSONL log tests."""
+"""Parent-side Jev admission, result, and JSONL log tests.
+
+Reduced worker environments preserve an ambient SYSTEMROOT when present;
+isolated HOME selection and the PATH-only failure probes remain unchanged.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ def _environment(state_dir: Path | None = None) -> dict[str, str]:
     environment = {
         name: value
         for name, value in os.environ.items()
-        if name in {"PATH", "HOME", "LANG", "PYTHONPATH"}
+        if name in {"PATH", "HOME", "LANG", "PYTHONPATH", "SYSTEMROOT"}
     }
     if state_dir is not None:
         environment["HARNESS_STATE_DIR"] = str(state_dir)
@@ -460,10 +464,13 @@ def _fake_jev_ready_error(tmp_path: Path, body: str):
     spec = HarnessLaunchSpec(
         "jev", "route-chooser", True, cwd=str(tmp_path), command=(sys.executable, str(fake))
     )
+    environment = {"PATH": os.environ.get("PATH", "")}
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     with pytest.raises(HarnessStartError) as exc_info:
         PythonHarnessProcess(
             spec,
-            env={"PATH": os.environ.get("PATH", "")},
+            env=environment,
             startup_timeout_seconds=5,
         )
     return exc_info.value

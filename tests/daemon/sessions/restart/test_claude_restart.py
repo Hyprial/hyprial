@@ -4,6 +4,10 @@ The model protocol is the repository's JSONL double. The daemon, lifecycle
 transactions, registry, worker wrapper and restart are real. Suppressing the
 periodic ref sync freezes the crash window after ready and before that tick;
 startup must commit its established ref without depending on a later timer.
+
+The test-owned temporary root is hardened through the kernel public API before
+it carries home/state. Direct reduced worker environments preserve an ambient
+SYSTEMROOT when present; the harness's inherited daemon environment is unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from tests.daemon.channels.mcp.lifecycle.test_mcp_channel_owner_migration_e2e im
 )
 from tests.support.runtime._tmp import hyprial_test_tmp_root
 import hyprial.daemon.impl.harnesses.agent_sdk as agent_sdk
+from hyprial.kernel import secure_private_directory
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -44,7 +49,9 @@ def _wait_ready(home: Path, count: int = 1) -> dict[str, object]:
 @pytest.fixture
 def restart_home():
     with tempfile.TemporaryDirectory(prefix="cc-resume-", dir=hyprial_test_tmp_root()) as root:
-        yield Path(root)
+        path = Path(root).resolve()
+        secure_private_directory(path, create=True)
+        yield path
 
 
 def test_restart_before_periodic_sync_resumes_established_native_ref(
@@ -179,6 +186,8 @@ def test_missing_resume_target_exits_nonzero_with_target_id(tmp_path: Path, p2: 
         "HYPRIAL_AGENT_SDK_OPTIONS": json.dumps({"resume": missing}),
         **({"HYPRIAL_AGENT_SDK_RUNTIME_CONTEXT_MODE": "agent-home-p2"} if p2 else {}),
     }
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     worker = Path(agent_sdk.__file__).with_name("_agent_sdk_worker.py")
     command = [sys.executable, str(worker)]
     sdk_site = os.environ.get("HYPRIAL_TEST_CLAUDE_SDK_SITE")

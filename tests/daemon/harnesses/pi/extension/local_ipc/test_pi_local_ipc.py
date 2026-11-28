@@ -14,9 +14,9 @@ under plain ``node`` (>= 22.6 strips types natively):
   that literal name and a successful whoami round trip proves the target.
 
 Skipped when node is absent.
+Reduced Node subprocess environments preserve an ambient SYSTEMROOT when
+present; test-specific overrides and all other isolation remain unchanged.
 """
-
-from __future__ import annotations
 
 import json
 import os
@@ -91,6 +91,8 @@ def _run_node(workdir: Path, driver: str, *args: str, env: dict[str, str] | None
         "HOME": str(workdir),
         **(env or {}),
     }
+    if "SYSTEMROOT" in os.environ:
+        environment.setdefault("SYSTEMROOT", os.environ["SYSTEMROOT"])
     completed = subprocess.run(
         [NODE, driver, *args],
         cwd=workdir,

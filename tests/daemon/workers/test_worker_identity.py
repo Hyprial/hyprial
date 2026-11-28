@@ -9,6 +9,9 @@ parser -- and (3) the daemon accepts the worker's session so ``identity.whoami``
 returns the WORKER actor and its fenced calls pass.
 
 None of this can be verified live without a coordinator restart; see the PR.
+
+The reduced options-probe environment preserves an ambient SYSTEMROOT when
+present. Exact MCP child-environment contracts remain deliberately unchanged.
 """
 
 from __future__ import annotations
@@ -306,15 +309,18 @@ class ResultMessage:
     )
     options_json = client._env["HYPRIAL_AGENT_SDK_OPTIONS"]
     dump_path = tmp_path / "options.json"
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(tmp_path),
+        "HYPRIAL_AGENT_SDK_OPTIONS": options_json,
+        "HYPRIAL_TEST_OPTIONS_DUMP": str(dump_path),
+    }
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
 
     result = subprocess.run(
         [sys.executable, str(worker), "--probe"],
-        env={
-            "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": str(tmp_path),
-            "HYPRIAL_AGENT_SDK_OPTIONS": options_json,
-            "HYPRIAL_TEST_OPTIONS_DUMP": str(dump_path),
-        },
+        env=environment,
         capture_output=True,
         text=True,
         timeout=30,

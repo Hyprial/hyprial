@@ -1,4 +1,7 @@
-"""Drive the TypeScript inbox-watch port through the shared golden cases."""
+"""Drive the TypeScript inbox-watch port through the shared golden cases.
+
+The reduced Node environment preserves an ambient SYSTEMROOT when present.
+"""
 
 from __future__ import annotations
 
@@ -148,6 +151,8 @@ def test_typescript_golden_case(case_path: Path, tmp_path: Path) -> None:
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(tmp_path),
     }
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     completed = subprocess.run(
         [NODE, "driver.ts", str(case_path)],
         cwd=tmp_path,

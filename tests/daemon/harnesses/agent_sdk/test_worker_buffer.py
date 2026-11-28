@@ -16,9 +16,9 @@ behaviour under test:
 * a fatal SDK reader must let the worker exit while stdin stays open: the
   stdin reader is a daemon thread, not an executor thread that
   ``asyncio.run`` waits for forever.
+Reduced subprocess environments preserve an ambient SYSTEMROOT when present;
+all other isolation boundaries are unchanged.
 """
-
-from __future__ import annotations
 
 import json
 import os
@@ -102,6 +102,8 @@ def _clean_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(tmp_path),
     }
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     env.update(overrides)
     return env
 

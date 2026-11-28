@@ -1,8 +1,13 @@
-"""login: boundaries scenarios."""
+"""login: boundaries scenarios.
+
+Reduced import-probe environments preserve an ambient SYSTEMROOT when present;
+PYTHONPATH selection and deliberate credential/environment omissions are unchanged.
+"""
 
 from __future__ import annotations
 import ast
 import json
+import os
 import subprocess
 import sys
 import time
@@ -31,6 +36,18 @@ from .support import (
     _profile_for,
     _seed_credential,
 )
+
+
+def _probe_environment(*, source_path: bool = False) -> dict[str, str]:
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if source_path:
+        environment["PYTHONPATH"] = str(_SRC_ROOT)
+    if "SYSTEMROOT" in os.environ:
+        environment["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    return environment
 
 
 def test_t11_daemon_tree_never_imports_login_or_names_the_credential() -> None:
@@ -146,7 +163,7 @@ def test_t11_daemon_identity_from_settings_without_network_or_credential(
         ],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+        env=_probe_environment(),
         cwd=str(_SRC_ROOT.parent),
         timeout=120,
     )
@@ -417,11 +434,7 @@ def test_t11_daemon_runtime_reads_settings_not_the_credential_canary(
         ],
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(_SRC_ROOT),
-        },
+        env=_probe_environment(source_path=True),
         cwd=str(_SRC_ROOT.parent),
         timeout=120,
     )
@@ -455,11 +468,7 @@ def test_t11_public_identity_proxy_loads_no_worker_credentials_daemon_or_shell()
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(_SRC_ROOT),
-        },
+        env=_probe_environment(source_path=True),
         cwd=str(_SRC_ROOT.parent),
         timeout=120,
     )
@@ -486,11 +495,7 @@ def test_t11_bootstrap_runtime_import_loads_no_worker_credentials_or_shell() -> 
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(_SRC_ROOT),
-        },
+        env=_probe_environment(source_path=True),
         cwd=str(_SRC_ROOT.parent),
         timeout=120,
     )
@@ -546,11 +551,7 @@ def test_t11_bootstrap_admission_never_opens_the_credential_canary(
         ],
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONPATH": str(_SRC_ROOT),
-        },
+        env=_probe_environment(source_path=True),
         cwd=str(_SRC_ROOT.parent),
         timeout=120,
     )

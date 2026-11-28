@@ -6,9 +6,9 @@ start when that CLI is older than the minimum this release needs. An unreadable
 version (module path moved, unparsable string) only warns on stderr: the other
 worker tests run against SDK doubles that do not ship the module, and failing
 closed there would force every double to grow one.
+Reduced subprocess environments preserve an ambient SYSTEMROOT when present;
+all other isolation boundaries are unchanged.
 """
-
-from __future__ import annotations
 
 import json
 import os
@@ -50,6 +50,8 @@ def _probe(
             f'__cli_version__ = "{cli_version}"\n', encoding="utf-8"
         )
     env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(tmp_path)}
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     env.update(overrides)
     return subprocess.run(
         [sys.executable, str(WORKER), "--probe"],
