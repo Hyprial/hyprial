@@ -334,7 +334,8 @@ def test_unreadable_settings_do_not_leak_credential_bytes(tmp_path: Path) -> Non
 
 
 _NON_ROOT = pytest.mark.skipif(
-    os.geteuid() == 0, reason="root ignores directory permission bits"
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores directory permission bits",
 )
 
 

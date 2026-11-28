@@ -119,6 +119,12 @@ def _default_sink() -> Callable[[ActorEvent], None]:
     return _log_event
 
 
+def _command_completed_enabled(custom_sink: bool) -> Callable[[], bool]:
+    if custom_sink:
+        return lambda: True
+    return lambda: _DEFAULT_EVENT_LOGGER.isEnabledFor(logging.INFO)
+
+
 def _policy_tuples(
     policies: dict[str, SupervisionPolicy],
 ) -> dict[str, tuple[int, float, float, float, float]]:
@@ -172,6 +178,9 @@ class AbiEngine:
             event_sink=self._on_engine_event,
             expected_error_type=ExpectedActorError,
         )
+        setter = getattr(self._native, "_set_command_completed_enabled", None)
+        if setter is not None:
+            setter(_command_completed_enabled(selected.event_sink is not None))
 
     @property
     def cpu_accounting(self) -> Any:

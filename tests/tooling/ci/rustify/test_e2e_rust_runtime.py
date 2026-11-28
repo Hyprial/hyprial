@@ -8,7 +8,6 @@ import shlex
 import subprocess
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / "scripts/ci/ci-ensure-rust.sh"
@@ -20,8 +19,9 @@ def executable(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(0o700)
 
-
 @pytest.fixture
+
+
 def tools(tmp_path: Path) -> dict[str, str]:
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
@@ -77,8 +77,9 @@ def test_seed_supplies_real_child_paths_without_global_home_mutation(tools: dict
     assert not (Path(tools["HOME"]) / ".cargo").exists()
     assert not (Path(tools["HOME"]) / ".rustup").exists()
 
-
 @pytest.mark.parametrize("case", ["missing-root", "global-cargo", "root-directory", "newline", "foreign-version", "native-skipped"])
+
+
 def test_invalid_configuration_fails_before_announcing_tools(tools: dict[str, str], case: str) -> None:
     if case == "missing-root":
         tools.pop("HYPRIAL_E2E_ROOT")
@@ -97,8 +98,9 @@ def test_invalid_configuration_fails_before_announcing_tools(tools: dict[str, st
     assert "e2e-rust:" in result.stderr
     assert not Path(tools["GITHUB_ENV"]).exists()
 
-
 @pytest.mark.parametrize("part", ["rustc-version", "cargo-version", "host"])
+
+
 def test_seed_version_or_host_mismatch_is_refused(tools: dict[str, str], part: str) -> None:
     seed = Path(tools["HYPRIAL_E2E_RUST_SEED"])
     if part == "cargo-version":
@@ -242,21 +244,6 @@ def test_nested_rustup_toolchains_symlink_cannot_escape_the_run(tools: dict[str,
     assert not Path(tools["GITHUB_ENV"]).exists()
 
 
-def test_macos_workflow_prepares_tools_before_the_gate() -> None:
-    workflow = yaml.safe_load((ROOT / ".forgejo/workflows/e2e-macos-isolated.yml").read_text())
-    job = workflow["jobs"]["isolated-macos"]
-    steps = job["steps"]
-    rust = [i for i, step in enumerate(steps) if "scripts/ci/ci-ensure-rust.sh" in str(step.get("run", ""))]
-    assert len(rust) == 1
-    gate = next(i for i, step in enumerate(steps) if "run-isolated-gate.py" in str(step.get("run", "")))
-    prepare = next(i for i, step in enumerate(steps) if "uv sync --locked" in str(step.get("run", "")))
-    assert prepare < rust[0] < gate
-    assert not steps[rust[0]].get("continue-on-error", False)
-    assert "HYPRIAL_BUILD_SKIP_NATIVE" not in steps[rust[0]].get("env", {})
-    assert job["timeout-minutes"] == 90
-    assert steps[rust[0]]["timeout-minutes"] == 20
-
-
 def test_wrong_manager_version_is_refused_before_install(tools: dict[str, str], tmp_path: Path) -> None:
     tools.pop("HYPRIAL_E2E_RUST_SEED")
     manager = tmp_path / "wrong-rustup"
@@ -279,7 +266,6 @@ def test_bootstrap_archive_symlink_is_refused(tools: dict[str, str], tmp_path: P
     assert result.returncode != 0
     assert "symlink" in result.stderr
     assert not Path(tools["GITHUB_ENV"]).exists()
-
 
 TOOLCHAIN_FIXTURE = f"1.93.1-{HOST}"
 

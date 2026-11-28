@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
+from hyprial.daemon.impl.org.network.binding import ACL_POLICY_DOC, resolve_org_acl_space
 from hyprial.daemon.impl.org.network.create.sub_org import (
     extract_meta_sub_org_binding,
     validate_repair_sub_org_binding,
@@ -29,8 +29,6 @@ from hyprial.identity import (
     org_space_name,
 )
 from hyprial.kernel import canonical_user_uri
-
-ACL_POLICY_DOC = "policy/role-grants.json"
 
 _CREATE_LOCK = RLock()
 

@@ -498,6 +498,11 @@ class _LifecycleOpsMixin(_HarnessArgsLifecycleMixin, _AgentStartMixin):
         reason the launcher/process published travels.
         """
         data = dict(error.data) if isinstance(error.data, dict) else {}
+        from hyprial.daemon.impl.harnesses.pi.bindings.errors import failure_data
+
+        model_data = failure_data(error.code, str(error))
+        if model_data:
+            return DaemonRequestError(error.code, str(error), {**data, **model_data})
         if "lastError" in data:
             return error
         detail = last_error if last_error is not None else self._harness_last_error(spec)

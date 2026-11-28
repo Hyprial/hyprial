@@ -1,11 +1,27 @@
+# Decision record (phase D, package S, 2026-11-25; design §8 phase D/E todo):
+# - The supplier sync constants moved here from the deleted journal
+#   ``network/protocol.py``; this module is their only owner.  Below the
+#   failure threshold a failure is ordinary jitter handled by the retry
+#   ladder; at or past it the supplier is held off for
+#   ``base * 2**(failures - threshold)`` seconds, capped, and a recovered sync
+#   clears the hold.
+# - Package F6 (real-node finding R3-6): a success halves the failure count
+#   and also brings it below the threshold, so the probe that proves the
+#   supplier answers ends the hold at once.  Halving alone left a supplier
+#   with 6 or more failures held after a successful probe; with one probe per
+#   due tick (60 s plus jitter) recovery took one tick per halving, and the
+#   held space dropped its rerun meanwhile.  A supplier that fails again
+#   starts from just under the threshold, so it is held again on the next
+#   failure, with a hold that doubles from there.
 """Shared supplier-sync health across every orgfs space on one daemon.
 
 The hold exists because an unreachable supplier fails in milliseconds, so
 retrying at reconcile-tick rate charges a known-doomed attempt to the shared
 budget on every tick.  Health is keyed by supplier node, not by space: the
 same offline holder otherwise needs three failures per space before any
-space holds it.  A success halves the count instead of zeroing it, so a
-flapping supplier converges toward the cap instead of resetting forever.
+space holds it.  A success halves the count instead of zeroing it, capped
+just under the hold threshold: the hold ends with the first success, and a
+supplier that fails again is held again on its next failure.
 """
 
 from __future__ import annotations
@@ -15,15 +31,15 @@ from dataclasses import dataclass
 from functools import partial
 from threading import Lock
 
-from hyprial.daemon.impl.orgfs.network.protocol import (
-    ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS,
-    ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS,
-    ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD,
-    ORGFS_SYNC_QUEUE_LIMIT,
-    ORGFS_SYNC_RETRY_BACKOFF_SECONDS,
-    ORGFS_SUPPLIER_SYNC_HOLD_BASE_SECONDS,
-    ORGFS_SUPPLIER_SYNC_HOLD_MAX_SECONDS,
-)
+from typing import Final
+
+ORGFS_SYNC_QUEUE_LIMIT: Final[int] = 32
+ORGFS_SYNC_RETRY_BACKOFF_SECONDS: Final[tuple[float, ...]] = (0.25,)
+ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD: Final[int] = 3
+ORGFS_SUPPLIER_SYNC_HOLD_BASE_SECONDS: Final[float] = 5.0
+ORGFS_SUPPLIER_SYNC_HOLD_MAX_SECONDS: Final[float] = 120.0
+ORGFS_SCHEDULED_SYNC_ATTEMPT_SECONDS: Final[float] = 2.0
+ORGFS_SCHEDULED_SYNC_BUDGET_SECONDS: Final[float] = 4.5
 
 
 @dataclass(slots=True)
@@ -189,20 +205,18 @@ class SupplierSyncHealth:
             deferred = self._take_deferred(state, now)
             if settling_probe:
                 state.probe_token = None
-            state.failures //= 2
+            state.failures = min(
+                state.failures // 2, ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD - 1
+            )
             if state.failures == 0:
                 self._states.pop(supplier, None)
-            elif state.failures < ORGFS_SUPPLIER_SYNC_FAILURE_THRESHOLD:
+            else:
                 state.hold_started = 0.0
                 state.hold_until = 0.0
-            else:
-                hold = self._hold_seconds(state.failures)
-                state.hold_started = now
-                state.hold_until = now + hold
             return _SuccessOutcome(state.failures, deferred)
 
     def record_success(self, supplier: str) -> int:
-        """Halve the failure count; return the new count."""
+        """Halve the failure count below the hold threshold; return it."""
 
         return self.record_success_detail(supplier).failures
 

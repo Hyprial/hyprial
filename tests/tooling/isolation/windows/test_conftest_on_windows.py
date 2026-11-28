@@ -23,6 +23,7 @@ import pytest
 
 import tests.conftest as root_conftest
 from tests.support.runtime import _tmp, environment
+from tests.support.windows_suite import collection
 from tests.tooling.isolation.windows._windows_os import WindowsOs
 
 PROFILE = "C:\\Users\\real-account"
@@ -139,14 +140,19 @@ def test_root_conftest_configure_registers_the_tripwire_on_windows(
     windows, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registered: dict[str, object] = {}
-    manager = types.SimpleNamespace(register=lambda plugin, name: registered.setdefault(name, plugin))
+    manager = types.SimpleNamespace(
+        register=lambda plugin, name: registered.setdefault(name, plugin),
+        get_plugin=registered.get,
+    )
     monkeypatch.delenv("HYPRIAL_CI_PROFILE", raising=False)
     root_conftest.pytest_configure(types.SimpleNamespace(pluginmanager=manager))
+    assert isinstance(registered[collection.PLUGIN_NAME], collection.PosixOnlyPlugin)
     tripwire = registered["service-unit-tripwire"]
     assert isinstance(tripwire, environment.ServiceUnitTripwire)
     assert tripwire.home == Path(PROFILE)
 
 
+@pytest.mark.posix_only("pwd")
 def test_real_account_home_keeps_the_posix_password_entry() -> None:
     import pwd
 

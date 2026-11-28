@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .impl.facade.types import ModelConnection as ModelConnection
     from hyprial.identity.impl.provider_auth.helper import DeviceLoginRunner as DeviceLoginRunner
     from hyprial.identity.impl.provider_auth.actor._authority import ProviderAuthAuthority as ProviderAuthAuthority
     from hyprial.identity.impl.agents.actor.ports import AgentHarnessArgsUpdated as AgentHarnessArgsUpdated
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
         bootstrap_yaml as bootstrap_yaml, check_org_context as check_org_context, check_shared_path as check_shared_path, compose_worker_child_launch as compose_worker_child_launch, consume_rotation_event as consume_rotation_event, decode_invite as decode_invite, default_bootstrap as default_bootstrap,
         default_role_grants_document as default_role_grants_document, derived_proxy_environment as derived_proxy_environment, desired_generation as desired_generation, device_key_path as device_key_path, device_record_path as device_record_path, directory_device_path as directory_device_path, directory_owner_principal as directory_owner_principal,
         encode_invite as encode_invite, explain as explain, explain_target as explain_target, id_form_minting as id_form_minting, identity_credential_path as identity_credential_path, identity_slug as identity_slug, inspect_logout_artifacts as inspect_logout_artifacts, install_native_credential as install_native_credential, install_native_credential_set as install_native_credential_set, inspect_native_credentials as inspect_native_credentials,
-        invite_deep_link as invite_deep_link, invite_https_url as invite_https_url, is_inactive as is_inactive, is_org_acl_space as is_org_acl_space, is_org_directory_space as is_org_directory_space, launch_worker_proxy_route as launch_worker_proxy_route, home_account_conflict_message as home_account_conflict_message, legacy_business_data_present as legacy_business_data_present, legacy_receivers_node_id as legacy_receivers_node_id, load_packaged_support_matrix as load_packaged_support_matrix, machine_binding_path as machine_binding_path,
+        invite_deep_link as invite_deep_link, invite_https_url as invite_https_url, is_inactive as is_inactive, is_org_acl_space as is_org_acl_space, is_org_directory_space as is_org_directory_space, launch_worker_proxy_route as launch_worker_proxy_route, home_account_conflict_message as home_account_conflict_message, legacy_business_data_present as legacy_business_data_present, load_packaged_support_matrix as load_packaged_support_matrix, machine_binding_path as machine_binding_path,
         machine_fingerprint as machine_fingerprint, mark_first_published as mark_first_published, may_send as may_send, migrate_legacy_agent_keep_list as migrate_legacy_agent_keep_list, name_taken_remedy as name_taken_remedy, native_secrets_root as native_secrets_root, node_owner_or_none as node_owner_or_none, normalize_capabilities as normalize_capabilities, normalize_harness_args as normalize_harness_args, normalize_issuer as normalize_issuer,
         official_agent_uri as official_agent_uri, option_value as option_value, org_from_space_name as org_from_space_name, org_space_name as org_space_name, parse_bootstrap_yaml as parse_bootstrap_yaml, parse_principal as parse_principal, parse_protected_directory_doc_id as parse_protected_directory_doc_id, parse_protected_directory_node_id as parse_protected_directory_node_id, parse_tool_declaration as parse_tool_declaration,
         preflight_codex_credential as preflight_codex_credential, prepare_legacy_claude_native_root as prepare_legacy_claude_native_root, principal_kind as principal_kind, principal_matches_local_actor as principal_matches_local_actor, protected_directory_author_allowed as protected_directory_author_allowed, protected_directory_doc_id as protected_directory_doc_id, protected_directory_node_id as protected_directory_node_id, read_device_record as read_device_record,
@@ -157,7 +158,6 @@ _FACADE_EXPORTS = {
     'directory_device_path': ('hyprial.identity.impl.org_directory', 'directory_device_path'),
     'directory_owner_principal': ('hyprial.identity.impl.org_directory', 'directory_owner_principal'),
     'ProtectedDocIdTooLongError': ('hyprial.identity.impl.org_directory', 'ProtectedDocIdTooLongError'),
-    'legacy_receivers_node_id': ('hyprial.identity.impl.org_directory', 'legacy_receivers_node_id'),
     'parse_protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_node_id'),
     'parse_protected_directory_doc_id': ('hyprial.identity.impl.org_directory', 'parse_protected_directory_doc_id'),
     'protected_directory_node_id': ('hyprial.identity.impl.org_directory', 'protected_directory_node_id'),
@@ -315,6 +315,7 @@ _FACADE_EXPORTS = {
     'SecretResolver': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolver'),
     'SecretResolutionError': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretResolutionError'),
     'SecretSource': ('hyprial.identity.impl.agents.runtime.secrets', 'SecretSource'),
+    'ModelConnection': ('hyprial.identity.impl.agents.runtime.model_records.connections', 'ModelConnection'),
     'AgentSecretStore': ('hyprial.identity.impl.agents.secret_store', 'AgentSecretStore'),
     'FingerprintUnavailable': ('hyprial.identity.impl.agents.secret_store', 'FingerprintUnavailable'),
     'SecretEvent': ('hyprial.identity.impl.agents.secret_store', 'SecretEvent'),
@@ -532,6 +533,7 @@ __all__ = [
     'AgentRuntimeMigrationBindings',
     'AgentRuntimeNotice',
     'AgentSecretGrantCompleted',
+    'ModelConnection',
     'AgentSecretStore',
     'AgentToolProfile',
     'AllowAllPolicy',
@@ -768,7 +770,6 @@ __all__ = [
     'is_org_directory_space',
     'launch_worker_proxy_route',
     'legacy_business_data_present',
-    'legacy_receivers_node_id',
     'load_packaged_support_matrix',
     'machine_binding_path',
     'machine_fingerprint',

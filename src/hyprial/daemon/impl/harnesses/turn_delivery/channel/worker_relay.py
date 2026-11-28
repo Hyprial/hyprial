@@ -11,6 +11,21 @@ directory must not exist and is created ``0700``, so the seam's
 relay did not create.  The socket identity ``(st_dev, st_ino)`` is recorded
 after the backend binds and gates the close-time unlink; endpoint hardening
 (``0600`` between bind and listen) is backend-owned.
+
+Decision record (s6 relay 2026-11-27): ``(st_dev, st_ino)`` proves the path
+is this relay's socket only while the relay's bound listener still holds that
+inode.  Once the listener closes, ext4 hands the freed inode number to the
+next socket bound at the same path (measured 1962/2000 and 2000/2000
+unlink+rebind pairs; tmpfs and APFS 0/2000), so a concurrent
+``listen_local_ipc`` at this path during close looked like ours and was
+unlinked.  ``close()`` therefore takes the identity once and decides the
+unlink before it closes the listener; a repeated ``close()`` has no identity
+left and never unlinks.  Adding ``st_ctime_ns`` was not chosen: it differed
+in all 2000 ext4 reuses measured, but its granularity is filesystem-defined
+and any metadata change moves it, and once ordering pins the inode it adds
+nothing.  Birth time is not exposed by ``os.stat`` on Linux, and a pin fd
+cannot be opened portably on an AF_UNIX socket file (``open`` fails with
+``ENXIO``; ``O_PATH`` is Linux-only).
 """
 
 from __future__ import annotations
@@ -224,8 +239,20 @@ class BoundWorkerRelay:
                 self._threads.discard(threading.current_thread())
             self._slots.release()
 
+    def _unlink_own_socket(self, identity: tuple[int, int]) -> None:
+        """Unlink the path only while the open listener still pins ``identity``."""
+        try:
+            info = self.socket_path.lstat()
+            if stat.S_ISSOCK(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
     def close(self) -> None:
         self._closed.set()
+        identity, self._socket_identity = self._socket_identity, None
+        if identity is not None:
+            self._unlink_own_socket(identity)
         if self._server is not None:
             self._server.close()
         with self._lock:
@@ -241,16 +268,6 @@ class BoundWorkerRelay:
                 thread.join(max(0, deadline - time.monotonic()))
                 if thread.is_alive():
                     raise RuntimeError("Worker relay did not stop")
-        if self._socket_identity is not None:
-            try:
-                info = self.socket_path.lstat()
-                if (
-                    stat.S_ISSOCK(info.st_mode)
-                    and (info.st_dev, info.st_ino) == self._socket_identity
-                ):
-                    self.socket_path.unlink()
-            except FileNotFoundError:
-                pass
         if self._started:
             try:
                 self.directory.rmdir()  # Refuse to delete unrelated files.

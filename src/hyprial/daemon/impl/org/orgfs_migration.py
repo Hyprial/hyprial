@@ -1,3 +1,20 @@
+# Decisions:
+# - 2026-11-25 (orgfs-minimal design section 5, package O): a node-form
+#   ``org.fetch`` source maps to its user through the device records of the
+#   org directory spaces held here (the source the OrgFS node gate indexes),
+#   not through who wrote in the context space; the state runtime keeps no
+#   writer table.  Only validated live rows count (OrgFsDirectoryStore), so a
+#   removed device stops naming a source.  Two directories naming different
+#   owners for one node leave it unresolved, as the node gate does.
+# - To keep the reply unchanged, a node is a source only while its owner has
+#   a candidate in the space ("never published" stays ORG_SOURCE_UNREACHABLE),
+#   and ``availableSources`` lists exactly those nodes.  The directories are
+#   read only for a node-form source: default and ``user:`` fetches never
+#   touch them.
+# - The bridge passes one invalid-device quarantine to every directory store it
+#   builds (the daemon-lifetime rule of the directory module): a caller may
+#   inject the application's quarantine, otherwise the bridge keeps its own for
+#   its lifetime, so a bad row is logged once per quiet window, not per fetch.
 """M0/M1 org-context candidate distribution through orgfs.
 
 The accepted slot remains :file:`$HYPRIAL_HOME/org-context.md`.  This module
@@ -15,11 +32,13 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from hyprial.identity import directory_owner_principal, org_from_space_name
 from hyprial.kernel import canonical_user_uri, ipc_errors
 from hyprial.daemon.impl.orgfs.api import OrgFsError, SpaceInfo
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
 
 from hyprial.daemon.impl.org.document  import OrgDocumentError, parse_document, validate_document
+from hyprial.daemon.impl.org.network.directory import InvalidDeviceDiagnostics, OrgFsDirectoryStore
 from hyprial.daemon.impl.org.store  import OrgContextStore, OrgStoreError, OrgVersionError, PendingRecord
 
 
@@ -97,11 +116,13 @@ class OrgContextOrgFsBridge:
         runtime: OrgFsRuntime,
         *,
         logger: Callable[..., None] | None = None,
+        invalid_devices: InvalidDeviceDiagnostics | None = None,
     ) -> None:
         self.home = Path(hyprial_home)
         self.runtime = runtime
         self.store = OrgContextStore(self.home)
         self.logger = logger
+        self.invalid_devices = invalid_devices or InvalidDeviceDiagnostics()
 
     def _log(self, level: str, event: str, **fields: object) -> None:
         if self.logger is not None:
@@ -274,6 +295,52 @@ class OrgContextOrgFsBridge:
                 )
         return tuple(sorted(users))
 
+    def _node_sources(self, space_id: str) -> dict[str, str]:
+        """``node -> user`` for each registered device whose owner published here."""
+
+        facade = self.runtime.facade
+        store = OrgFsDirectoryStore(
+            facade,
+            invalid_devices=self.invalid_devices,
+            logger=lambda level, _domain, event, **fields: self._log(
+                level, event, **fields
+            ),
+        )
+        owners: dict[str, set[str]] = {}
+        for info in facade.spaces():
+            org = org_from_space_name(info.name)
+            if org is None:
+                continue
+            try:
+                devices = store.list_devices(org)
+            except (OrgFsError, ValueError) as error:
+                self._log(
+                    "warn",
+                    "org.context.source_directory_unreadable",
+                    org=org,
+                    detail=str(error),
+                )
+                continue
+            for device in devices:
+                owners.setdefault(device.device_id, set()).add(
+                    directory_owner_principal(device.owner)
+                )
+        published = set(self._candidate_users(space_id))
+        sources: dict[str, str] = {}
+        for node, principals in sorted(owners.items()):
+            if len(principals) > 1:
+                self._log(
+                    "warn",
+                    "org.context.source_owner_conflict",
+                    node=node,
+                    principals=sorted(principals),
+                )
+                continue
+            (principal,) = principals
+            if principal in published:
+                sources[node] = principal
+        return sources
+
     def _stage_candidate(self, space_id: str, source: str) -> PendingRecord | None:
         username = source.removeprefix("user:")
         path = self._candidate_path(username)
@@ -304,8 +371,6 @@ class OrgContextOrgFsBridge:
         space = self._space(required=True)
         assert space is not None
         refreshed = self.runtime.refresh_space(space.space_id, timeout=timeout)
-        attributions = self.runtime.writer_attributions(space.space_id)
-        available_nodes = tuple(sorted(attributions))
         deprecated = False
         if source is None:
             requested = self._candidate_users(space.space_id)
@@ -313,14 +378,15 @@ class OrgContextOrgFsBridge:
             self._candidate_path(source.removeprefix("user:"))
             requested = (source,)
         else:
-            requested = tuple(sorted(attributions.get(source, ())))
+            node_sources = self._node_sources(space.space_id)
             deprecated = True
-            if not requested:
+            if source not in node_sources:
                 raise OrgMigrationError(
                     ipc_errors.ORG_SOURCE_UNREACHABLE,
                     f"org-context source {source!r} has never published to this space",
-                    {"availableSources": list(available_nodes)},
+                    {"availableSources": sorted(node_sources)},
                 )
+            requested = (node_sources[source],)
         staged: list[PendingRecord] = []
         response_count = 0
         for candidate_source in requested:

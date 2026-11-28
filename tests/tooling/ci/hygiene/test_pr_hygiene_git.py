@@ -35,7 +35,7 @@ GATE_FILES = (
     "scripts/ci/ci-plan.mjs",
     "scripts/ci/ci-plan.test.mjs",
     "scripts/ci/git-flow.mjs",
-    ".forgejo/git-flow.json",
+    ".github/git-flow.json",
 )
 REGISTRY_PATH = "tests/integration/native_harnesses/resident_metadata/native_origins_a.py"
 REGISTRY_CONFIG = ROOT / "scripts" / "ci" / "registry-union.json"

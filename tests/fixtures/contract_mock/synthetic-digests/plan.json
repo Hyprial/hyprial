@@ -1,0 +1,27 @@
+{
+  "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
+  "nodeId": "89fd8adf4f8f43f48f475bef6914c61f",
+  "docId": "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949",
+  "planId": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
+  "unsigned": {
+    "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
+    "metaFrontier": "AvqhrMmIj78FGOCGnpfjt5UJDQ==",
+    "docs": [
+      {
+        "docId": "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949",
+        "from": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+        "to": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+        "updateBlobs": []
+      }
+    ],
+    "blobs": [],
+    "snapshots": [],
+    "writersAffected": [
+      "node-example.17e20830f284842537f9ad2dedee3ecc.lane-0"
+    ],
+    "authorsBefore": {
+      "user:example": 1
+    },
+    "expiresAt": "2026-11-04T00:38:41.608906Z"
+  }
+}

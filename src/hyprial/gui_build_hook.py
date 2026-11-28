@@ -72,7 +72,7 @@ Decisions (2026-11-03, infra-ops/release-0.5.5.3.2, brief ``publish-gui``):
 
 Decisions (2026-11-03, infra-ops/release-0.5.5.3.3, brief ``wheel-release``):
 
-* ``.forgejo/workflows/wheel-release.yml`` stamps the disposable build copy
+* ``.github/workflows/wheel-release.yml`` stamps the disposable build copy
   of ``VERSION`` to ``<base>+g<short sha>`` before ``uv build --wheel``,
   which the clean-source check rejected and red every wheel-release run
   since 10-30.  The git-checkout path now tolerates exactly one tracked
@@ -101,7 +101,7 @@ Decisions (2026-11-16, release wheels and the GUI source remote):
   variable, and ``scripts/ci/verify_tailcat_wheels.py``,
   ``publish_wheels.py`` and ``attach_wheel_assets.py`` refuse a wheel whose
   ``release.json`` records another remote (decisions in
-  ``.forgejo/workflows/README.md``).
+  ``.github/workflows/README.md``).
 """
 
 from __future__ import annotations

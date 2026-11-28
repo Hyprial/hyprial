@@ -261,8 +261,11 @@
       <b>本页口径：未来完整 intg。</b> Contract Mock 覆盖按“当前 <code>intg/gui-v1</code> +
       <code>intg/daemon-request-examples</code>（PR #2297）merge-forward 后”的预期状态展示，即
       <b>60/60 路径、org 线 48/48</b>。功能状态仍按当前 daemon 实现：mock 覆盖完整
-      <b>不等于</b> 17 个无 daemon 方法动作、<code>org.delete</code>、OrgFS 目录恢复/条目级 purge、
+      <b>不等于</b> 17 个无 daemon 方法动作、<code>org.delete</code>、OrgFS 永久删除的界面入口、
       live people/agents/config/routes/stats 已经可用。
+      2026-11-25 之后 OrgFS 删除了 <code>orgfs.history</code>、<code>read_at</code>、<code>stat_at</code>、<code>serve</code>、
+      <code>purge</code>、<code>purge_plan</code>、<code>purge_status</code>、<code>unban</code> 八个方法；下面的方法表已去掉它们，
+      但正文里写死的“60/60”“48/48”等合计数是删除之前的口径，没有重算。
     </div>
     <div class="meta">
       <span><b>功能基线</b> <code>5d2ddea1e</code>（PR #2305，已并入 <code>intg/gui-v1</code>）</span>
@@ -380,7 +383,7 @@
         <h3>需要补产品/后端语义</h3>
         <ul>
           <li><b>org.delete</b>：固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程；Contract Mock 只有拒绝场景。</li>
-          <li><b>OrgFS 目录恢复、条目级 purge</b>：GUI 明确返回 unsupported；需要 daemon 提供删除前快照/条目级 purge 语义。</li>
+          <li><b>OrgFS 永久删除</b>：daemon 已提供（<code>orgfs.remove</code> 带 <code>permanent</code>），GUI 还没有入口。目录恢复已可用：一次只传节点的 <code>orgfs.restore</code>，带回同批删除的后代。</li>
           <li><b>live people/agents/config/routes/stats</b>：当前为 <code>null</code>，需要后端目录/配置/统计读模型；成员移除因此有 API 但入口不可达。</li>
         </ul>
       </div>
@@ -403,7 +406,7 @@
           <li><b>17 个 GUI 动作</b>没有 daemon 方法：待处理邀请、切换当前组织、改名、模板/导入/配置候选/采信、Agent-org、迁移全流程。</li>
           <li><b>org.delete</b> 有 MethodSpec/HTTP/GUI，但 daemon 固定 <code>LAST_AUTHORITY_REFUSED</code>，需要独立的确认关停维护流程。</li>
           <li><b>人员/Agent 目录、组织配置、统计</b>在 live detail 中为 <code>null</code>，目前只有 fixture 数据；成员移除因此有 API 但入口不可达。</li>
-          <li><b>OrgFS 目录恢复、条目级彻底清除</b>未实现；GUI 分别返回 <code>ORG_FOLDER_RESTORE_UNSUPPORTED</code> 与 <code>ORG_PURGE_UNSUPPORTED</code>。</li>
+          <li><b>OrgFS 条目级彻底清除</b>未实现；GUI 返回 <code>ORG_PURGE_UNSUPPORTED</code>。目录恢复 = 一次只传节点的 <code>orgfs.restore</code>，带回同批删除的后代。</li>
           <li><b>Contract Mock 不再是功能缺口</b>：未来完整 intg 预期 60/60；但 #2297 仍需 merge-forward。合并后剩余问题都是 daemon/产品语义，不是 mock 例子。</li>
         </ul>
         </ul>
@@ -1025,7 +1028,7 @@ const JOURNEYS = [
   },
   {
     id: 'j6', kicker: 'Journey 06', title: 'OrgFS 文件空间',
-    intro: 'OrgFS 是组织文件空间：读、写、建、移、删、历史与恢复。主路径已经接通；目录恢复与条目级彻底清除有明确语义缺口。高级空间管理/成员/诊断方法只暴露 HTTP，不进 GUI。',
+    intro: 'OrgFS 是组织文件空间：读、写、建、移、删与恢复（OrgFS 只保存当前状态，没有节点历史）。主路径已经接通；条目级彻底清除有明确语义缺口。高级空间管理/成员/诊断方法只暴露 HTTP，不进 GUI。',
     flowTitle: '空间 → 文件树 → 读写 → 回收站 / 历史',
     flow: [
       { type: 'start', title: '打开文件页' },
@@ -1044,15 +1047,14 @@ const JOURNEYS = [
         ]},
       ]},
       { type: 'method', title: '新建 / 移动 / 删除', method: 'orgfs.mkdir / write(createOnly) / move / remove' },
-      { type: 'method', title: '历史', method: 'orgfs.history + read_at' },
       { type: 'decision', title: '恢复目录？' },
       { type: 'branches', branches: [
         { label: '文件', tone: 'ok', nodes: [{ type: 'method', title: '恢复文件', method: 'orgfs.restore' }] },
-        { label: '目录', tone: 'bad', nodes: [{ type: 'step', title: 'ORG_FOLDER_RESTORE_UNSUPPORTED', note: '缺少删除前快照' }] },
+        { label: '目录', tone: 'ok', nodes: [{ type: 'method', title: '恢复目录（只传节点，带回同批删除的后代）', method: 'orgfs.restore' }] },
       ]},
       { type: 'decision', title: '条目级彻底清除？' },
       { type: 'branches', branches: [
-        { label: '当前', tone: 'bad', nodes: [{ type: 'step', title: 'ORG_PURGE_UNSUPPORTED', note: 'daemon purge 只清历史，不移回收站条目' }] },
+        { label: '当前', tone: 'bad', nodes: [{ type: 'step', title: 'GUI 无入口', note: 'daemon 已提供 orgfs.remove 的 permanent；界面待设计' }] },
       ]},
     ],
     features: [
@@ -1073,14 +1075,14 @@ const JOURNEYS = [
       {
         id: 'f-status', title: '空间状态', status: 'ready',
         kicker: 'orgfs.status',
-        desc: '读取 durable holders、online holders、parked/unconfirmed commits；用于文件页健康状态。',
+        desc: '读取 synced、online holders、content_pending、rejected_updates；用于文件页健康状态。',
         gui: '文件页状态；异常时只读/未知。',
         spec: 'orgfs.status（read-only, unary）',
         api: 'POST /daemon/request/orgfs.status',
         daemonRequest: 'orgfs_status',
         daemonMethod: 'OrgFs.status',
         mock: { layers: ['browser', 'fixture'], source: 'Browser route mock · orgfs.status', sample: {
-          space_id: 'space-alpha', durable_holders_seen: 1, holders_online: 1, parked_commits: 0, unconfirmed_commits: 0
+          space_id: 'space-alpha', synced: true, holders_online: 1, content_pending: 0, rejected_updates: 0
         }},
         note: 'status 只说明空间就绪度，不说明文件内容已到达；正文仍以 read 结果为准。',
       },
@@ -1175,68 +1177,50 @@ const JOURNEYS = [
         note: 'orgfs.trash 读取回收站；基线 Contract Mock 没有例子，未来 intg（#2297）会补；浏览器 org-rework mock 返回空 nodes。',
       },
       {
-        id: 'f-history', title: '版本历史', status: 'ready',
-        kicker: 'orgfs.history + read_at',
-        desc: '列出历史事件，再按 node + version 读回历史正文；单个版本内容失败时保留“内容不可用”，不显示空正文。',
-        gui: '历史面板；最多展示 20 个版本。',
-        spec: 'orgfs.history（read）+ orgfs.read_at（read）',
-        api: 'POST /daemon/request/orgfs.history、/orgfs.read_at',
-        daemonRequest: 'orgfs_history / orgfs_read_at',
-        daemonMethod: 'OrgFs.history / read_at',
-        mock: { layers: ['fixture'], source: 'GUI fixture · teamDetail.history', sample: [
-          { version: 3, modifiedBy: '林澄', modifiedAt: '10-28 17:45', contentStatus: 'ready', content: '# 新成员入门\n\n1. 安装 hyprial 并登录。' },
-          { version: 2, modifiedBy: '姚', modifiedAt: '10-27 12:10', contentStatus: 'ready', content: '# 新成员入门' }
-        ]},
-        note: 'read_at 失败只影响该版本预览；不能把空字符串当作真实历史正文。',
-      },
-      {
         id: 'f-restore', title: '恢复文件', status: 'partial',
         kicker: 'orgfs.restore',
-        desc: '文件恢复可用；目录恢复被 GUI 明确拒绝，因为当前 daemon 只有删除后版本，缺少删除前快照，无法保证恢复全部内容。',
-        gui: '回收站 → 恢复；目录项显示不可用原因。',
+        desc: '文件与目录恢复都可用：目录恢复 = 一次只传节点的 orgfs.restore，带回同批删除的后代。被覆盖之前的旧正文无法恢复。',
+        gui: '回收站 → 恢复。',
         spec: 'orgfs.restore（mutates, unary）',
         api: 'POST /daemon/request/orgfs.restore',
         daemonRequest: 'orgfs_restore',
         daemonMethod: 'OrgFs.restore',
         mock: { layers: ['fixture'], source: 'org-all-methods.test.tsx · orgfs.restore / GUI fixture', sample: {
           file: { kind: 'ok', value: undefined },
-          folder: { code: 'ORG_FOLDER_RESTORE_UNSUPPORTED', message: '目录恢复需要删除前快照；当前 daemon 只提供删除后版本，无法保证恢复全部内容，暂不可用。' }
+          folder: { kind: 'ok', value: undefined }
         }},
-        note: '恢复文件时用回收站节点自己的 type/version，不额外调 orgfs.stat。未来 intg 的 Contract Mock 会覆盖文件恢复；目录恢复仍是功能缺口，不是 mock 缺口。',
+        note: '恢复时只传回收站节点，不传版本，不额外调 orgfs.stat。未来 intg 的 Contract Mock 会覆盖恢复。',
       },
       {
-        id: 'f-purge', title: '彻底清除', status: 'partial',
-        kicker: 'orgfs.purge',
-        desc: 'daemon 的 purge 只清除历史数据，不会移除回收站条目；GUI 不能承诺“彻底清除”，直接返回 ORG_PURGE_UNSUPPORTED。',
-        gui: '回收站 → 彻底清除；当前显示明确不可用。',
-        spec: 'orgfs.purge（mutates, unary）',
-        api: 'POST /daemon/request/orgfs.purge',
-        daemonRequest: 'orgfs_purge',
-        daemonMethod: 'OrgFs.purge（history-only）',
-        mock: { layers: ['fixture'], source: 'GUI live-source · purgeEntry', sample: {
-          code: 'ORG_PURGE_UNSUPPORTED',
-          message: '当前 daemon 的 purge 只清除历史数据，不会移除回收站条目；不能承诺“彻底清除”。'
-        }},
-        note: '需要 daemon 提供条目级 purge 语义后才能放开；Contract Mock 只能表达当前 unsupported/error，不能替代该功能。purge_plan/purge_status/space_purge 是另一些 HTTP-only 方法。',
+        id: 'f-purge', title: '彻底清除', status: 'http-only',
+        kicker: 'orgfs.remove（permanent）',
+        desc: 'daemon 提供永久删除：orgfs.remove 带 permanent: true，从当前状态删除节点及其后代并释放二进制引用，不进回收站；只有空间 owner 或节点作者可以执行。GUI 目前没有入口，回收站里也没有“彻底清除”。',
+        gui: '无（入口待设计）。',
+        spec: 'orgfs.remove（mutates, unary；可选 permanent）',
+        api: 'POST /daemon/request/orgfs.remove',
+        daemonRequest: 'orgfs_remove',
+        daemonMethod: 'OrgFs.remove(permanent=True)',
+        mock: null,
+        note: '旧的 orgfs.purge / purge_plan / purge_status / unban 已删除（只清历史的全网内容清除不再存在）。CLI 入口是 hyprial org fs rm --permanent。',
       },
       {
         id: 'f-orgfs-space-api', title: '空间管理 API（仅 HTTP）', status: 'http-only',
-        kicker: 'orgfs.create / checkout / serve / watch / export / import',
-        desc: '创建空间、checkout、serve、watch、导出/导入都存在 HTTP 入口；GUI 不提供这些管理动作。export/import 使用 local-owner-selector。',
+        kicker: 'orgfs.create / checkout / watch / export / import',
+        desc: '创建空间、checkout、watch、导出/导入都存在 HTTP 入口；GUI 不提供这些管理动作。export/import 使用 local-owner-selector。',
         gui: '无。',
-        spec: 'orgfs.create / checkout / serve / watch / export / import',
-        api: 'POST /daemon/request/orgfs.create、/checkout、/serve、/watch、/export、/import',
-        daemonRequest: 'orgfs_create / checkout / serve / watch / export / import',
+        spec: 'orgfs.create / checkout / watch / export / import',
+        api: 'POST /daemon/request/orgfs.create、/checkout、/watch、/export、/import',
+        daemonRequest: 'orgfs_create / checkout / watch / export / import',
         daemonMethod: 'OrgFs / orgfs request handlers',
         mock: null,
         note: '未来 intg（#2297）会给这些 HTTP 方法补 Contract Mock 例子；不能用 GUI fixture 代替这些方法的验收。',
       },
       {
         id: 'f-orgfs-member-api', title: '成员与诊断 API（仅 HTTP）', status: 'http-only',
-        kicker: 'orgfs.members / invite / join / remove_member / unban / resolve / stat / stat_at / purge_plan / purge_status / space_purge',
-        desc: '空间成员、邀请、加入、移除、解禁，以及 resolve/stat/stat_at 和空间级 purge 计划/状态；GUI 不提供入口。',
+        kicker: 'orgfs.members / invite / join / remove_member / resolve / stat / space_purge',
+        desc: '空间成员、邀请、加入、移除，以及 resolve/stat 和本机空间清除；GUI 不提供入口。',
         gui: '无。',
-        spec: 'orgfs.members / invite / join / remove_member / unban / resolve / stat / stat_at / purge_plan / purge_status / space_purge',
+        spec: 'orgfs.members / invite / join / remove_member / resolve / stat / space_purge',
         api: 'POST /daemon/request/orgfs.*',
         daemonRequest: 'orgfs_* handlers',
         daemonMethod: 'OrgFs / orgfs request handlers',
@@ -1524,7 +1508,6 @@ const MISSING = [
 const HTTP_ONLY = [
   ['org.execute', '旧 join 别名（同一 bootstrap）', 'org_execute'],
   ['orgfs.checkout', '空间 checkout', 'orgfs_checkout'],
-  ['orgfs.serve', '空间 serve', 'orgfs_serve'],
   ['orgfs.watch', '空间 watch', 'orgfs_watch'],
   ['orgfs.export', '导出（local-owner-selector）', 'orgfs_export'],
   ['orgfs.import', '导入（local-owner-selector）', 'orgfs_import'],
@@ -1534,10 +1517,6 @@ const HTTP_ONLY = [
   ['orgfs.remove_member', '移除空间成员', 'orgfs_remove_member'],
   ['orgfs.resolve', '路径解析', 'orgfs_resolve'],
   ['orgfs.stat', '节点 stat', 'orgfs_stat'],
-  ['orgfs.stat_at', '历史版本 stat', 'orgfs_stat_at'],
-  ['orgfs.unban', '解除空间封禁', 'orgfs_unban'],
-  ['orgfs.purge_plan', '空间 purge 计划', 'orgfs_purge_plan'],
-  ['orgfs.purge_status', '空间 purge 状态', 'orgfs_purge_status'],
   ['orgfs.space_purge', '空间级 purge', 'orgfs_space_purge'],
   ['link.stats', 'link 统计', 'link_stats'],
   ['top.snapshot', '全局 top 快照（视图读取，GUI 未接）', 'top_snapshot'],
@@ -1559,7 +1538,6 @@ const INVENTORY = [
   ['orgfs.checkout', true, true, 'no', false],
   ['orgfs.create', true, true, 'no', false],
   ['orgfs.export', true, true, 'no', false],
-  ['orgfs.history', true, false, 'yes', false],
   ['orgfs.import', true, true, 'no', false],
   ['orgfs.invite', true, true, 'no', false],
   ['orgfs.join', true, true, 'no', false],
@@ -1567,23 +1545,16 @@ const INVENTORY = [
   ['orgfs.members', true, false, 'no', false],
   ['orgfs.mkdir', true, true, 'yes', false],
   ['orgfs.move', true, true, 'yes', false],
-  ['orgfs.purge', true, true, 'yes', false],
-  ['orgfs.purge_plan', true, true, 'no', false],
-  ['orgfs.purge_status', true, false, 'no', false],
   ['orgfs.read', true, false, 'yes', false],
-  ['orgfs.read_at', true, false, 'yes', false],
   ['orgfs.remove', true, true, 'yes', false],
   ['orgfs.remove_member', true, true, 'no', false],
   ['orgfs.resolve', true, false, 'no', false],
   ['orgfs.restore', true, true, 'yes', false],
-  ['orgfs.serve', true, true, 'no', false],
   ['orgfs.space_purge', true, true, 'no', false],
   ['orgfs.spaces', true, false, 'yes', false],
   ['orgfs.stat', true, false, 'no', false],
-  ['orgfs.stat_at', true, false, 'no', false],
   ['orgfs.status', true, false, 'yes', false],
   ['orgfs.trash', true, false, 'yes', false],
-  ['orgfs.unban', true, true, 'no', false],
   ['orgfs.watch', true, false, 'no', false],
   ['orgfs.write', true, true, 'yes', false],
   ['hosts', true, false, 'yes', false],

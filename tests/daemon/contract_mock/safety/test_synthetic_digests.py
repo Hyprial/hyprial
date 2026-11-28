@@ -11,7 +11,7 @@ import pytest
 from contract_mock.sensitive import SENTINEL, scan_value
 
 ROOT = Path(__file__).resolve().parents[4]
-PLAN_PATH = ROOT / "docs/notes/daemon-request-examples-2026-11-03/synthetic-digests/plan.json"
+PLAN_PATH = ROOT / "tests/fixtures/contract_mock/synthetic-digests/plan.json"
 PLAN_ID = "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878"
 BLOB_ID = hashlib.sha256(SENTINEL.encode()).hexdigest()
 

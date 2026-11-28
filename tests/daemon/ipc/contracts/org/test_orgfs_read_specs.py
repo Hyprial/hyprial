@@ -23,14 +23,10 @@ _READ_METHODS = (
     "orgfs.ls",
     "orgfs.stat",
     "orgfs.read",
-    "orgfs.read_at",
-    "orgfs.stat_at",
-    "orgfs.history",
     "orgfs.status",
     "orgfs.trash",
     "orgfs.watch",
     "orgfs.members",
-    "orgfs.purge_status",
 )
 
 _PARAMS = {
@@ -39,14 +35,10 @@ _PARAMS = {
     "orgfs.ls": {"spaceId": "space-x", "path": "docs", "recursive": True},
     "orgfs.stat": {"spaceId": "space-x", "path": "docs/a.md"},
     "orgfs.read": {"spaceId": "space-x", "path": "docs/a.md"},
-    "orgfs.read_at": {"spaceId": "space-x", "node": "id:n1", "version": "v1"},
-    "orgfs.stat_at": {"spaceId": "space-x", "node": "id:n1", "version": "v1"},
-    "orgfs.history": {"spaceId": "space-x", "path": "docs/a.md"},
     "orgfs.status": {"spaceId": "space-x"},
     "orgfs.trash": {"spaceId": "space-x"},
     "orgfs.watch": {"spaceId": "space-x", "glob": "*.md"},
     "orgfs.members": {"spaceId": "space-x"},
-    "orgfs.purge_status": {"spaceId": "space-x", "planId": "plan-1"},
 }
 
 _NODE = {
@@ -82,28 +74,12 @@ _RESULTS = {
     "orgfs.ls": {"nodes": [_NODE]},
     "orgfs.stat": _NODE,
     "orgfs.read": {"node": _NODE, "text": "hello", "version": "frontier-2"},
-    "orgfs.read_at": {"contentB64": "aGVsbG8="},
-    "orgfs.stat_at": _NODE,
-    "orgfs.history": {
-        "history": [
-            {
-                "node": {
-                    **{key: value for key, value in _NODE.items() if key != "contentState"},
-                    "content_state": "arrived",
-                },
-                "changed": "created",
-                "author": "user:owner",
-                "actor": None,
-                "at": "2026-11-02T10:00:00Z",
-            }
-        ]
-    },
     "orgfs.status": {
         "space_id": "space-x",
-        "unconfirmed_commits": 0,
-        "durable_holders_seen": [],
+        "synced": None,
         "holders_online": [],
-        "parked_commits": [],
+        "content_pending": 0,
+        "rejected_updates": 0,
     },
     "orgfs.trash": {"nodes": []},
     "orgfs.watch": {
@@ -126,11 +102,6 @@ _RESULTS = {
                 "added_at": "2026-11-02T10:00:00Z",
             }
         ]
-    },
-    "orgfs.purge_status": {
-        "plan_id": "plan-1",
-        "acknowledged": [],
-        "pending": [],
     },
 }
 
@@ -195,13 +166,6 @@ def test_read_rejects_an_undeclared_extra_field() -> None:
     assert list(Draft202012Validator(schema).iter_errors(result))
 
 
-def test_read_at_requires_a_version() -> None:
-    schema = _plain(_spec("orgfs.read_at").params_schema)
-    assert list(
-        Draft202012Validator(schema).iter_errors({"spaceId": "space-x", "node": "id:n1"})
-    )
-
-
 def test_orgfs_ls_recursive_is_an_optional_boolean() -> None:
     schema = _plain(_spec("orgfs.ls").params_schema)
     validator = Draft202012Validator(schema)
@@ -212,11 +176,6 @@ def test_orgfs_ls_recursive_is_an_optional_boolean() -> None:
     assert list(
         validator.iter_errors({"spaceId": "space-x", "recursive": "yes"})
     )
-
-
-def test_purge_status_requires_a_plan_id() -> None:
-    schema = _plain(_spec("orgfs.purge_status").params_schema)
-    assert list(Draft202012Validator(schema).iter_errors({"spaceId": "space-x"}))
 
 
 def test_batch_three_declarations_include_the_shared_argument_code() -> None:
@@ -263,15 +222,12 @@ def test_mcp_session_envelope_reaches_the_bridge_unchanged() -> None:
 
 
 def test_org_context_reads_declare_the_real_refusal_and_session_codes() -> None:
-    """Only the six methods that call _enforce_org_context claim these codes."""
+    """Only the three methods that call _enforce_org_context claim these codes."""
 
     org_context_methods = {
-        "orgfs.history",
         "orgfs.ls",
         "orgfs.read",
-        "orgfs.read_at",
         "orgfs.stat",
-        "orgfs.stat_at",
     }
     for name in org_context_methods:
         errors = {error.code: error for error in _spec(name).errors}

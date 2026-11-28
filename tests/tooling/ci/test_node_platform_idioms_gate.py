@@ -276,7 +276,15 @@ def test_the_live_tree_matches_the_committed_baseline() -> None:
     assert report["status"] == "PASS"
 
 
-def test_the_gate_runs_in_gate_python_with_the_base_ratchet() -> None:
-    workflow = (ROOT / ".forgejo" / "workflows" / "gate-python.yml").read_text(encoding="utf-8")
-    assert "python scripts/ci/check_node_platform_idioms.py\n" in workflow
-    assert "check_node_platform_idioms.py \\\n            --base-ref \"$CONTRACT_BASE_REF\"" in workflow
+def test_the_gate_is_named_in_the_merge_gate_script_loop() -> None:
+    """The merge gate names the script in its structural-gate loop.
+
+    As of PR #78 (2026-11-26) that loop passes no ``--base-ref``, so the
+    ratchet half (``test_first_seed_passes_when_base_has_no_ledger_then_locks_strictly``)
+    is exercised only here, not on a pull request.
+    """
+
+    workflow = (ROOT / ".github" / "workflows" / "gate.yml").read_text(encoding="utf-8")
+    block = workflow.split("for gate in", 1)[1].split("; do", 1)[0]
+    named = block.replace("\\", " ").split()
+    assert named.count("check_node_platform_idioms") == 1, named

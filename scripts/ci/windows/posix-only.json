@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "allowed_needs": [
+    "fcntl",
+    "pty",
+    "termios",
+    "resource",
+    "pwd",
+    "grp",
+    "/proc",
+    "SIGHUP",
+    "SIGUSR1",
+    "SIGUSR2",
+    "SIGTERM-exit-143",
+    "macos-bundle",
+    "AF_UNIX-path"
+  ],
+  "entries": [
+    {
+      "path": "tests/tooling/release/shell/signing",
+      "kind": "dir",
+      "needs": ["pwd"],
+      "evidence": "tests/tooling/release/shell/signing/conftest.py:14 imports pwd at module level, and pytest loads that conftest for every test file below this directory, so none of the 17 can be collected on Windows"
+    },
+    {
+      "path": "tests/tooling/release/shell/daemon/test_smoke_cleanup.py",
+      "kind": "file",
+      "needs": ["macos-bundle"],
+      "evidence": "every test of this file calls load, directly or through the helper at tests/tooling/release/shell/daemon/test_smoke_cleanup.py:30 whose line tests/tooling/release/shell/daemon/test_smoke_cleanup.py:31 loads; tests/tooling/release/shell/support.py:25 executes packaging/clients/smoke_bundle.py, whose module-level line packaging/clients/smoke_bundle.py:123 reads signal.SIGHUP, which does not exist on Windows; the fixture parent in tests/tooling/release/shell/daemon/conftest.py:18 creates its root under /tmp"
+    },
+    {
+      "path": "tests/tooling/release/shell/daemon/test_smoke_daemon.py",
+      "kind": "file",
+      "needs": ["macos-bundle"],
+      "evidence": "every test of this file calls the helper at tests/tooling/release/shell/daemon/test_smoke_daemon.py:17, whose line tests/tooling/release/shell/daemon/test_smoke_daemon.py:18 loads; tests/tooling/release/shell/support.py:25 executes packaging/clients/smoke_bundle.py, whose module-level line packaging/clients/smoke_bundle.py:123 reads signal.SIGHUP, which does not exist on Windows; the fixture parent in tests/tooling/release/shell/daemon/conftest.py:18 creates its root under /tmp"
+    },
+    {
+      "path": "tests/tooling/release/shell/daemon/test_smoke_interrupt.py",
+      "kind": "file",
+      "needs": ["macos-bundle"],
+      "evidence": "tests/tooling/release/shell/daemon/test_smoke_interrupt.py:50 evaluates signal.SIGHUP in a parametrize decorator, so importing the file fails on Windows; tests/tooling/release/shell/daemon/test_smoke_interrupt.py:54 calls load inside the test body; tests/tooling/release/shell/support.py:25 executes packaging/clients/smoke_bundle.py, whose module-level line packaging/clients/smoke_bundle.py:123 reads signal.SIGHUP, which does not exist on Windows"
+    }
+  ]
+}

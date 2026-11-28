@@ -10,6 +10,14 @@ that stubbed the locking would prove only that the stub agrees with itself,
 and the properties worth pinning here -- that the kernel drops the lock when
 the holder dies, that a refusal never starts the child -- are properties of
 the kernel, not of the wrapper's control flow.
+
+Decision (2026-11-26): every test here carries ``posix_only("fcntl")`` rather
+than the file being listed in ``scripts/ci/windows/posix-only.json``.  All six
+run ``with-machine-lock.py``, which imports ``fcntl`` at module level, so
+none of them can even start on Windows.  The per-test marks keep that visible
+test by test: each of the ten cases is reported as a skip naming ``fcntl``
+instead of the whole file vanishing from the collection, and a test added
+later that does not run the wrapper is not silently skipped with the rest.
 """
 
 from __future__ import annotations
@@ -77,6 +85,7 @@ def _run(lock: Path, label: str, *command: str) -> subprocess.CompletedProcess[s
         )
 
 
+@pytest.mark.posix_only("fcntl")
 @pytest.mark.parametrize("code", [0, 1, 2, 3, 4])
 def test_every_scenario_exit_code_passes_through_verbatim(
     tmp_path: Path, code: int
@@ -100,6 +109,7 @@ def test_every_scenario_exit_code_passes_through_verbatim(
     assert result.returncode == code
 
 
+@pytest.mark.posix_only("fcntl")
 def test_a_second_run_is_refused_and_its_child_never_starts(tmp_path: Path) -> None:
     """Refusal, not queueing: "did not run" must stay visible as itself.
 
@@ -143,6 +153,7 @@ def test_a_second_run_is_refused_and_its_child_never_starts(tmp_path: Path) -> N
     assert '"label": "E2E-013"' in refused.stdout
 
 
+@pytest.mark.posix_only("fcntl")
 def test_the_lock_is_released_when_the_scenario_finishes(tmp_path: Path) -> None:
     lock = tmp_path / "e2e.lock"
 
@@ -152,6 +163,7 @@ def test_the_lock_is_released_when_the_scenario_finishes(tmp_path: Path) -> None
     assert (first.returncode, second.returncode) == (0, 0)
 
 
+@pytest.mark.posix_only("fcntl")
 def test_a_killed_holder_leaves_no_stale_lock(tmp_path: Path) -> None:
     """The reason this is an flock and not a pidfile.
 
@@ -182,6 +194,7 @@ def test_a_killed_holder_leaves_no_stale_lock(tmp_path: Path) -> None:
     assert after.returncode == 0
 
 
+@pytest.mark.posix_only("fcntl")
 def test_the_holder_record_says_who_and_from_which_run(tmp_path: Path) -> None:
     lock = tmp_path / "e2e.lock"
     dumped = tmp_path / "record.json"
@@ -203,6 +216,7 @@ def test_the_holder_record_says_who_and_from_which_run(tmp_path: Path) -> None:
     assert lock.read_text(encoding="utf-8").strip() == ""
 
 
+@pytest.mark.posix_only("fcntl")
 def test_a_signal_killed_scenario_is_reported_the_shell_way(tmp_path: Path) -> None:
     """128+N, not -N: the gate records this number and int() would keep it.
 

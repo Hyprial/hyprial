@@ -428,18 +428,23 @@ def test_codex_interactive_carrier_logs_rpc_error_and_retries_same_final(
 def test_codex_interactive_carrier_reconciles_captured_completed_turn(
     tmp_path: Path,
 ) -> None:
-    """Stop joins a pump parked at its I/O queue, not mid RPC-retry cycle.
+    """Stop joins the pump once the carrier's reconciled final released it.
 
     Runs 44050/44128 shard 4 failed twice with "Codex interactive app-server
-    did not stop within 2.0s" plus 3 leaked loop fds: the carrier's reconcile
-    read settles and acks while the pump is still inside its 0.5s RPC-retry
-    cycle, so ``stop()``'s 2.0s join had to absorb the rest of that cycle;
-    on loaded shards (3-CPU cgroup, load ~8-11) it expired. The wait below
-    targets the real condition — the pump published the turn result
-    (``_pump.idle``) — before stopping, leaving the join only scheduler hops.
-    The 30s budget follows the heartbeat-bind round: no product constant
-    sizes "one retry cycle plus loaded-host scheduling"; a wedged pump still
-    fails, bounded. Evidence: docs/notes/codex-settlement-timing-2026-11-03.md.
+    did not stop within 2.0s" plus 3 leaked loop fds, and GitHub run
+    45874350431 failed the same way after the budget was raised to 30.0s.
+    The cause was not join timing.  When the carrier actor published
+    FINAL_OBSERVED before ``_settle_finals`` looked, settlement acked and
+    dropped the pump's turn client before ``_drain_carrier_effects`` derived
+    ``SupplyFinalRequested``, so the reconciled final never reached
+    ``receive_response``.  The pump kept retrying its failing read, never
+    went idle, and no join budget could end it; raising the budget from 2s
+    to 30s did not address that.  Settlement now hands the final to the
+    client as it drops it, pinned deterministically by
+    ``test_codex_interactive_carrier_settlement_releases_pump_observer``.
+    The wait below targets the pump's published turn result (``_pump.idle``)
+    before stopping; its bounds are unchanged.  Earlier timing notes:
+    docs/notes/codex-settlement-timing-2026-11-03.md.
     """
 
     class FakeServer:
@@ -532,6 +537,232 @@ def test_codex_interactive_carrier_reconciles_captured_completed_turn(
             "messageId": "m-captured",
         }
     ]
+
+
+def _wait_until(predicate, budget: float) -> bool:  # type: ignore[no-untyped-def]
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+def _stage(carrier: codex.CodexInteractiveCarrier, delivery_id: str) -> str | None:
+    state = carrier._carrier_runtime.snapshot(delivery_id)
+    return None if state is None else state.stage
+
+
+def _drive_to_final_observed(
+    carrier: codex.CodexInteractiveCarrier, delivery: HarnessDelivery
+) -> None:
+    """Run one delivery to FINAL_OBSERVED from the test thread, no poll thread.
+
+    Each step is one the carrier poll thread performs, in its order:
+    stage the fetched fact, drain the enqueue effect into the pump, wait for
+    the pump's turn start, reconcile ``thread/read``, wait for the actor.
+    """
+
+    delivery_id = delivery.delivery_id
+    assert carrier._stage_carrier_fetched(delivery, "request")
+    assert _wait_until(lambda: _stage(carrier, delivery_id) == "FETCHED", 2.0)
+    carrier._drain_carrier_effects()
+    assert _wait_until(lambda: _stage(carrier, delivery_id) == "TURN_STARTED", 2.0)
+    carrier._reconcile_inflight_turns()
+    assert _wait_until(lambda: _stage(carrier, delivery_id) == "FINAL_OBSERVED", 2.0)
+
+
+def _stop_unpolled(carrier: codex.CodexInteractiveCarrier) -> None:
+    carrier._stop.set()
+    carrier._thread.start()
+    carrier.stop()
+
+
+def test_codex_interactive_carrier_settlement_releases_pump_observer(
+    tmp_path: Path,
+) -> None:
+    """Settling a reconciled final hands that final to the pump's observer.
+
+    Root cause of the reconciles-captured-completed-turn stop failures:
+    ``_apply_inbox_list`` submits ``CarrierFinalObserved``, then
+    ``_settle_finals`` acks and drops the turn client, and only afterwards
+    ``_drain_carrier_effects`` derives ``SupplyFinalRequested``.  When the
+    actor publishes FINAL_OBSERVED inside that window the supply finds no
+    client, ``receive_response`` keeps retrying its failing read, the pump
+    never goes idle and ``stop()`` cannot join it.  This drives that order.
+    """
+
+    class FakeServer:
+        pid = 123
+
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def start_turn(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return "turn-release"
+
+        def read_turn(self, turn_id: str) -> dict[str, object]:
+            if threading.current_thread().name.startswith("asyncio_"):
+                raise codex.CodexAppServerRpcError("pump completion missed")
+            return {
+                "id": turn_id,
+                "status": "completed",
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "phase": "final_answer",
+                        "text": "reconciled final",
+                    }
+                ],
+            }
+
+        def interrupt_turn(self, turn_id: str) -> None:
+            return None
+
+    server = FakeServer()
+    replies: list[dict[str, object]] = []
+
+    def daemon_request(method: str, params: dict[str, object]) -> dict[str, object]:
+        hinted = _hint(method, params)
+        if hinted is not None:
+            return hinted
+        if method in {"session.refresh", "session.heartbeat"}:
+            return {"ok": True}
+        if method == "message.pending.list":
+            return {"ok": True, "messages": []}
+        if method == "message.ack":
+            replies.append(params)
+            return {"ok": True, "acknowledged": True}
+        raise AssertionError(method)
+
+    carrier = codex.CodexInteractiveCarrier(
+        server,
+        actor=ACTOR,
+        session_ref=THREAD_ID,
+        cwd=tmp_path,
+        command=["codex", "--remote"],
+        daemon_request=batch_route(daemon_request),
+        state_path=tmp_path / "carrier.sqlite3",
+        poll_seconds=0.01,
+    )
+    delivery = HarnessDelivery(
+        delivery_id="m-release",
+        conversation_id="c-release",
+        sender="adapter:lark:test",
+        recipient=ACTOR,
+        message="question",
+    )
+    try:
+        _drive_to_final_observed(carrier, delivery)
+        assert not carrier._pump.idle
+        carrier._settle_finals()
+        carrier._drain_carrier_effects()
+        assert _wait_until(lambda: carrier._pump.idle, _PUMP_IDLE_BUDGET_SECONDS)
+    finally:
+        _stop_unpolled(carrier)
+
+    assert len(server.prompts) == 1
+    assert replies == [
+        {"actor": ACTOR, "sessionRef": THREAD_ID, "messageId": "m-release"}
+    ]
+
+
+def test_codex_interactive_carrier_deferred_settlement_waits_for_retry_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred settlement is not retried before its retry time.
+
+    Root cause of the recovers-final-after-process-rebuild row loss: the
+    retry time travels to the actor as ``CarrierSettlementDeferred`` and
+    ``_settle_finals`` reads it back from the projection.  The next poll
+    step runs at once (delay 0.0); while the actor has not applied the fact
+    the projection still says "due", so the carrier acks a second time
+    milliseconds later, settles and deletes the row the rebuild should find.
+    The actor is held inside that fact here to open the window.
+    """
+
+    class FakeServer:
+        pid = 123
+
+        def start_turn(self, prompt: str) -> str:
+            return "turn-deferred"
+
+        def read_turn(self, turn_id: str) -> dict[str, object]:
+            return {
+                "id": turn_id,
+                "status": "completed",
+                "items": [
+                    {
+                        "type": "agentMessage",
+                        "phase": "final_answer",
+                        "text": "deferred final",
+                    }
+                ],
+            }
+
+        def interrupt_turn(self, turn_id: str) -> None:
+            return None
+
+    acks: list[dict[str, object]] = []
+
+    def daemon_request(method: str, params: dict[str, object]) -> dict[str, object]:
+        hinted = _hint(method, params)
+        if hinted is not None:
+            return hinted
+        if method in {"session.refresh", "session.heartbeat"}:
+            return {"ok": True}
+        if method == "message.pending.list":
+            return {"ok": True, "messages": []}
+        if method == "message.ack":
+            acks.append(params)
+            if len(acks) == 1:
+                return {"ok": False, "acknowledged": False}
+            return {"ok": True, "acknowledged": True}
+        raise AssertionError(method)
+
+    carrier = codex.CodexInteractiveCarrier(
+        FakeServer(),
+        actor=ACTOR,
+        session_ref=THREAD_ID,
+        cwd=tmp_path,
+        command=["codex", "--remote"],
+        daemon_request=batch_route(daemon_request),
+        state_path=tmp_path / "carrier.sqlite3",
+        poll_seconds=0.01,
+        settlement_retry_seconds=5.0,
+    )
+    store = carrier._store
+    assert store is not None
+    original_record = store.record_settlement_attempts
+    entered = threading.Event()
+    release = threading.Event()
+
+    def held_record(actor: str, message_id: str, attempts: int) -> None:
+        entered.set()
+        release.wait(_PUMP_IDLE_BUDGET_SECONDS)
+        original_record(actor, message_id, attempts)
+
+    delivery = HarnessDelivery(
+        delivery_id="m-deferred",
+        conversation_id="c-deferred",
+        sender="adapter:lark:test",
+        recipient=ACTOR,
+        message="question",
+    )
+    try:
+        _drive_to_final_observed(carrier, delivery)
+        monkeypatch.setattr(store, "record_settlement_attempts", held_record)
+        carrier._settle_finals()
+        assert entered.wait(2.0)
+        carrier._settle_finals()
+        acks_before_retry_time = len(acks)
+    finally:
+        release.set()
+        _stop_unpolled(carrier)
+
+    assert acks_before_retry_time == 1
 
 
 def test_m4_codex_interactive_settlement_regression(tmp_path: Path) -> None:

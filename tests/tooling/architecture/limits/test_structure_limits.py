@@ -181,14 +181,15 @@ class StructuralLimitsTests(unittest.TestCase):
         )
 
     def test_ci_gate_also_runs_for_gui_and_desktop_only_changes(self):
-        workflow = (SCRIPT.parents[2] / ".forgejo/workflows/gate-python.yml").read_text()
-        block = workflow.split("- name: Enforce product module and file size limits", 1)[1].split("- name:", 1)[0]
+        workflow = (SCRIPT.parents[2] / ".github/workflows/gate.yml").read_text()
+        block = workflow.split("- name: Structural and boundary gates", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("scope.outputs.python", block)
         self.assertNotIn("scope.outputs.unit", block)
-        self.assertIn("uv run --no-project --python 3.12 python scripts/ci/check_structural_limits.py", block)
-        self.assertIn("uv run --no-project --python 3.12 python scripts/ci/check_module_boundaries.py", block)
-        self.assertIn("uv run --no-project --python 3.12 python scripts/ci/check_network_reachability.py", block)
-        self.assertLess(workflow.index("Enforce product module"), workflow.index("Install Python and locked dependencies"))
+        self.assertNotIn("if:", block)
+        self.assertIn('python "scripts/ci/${gate}.py"', block)
+        for gate in ("check_structural_limits", "check_module_boundaries", "check_network_reachability"):
+            self.assertIn(gate, block.split("do", 1)[0])
+        self.assertLess(workflow.index("Structural and boundary gates"), workflow.index("Install the locked environment"))
 
     def test_test_modules_are_not_outside_the_size_gate(self):
         root = self.tree()

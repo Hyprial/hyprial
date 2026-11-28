@@ -50,4 +50,4 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
 ## Actor Backend (`HYPRIAL_ACCEPTANCE_ACTOR_BACKEND`)
 
 - `reference-abi` (default): used on PR CI (`gate-gui.yml` `gui-acceptance` job) where the Rust native actor engine is not built.
-- `native`: built and verified by the nightly `schedule` run in `.forgejo/workflows/gate-gui.yml`. Override locally with `HYPRIAL_ACCEPTANCE_ACTOR_BACKEND=native`.
+- `native`: built and verified by the nightly `schedule` run in `.github/workflows/gate-gui.yml`. Override locally with `HYPRIAL_ACCEPTANCE_ACTOR_BACKEND=native`.

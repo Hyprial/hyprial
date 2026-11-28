@@ -11,6 +11,7 @@ from hyprial.kernel.impl.manysys.fs.account import (
     host_machine_identifier,
     posix_metadata_enforced,
 )
+from hyprial.kernel.impl.manysys.fs.locality import local_filesystem
 from hyprial.kernel.impl.manysys.fs.durability import fsync_directory
 from hyprial.kernel.impl.manysys.fs.file_lock import (
     FileLockBusy,
@@ -52,6 +53,7 @@ __all__ = [
     "inspect_private_file",
     "is_directory_link",
     "link_directory",
+    "local_filesystem",
     "lock_exclusive",
     "open_private_file",
     "path_is_reparse",

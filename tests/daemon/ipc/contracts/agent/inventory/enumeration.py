@@ -396,6 +396,10 @@ _INVENTORY: tuple[_CodeFact, ...] = (
     _CodeFact("UNSUPPORTED", "identity agents/home/native_credential descriptor-relative I/O prerequisite", "launch"),
     _CodeFact("WORKER_PROXY_SETTINGS_INVALID", "identity agents/state/worker_proxy per-launch read", "launch"),
     _CodeFact("WORKER_PROXY_URL_INVALID", "identity agents/state/worker_proxy per-launch read", "launch"),
+    _CodeFact("MODEL_SESSION_BUSY", "Pi typed connection/session admission", "launch"),
+    _CodeFact("MODEL_RESUME_MISMATCH", "Pi typed connection/session admission", "launch"),
+    _CodeFact("MODEL_COMBINATION_UNSUPPORTED", "Pi typed connection/session admission", "launch"),
+    _CodeFact("MODEL_AUTH_UNAVAILABLE", "Pi typed connection/session admission", "launch"),
     _CodeFact("WORKER_PROXY_VENDORS_INVALID", "identity agents/state/worker_proxy per-launch read", "launch"),
 )
 
@@ -581,6 +585,10 @@ _START_ONLY_CODES = frozenset(
         "WORKER_PROXY_SETTINGS_INVALID",
         "WORKER_PROXY_URL_INVALID",
         "WORKER_PROXY_VENDORS_INVALID",
+        "MODEL_SESSION_BUSY",
+        "MODEL_RESUME_MISMATCH",
+        "MODEL_COMBINATION_UNSUPPORTED",
+        "MODEL_AUTH_UNAVAILABLE",
     }
 )
 

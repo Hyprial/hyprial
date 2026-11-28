@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 // file types are executable inputs until proven otherwise.
 export function isDocumentation(path) {
   if (path === 'docs/domains/squire/SKILL-template.md' || path === 'docs/guides/cutover-runbook.md') return false;
-  if (['.forgejo/workflows/README.md', 'tools/browser/README.md', 'ROADMAP.md',
+  if (['.github/workflows/README.md', 'tools/browser/README.md', 'ROADMAP.md',
     'sidecar/hyprial-tailcat/README.md'].includes(path)) return true;
   return /^(README(?:\.[\w-]+)?\.(?:md|rst|txt)|README|(?:CHANGELOG|CONTRIBUTING|AUTHORS|LICENSE)(?:\.md|\.rst|\.txt)?)$/.test(path)
     || /^(docs)\/.*\.(md|rst|adoc)$/.test(path);

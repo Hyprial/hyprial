@@ -45,6 +45,11 @@ Decisions (owner-approved 2026-11-20, plan sections 2 and 4.4, owner answers Q1
   ``ROLLED_BACK_GUI_LEFT`` / exit 3 and the summary names the process group and
   the kill command.  Closing the GUI never stops the daemon;
   ``gui.daemon-survives-close`` proves it.
+- The stop steps name their signal (``"SIGTERM"``, ``"SIGKILL"``) and the value
+  is read from the ``signal`` module only when ``end_child`` sends it, so
+  importing this module needs neither: a platform whose ``signal`` module
+  lacks a name fails when a child must be signalled, not at import, which
+  would take every importer of the package down with it.
 - The script observes the target daemon (pid, socket, the unit's main pid
   through the service seam) before and after the GUI start.  It cannot observe a
   daemon started for ANOTHER home without reading that home, which it never
@@ -87,8 +92,8 @@ GUI_HOLD_STEP_SECONDS = 1.0
 GUI_POLL_SECONDS = 0.25
 GUI_STOP_STEPS = (
     ("stdin closed", None, 30.0),
-    ("SIGTERM", signal.SIGTERM, 10.0),
-    ("SIGKILL", signal.SIGKILL, 5.0),
+    ("SIGTERM", "SIGTERM", 10.0),
+    ("SIGKILL", "SIGKILL", 5.0),
 )
 GUI_TTL_MIN_MS = 60_000
 GUI_TTL_MAX_MS = 600_000
@@ -347,8 +352,8 @@ class GuiMixin:
         method = "already exited"
         child.close_stdin()
         if code is None:
-            for step, number, seconds in GUI_STOP_STEPS:
-                if number is not None and not child.signal_group(number):
+            for step, name, seconds in GUI_STOP_STEPS:
+                if name is not None and not child.signal_group(getattr(signal, name)):
                     code = child.poll()
                     break
                 method = step
@@ -356,9 +361,9 @@ class GuiMixin:
                 if code is not None:
                     break
         if code is not None and child.group_alive():
-            for step, number, seconds in GUI_STOP_STEPS[1:]:
-                if number is not None:
-                    child.kill_residual_group(number)
+            for step, name, seconds in GUI_STOP_STEPS[1:]:
+                if name is not None:
+                    child.kill_residual_group(getattr(signal, name))
                 if self.wait_group_empty(child, seconds):
                     method = f"{step} (residual group)"
                     exited_first = False

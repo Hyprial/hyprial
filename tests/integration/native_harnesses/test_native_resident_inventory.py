@@ -182,3 +182,16 @@ def test_temporary_model_probe_modules_are_resident_and_cannot_read_login(path):
 def test_unknown_model_probe_module_remains_fail_closed():
     path = "daemon/impl/model_probe/unreviewed.py"
     assert _scan_sources({path: "value = 1\n"}, _LOGIN_PATTERN) == {path: [1]}
+
+
+@pytest.mark.parametrize("filename", ["__init__.py", "errors.py", "launch.py"])
+def test_pi_model_binding_modules_remain_resident(filename):
+    path = f"daemon/impl/harnesses/pi/bindings/{filename}"
+    assert NATIVE_ORIGINS[path] == ("resident", ("new-module: exact Pi model connection launch",))
+    assert _scan_sources({path: "value = 1\n"}, _LOGIN_PATTERN) == {}
+    assert _scan_sources({path: "value = read_login_credential()\n"}, _LOGIN_PATTERN) == {path: [1]}
+
+
+def test_unknown_pi_model_binding_module_remains_fail_closed():
+    path = "daemon/impl/harnesses/pi/bindings/unreviewed.py"
+    assert _scan_sources({path: "value = 1\n"}, _LOGIN_PATTERN) == {path: [1]}

@@ -2,9 +2,20 @@
 
 Everything here is enabled by :func:`configure`, which the root
 ``tests/conftest.py`` calls from ``pytest_configure``.  Without
-``HYPRIAL_TEST_LEDGER_DIR`` it registers nothing, opens nothing and arms
-nothing.  No ``-p`` plugin is used: ``-p`` imports too early and would also load
-for runs without xdist.
+``HYPRIAL_TEST_LEDGER_DIR`` the ledger and the watchdogs are not registered,
+nothing is opened and nothing is armed.  No ``-p`` plugin is used: ``-p``
+imports too early and would also load for runs without xdist.
+
+Decision (2026-11-26): ``configure`` also registers the POSIX-only plugin
+(``collection.PosixOnlyPlugin``) before the ledger check and on every
+platform, so it is registered whether or not ``HYPRIAL_TEST_LEDGER_DIR`` is
+set.  That plugin acts only on Windows, where it stops the collection of the
+paths registered in ``scripts/ci/windows/posix-only.json`` and skips test cases
+carrying the ``posix_only`` marker; on POSIX both of its hooks return at once.
+It therefore closes the gap between a plain Windows ``pytest tests/`` run and
+a ledgered one: without it a POSIX-only path would be ignored only when the
+ledger was on.  The registration is keyed by plugin name, so a second
+``configure`` call in the same process adds nothing.
 
 Ledger contract (read by ``scripts/ci/windows/run_waves.py``)
 -------------------------------------------------------------
@@ -414,14 +425,17 @@ def _release(dumps: list[DumpFile]) -> None:
 
 
 def configure(config: pytest.Config) -> None:
-    """Register the Windows-suite harness when ``HYPRIAL_TEST_LEDGER_DIR`` is set."""
+    """Register the POSIX-only plugin always, and the ledger harness when ``HYPRIAL_TEST_LEDGER_DIR`` is set."""
 
+    from tests.support.windows_suite import collection
+
+    collection.configure_posix_only(config)
     global _ACTIVE, _CONFIGURED
     raw = os.environ.get(LEDGER_ENV, "").strip()
     if not raw or _CONFIGURED:
         return
     _CONFIGURED = True
-    from tests.support.windows_suite import acl_probe, collection, host
+    from tests.support.windows_suite import acl_probe, host
 
     ledger_dir = Path(raw)
     ledger_dir.mkdir(parents=True, exist_ok=True)

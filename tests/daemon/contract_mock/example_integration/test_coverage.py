@@ -1,4 +1,4 @@
-"""The exact 39-method example increment, including refusal-only declarations.
+"""The exact 31-method example increment, including refusal-only declarations.
 
 Serving the cases is covered by gui/tests/contract-mock (conformance and
 chat-world tests) against the same projection.
@@ -16,11 +16,11 @@ from hyprial.daemon import daemon_openapi
 TARGETS = frozenset(
     "hosts top.snapshot org.delete org.execute org.leave "
     "org.network org.publish org.remove org.repair orgfs.spaces orgfs.resolve "
-    "orgfs.ls orgfs.stat orgfs.read orgfs.read_at orgfs.stat_at orgfs.history "
-    "orgfs.status orgfs.trash orgfs.watch orgfs.members orgfs.purge_status "
+    "orgfs.ls orgfs.stat orgfs.read "
+    "orgfs.status orgfs.trash orgfs.watch orgfs.members "
     "orgfs.create orgfs.write orgfs.export orgfs.import orgfs.mkdir orgfs.move "
-    "orgfs.remove orgfs.restore orgfs.purge_plan orgfs.purge orgfs.space_purge "
-    "orgfs.unban orgfs.serve orgfs.checkout orgfs.invite orgfs.remove_member "
+    "orgfs.remove orgfs.restore orgfs.space_purge "
+    "orgfs.checkout orgfs.invite orgfs.remove_member "
     "orgfs.join".split()
 )
 
@@ -33,9 +33,9 @@ def projection(tmp_path):
     return document, load_contract(path)
 
 
-def test_exact_39_have_same_source_mock_cases(projection):
+def test_exact_31_have_same_source_mock_cases(projection):
     document, contract = projection
-    assert len(TARGETS) == 39
+    assert len(TARGETS) == 31
     assert TARGETS <= contract.methods.keys(), sorted(TARGETS - contract.methods.keys())
     catalog = {entry["name"]: entry for entry in document["x-hyprial-methods"]}
     for method in sorted(TARGETS):

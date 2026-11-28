@@ -57,7 +57,7 @@ named fake-sidecar fixture.
 Known prose files are exempt. Exact rules live in `component()`.
 
 CI governance is shared infrastructure, not GUI/sidecar product ownership:
-`.forgejo/`, `scripts/ci-*`, `scripts/pytest*`, `tests/test_ci_*` (except the
+`.github/`, `scripts/ci-*`, `scripts/pytest*`, `tests/test_ci_*` (except the
 sidecar-only `test_ci_go_modules.py`),
 `tests/test_pytest_*`, `tests/test_gui_ci_migration.py`, and GUI `scripts/ci-*`.
 Changing these inputs runs all relevant suites. Adding product changes beside

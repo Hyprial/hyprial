@@ -9,6 +9,18 @@ from hyprial.shell.impl.request_http.server import RequestHttpServer
 from tests.shell.request_http.test_server import _config, _entries, _fake, _http
 
 
+def _record_business_requests():
+    handshake, calls = _fake(_entries())
+    dispatched = []
+
+    def request(method, params, **kwargs):
+        if method not in {"ping", "daemon.catalog"}:
+            dispatched.append(method)
+        return handshake(method, params, **kwargs)
+
+    return request, calls, dispatched
+
+
 @pytest.mark.parametrize("duration,expected", [(None, 15), (1, 6), (30, 35), (30.0, 35), (60, 65)])
 def test_probe_budget_reaches_daemon_after_carrier_elapsed(tmp_path, monkeypatch, duration, expected):
     handshake, _ = _fake(_entries())
@@ -39,25 +51,26 @@ def test_probe_budget_reaches_daemon_after_carrier_elapsed(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("duration", [0, 61, True, "30", 1.5])
 def test_invalid_probe_budget_never_dispatches(tmp_path, duration):
-    handshake, calls = _fake(_entries())
+    handshake, calls, dispatched = _record_business_requests()
     server = RequestHttpServer(_config(tmp_path), request_once=handshake)
     server.start()
+    server._snapshot_at = 0.0
     before = calls["count"]
     try:
         status, _, raw = _http(server, "POST", "/daemon/request/agent.secret.provider-test",
                                token=server.token, body={"provider": "deepseek", "secret": "synthetic",
                                                         "model": "hy4-flash", "timeoutSeconds": duration})
         assert status == 400, json.loads(raw)
-        assert calls["count"] == before
+        assert calls["count"] == before + 2
+        assert dispatched == []
     finally:
         server.shutdown()
 
 
 def test_exhausted_carrier_budget_never_dispatches(tmp_path, monkeypatch):
-    handshake, calls = _fake(_entries())
+    handshake, _, dispatched = _record_business_requests()
     server = RequestHttpServer(_config(tmp_path), request_once=handshake)
     server.start()
-    before = calls['count']
     try:
         from hyprial.shell.impl.request_http import server as carrier
         with monkeypatch.context() as patch:
@@ -65,7 +78,7 @@ def test_exhausted_carrier_budget_never_dispatches(tmp_path, monkeypatch):
             result = server._invoke('agent.secret.provider-test', 'expired', 100.0,
                 {'provider': 'deepseek', 'secret': 'synthetic', 'model': 'x', 'timeoutSeconds': 1}, None)
         assert result.status == 408
-        assert calls['count'] == before
+        assert dispatched == []
     finally:
         server.shutdown()
 

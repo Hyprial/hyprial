@@ -125,6 +125,25 @@ describe('SUBMIT_OUTCOME_UNKNOWN operationId honesty', () => {
 });
 
 describe('agent.start declared error codes have honest UI wording (implS2)', () => {
+  it.each([
+    ['MODEL_SESSION_BUSY', /会话.*占用/],
+    ['MODEL_RESUME_MISMATCH', /模型配置.*不一致/],
+    ['MODEL_COMBINATION_UNSUPPORTED', /组合不受支持/],
+    ['MODEL_AUTH_UNAVAILABLE', /无法取得.*凭据/],
+  ] as const)('%s explains the refusal without exposing diagnostics or asserting an unknown result', (code, reason) => {
+    const error = new AgentRequestError(code, 'private-key-sentinel', 'dispatched', {
+      lastError: 'private-key-sentinel',
+    }, true);
+    const result = startFailureMessage(error);
+    expect(result.dispatch).toBe('dispatched');
+    expect(result.text).toMatch(reason);
+    expect(result.text).toContain('启动未完成');
+    expect(result.text).not.toMatch(/private-key-sentinel|成功|已受理/);
+    expect(startFailureMessage(new AgentRequestError(
+      code, 'private-key-sentinel', 'unknown', null, true,
+    )).text).toContain('结果未知');
+  });
+
   it('missing runtime points to installation and daemon PATH without exposing raw errors', () => {
     const { text } = startFailureMessage(new AgentRequestError(
       'HARNESS_BINARY_MISSING', 'private-path-and-key-sentinel', 'dispatched', null, true,

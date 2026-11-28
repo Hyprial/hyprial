@@ -9,6 +9,10 @@ Decision record (org lifecycle batch 2, 2026-11-02)
 - The result schemas were pinned against real isolated-daemon answers.  The
   optional network fields cover the panes the daemon may omit when a sidecar
   source is unavailable.
+- 2026-11-25 (orgfs-minimal design section 5, package O): ``directoryPending``
+  drops ``parkedCommits``.  The state host parks no commits, and an
+  always-empty field would claim a property nothing measures; held-back
+  updates are diagnosed through ``orgfs.status``.
 """
 
 from __future__ import annotations
@@ -206,13 +210,6 @@ _UNAVAILABLE_ORG = {
     "additionalProperties": False,
 }
 
-_PARKED_COMMIT = {
-    "type": "object",
-    "properties": {"author": _STRING, "commits": _INT},
-    "required": ["author", "commits"],
-    "additionalProperties": False,
-}
-
 _CONTENT_PENDING = {
     "type": "object",
     "properties": {
@@ -228,15 +225,9 @@ _DIRECTORY_PENDING = {
     "type": "object",
     "properties": {
         "contentPending": {"type": "array", "items": _CONTENT_PENDING},
-        "parkedCommits": {
-            "oneOf": [
-                {"type": "array", "items": _PARKED_COMMIT},
-                {"type": "null"},
-            ]
-        },
         "dataProblems": {"type": "array", "items": _DATA_PROBLEM},
     },
-    "required": ["contentPending", "parkedCommits"],
+    "required": ["contentPending"],
     "additionalProperties": False,
 }
 

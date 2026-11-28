@@ -1,7 +1,7 @@
 # 发布规则
 
 分支、候选和轨道角色的机器可读规定见
-[`.forgejo/git-flow.json`](../../.forgejo/git-flow.json)；CI planner 实际读取该配置，
+[`.github/git-flow.json`](../../.github/git-flow.json)；CI planner 实际读取该配置，
 本文定义对应的发布操作、验收和冻结规则。
 
 Allen 于 2026-11-08 确认改为 dev-first：所有完成的修改先经 PR 进入 `dev`，

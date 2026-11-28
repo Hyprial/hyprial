@@ -42,29 +42,29 @@ describe('shared backend connection', () => {
 
   it('admits every cataloged callable method, including writes, and rejects absent or non-callable methods', async () => {
     const invoke = vi.fn().mockImplementation(async (method: string) => {
-      if (method === 'orgfs.read_at') return { contentB64: 'AA==' };
-      if (method === 'orgfs.purge_plan') return { planId: 'plan-1' };
+      if (method === 'orgfs.read') return { text: 'hello' };
+      if (method === 'orgfs.mkdir') return { path: 'docs' };
       if (method === 'agent.start') return { accepted: true, running: true, warnings: [] };
       throw new Error(`unexpected dispatch ${method}`);
     });
     const connection = createBackendConnection({ invoke }, {
       ...descriptor,
       methods: [
-        { name: 'orgfs.read_at', callable: true, state: 'available', mutates: false },
-        { name: 'orgfs.purge_plan', callable: true, state: 'available', mutates: true },
+        { name: 'orgfs.read', callable: true, state: 'available', mutates: false },
+        { name: 'orgfs.mkdir', callable: true, state: 'available', mutates: true },
         { name: 'agent.start', callable: true, state: 'available', mutates: true },
         { name: 'agent.stop', callable: false, state: 'retired', mutates: true },
       ],
     });
-    await expect(connection.client.orgfs.readAt({ spaceId: 'space', node: 'id:node', version: '1' }))
-      .resolves.toEqual({ contentB64: 'AA==' });
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('orgfs.read_at', {
-      spaceId: 'space', node: 'id:node', version: '1',
+    await expect(connection.client.orgfs.read({ spaceId: 'space', node: 'id:node' }))
+      .resolves.toEqual({ text: 'hello' });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('orgfs.read', {
+      spaceId: 'space', node: 'id:node',
     }, expect.anything());
-    await expect(connection.client.orgfs.purgePlan({
-      spaceId: 'space', targets: [{ kind: 'blob', sha: 'abc' }],
-    })).resolves.toEqual({ planId: 'plan-1' });
-    expect(connection.methodAccess('orgfs.purge_plan')).toEqual({ available: true });
+    await expect(connection.client.orgfs.mkdir({
+      spaceId: 'space', path: 'docs',
+    })).resolves.toEqual({ path: 'docs' });
+    expect(connection.methodAccess('orgfs.mkdir')).toEqual({ available: true });
     await expect(connection.client.agent.start({ name: 'worker' })).resolves.toEqual({
       accepted: true, running: true, warnings: [],
     });
@@ -81,7 +81,7 @@ describe('shared backend connection', () => {
       name: 'missing', provider: null, model: null, preferredHarness: null,
     })).rejects.toMatchObject({ code: 'METHOD_NOT_FOUND', dispatch: 'not-dispatched' });
     expect(invoke.mock.calls.map(([method]) => method)).toEqual([
-      'orgfs.read_at', 'orgfs.purge_plan', 'agent.start',
+      'orgfs.read', 'orgfs.mkdir', 'agent.start',
     ]);
   });
 

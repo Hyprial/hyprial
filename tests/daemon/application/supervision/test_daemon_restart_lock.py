@@ -6,11 +6,17 @@ Historically ``hyprial daemon stop`` (and ``IsolatedDaemon.sigterm``) reported
 success as soon as that socket disappeared, so a rapid restart could overtake
 the old process's teardown.  Startup still waits defensively, and the public
 stop command now also waits for the final lock-release completion receipt.
+
+Decision (2026-11-26): ``fcntl`` is imported inside each function that
+holds or releases a lock, not at module level.  A module-level import made
+the whole file uncollectable on Windows, where ``fcntl`` does not exist, and
+hid the tests that do not need it.  The eight tests that take the lock
+themselves carry ``posix_only("fcntl")``, because a real ``flock`` is what
+they measure with; the rest run unmarked on every platform.
 """
 
 from __future__ import annotations
 
-import fcntl
 import threading
 import time
 from pathlib import Path
@@ -41,6 +47,7 @@ def _app(tmp_path: Path) -> DaemonApplication:
 
 
 def _hold_lock(state_dir: Path) -> Any:
+    import fcntl
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     holder = (state_dir / "daemon.lock").open("a+", encoding="utf-8")
     fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -58,9 +65,11 @@ def test_acquire_lock_succeeds_without_contention(
         app._lock_stream.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_acquire_lock_waits_for_previous_daemon_to_release(
     monkeypatch: Any, tmp_path: Path, own_daemon_application
 ) -> None:
+    import fcntl
     monkeypatch.delenv("HYPRIAL_DAEMON_LOCK_WAIT_TIMEOUT", raising=False)  # default window
     app = own_daemon_application(_app(tmp_path))
     holder = _hold_lock(app.state_dir)
@@ -99,9 +108,11 @@ def test_acquire_lock_waits_for_previous_daemon_to_release(
     assert app._lock_stream is not None
 
 
+@pytest.mark.posix_only("fcntl")
 def test_acquire_lock_times_out_with_diagnostic_message(
     monkeypatch: Any, tmp_path: Path, own_daemon_application
 ) -> None:
+    import fcntl
     monkeypatch.setenv("HYPRIAL_DAEMON_LOCK_WAIT_TIMEOUT", "0.3")
     app = own_daemon_application(_app(tmp_path))
     holder = _hold_lock(app.state_dir)
@@ -120,9 +131,11 @@ def test_acquire_lock_times_out_with_diagnostic_message(
         holder.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_acquire_lock_fail_fast_when_wait_disabled(
     monkeypatch: Any, tmp_path: Path, own_daemon_application
 ) -> None:
+    import fcntl
     monkeypatch.setenv("HYPRIAL_DAEMON_LOCK_WAIT_TIMEOUT", "0")
     app = own_daemon_application(_app(tmp_path))
     holder = _hold_lock(app.state_dir)
@@ -137,9 +150,11 @@ def test_acquire_lock_fail_fast_when_wait_disabled(
         holder.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_operator_stop_waits_for_complete_daemon_teardown(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
+    import fcntl
     state = tmp_path / "state"
     holder = _hold_lock(state)
     monkeypatch.setattr(_cli_get_services(), "_state_dir", lambda: state)
@@ -244,9 +259,11 @@ def test_operator_stop_reports_the_pid_when_the_old_process_does_not_exit(
     assert result["survivingPid"] == 999_993
 
 
+@pytest.mark.posix_only("fcntl")
 def test_teardown_lock_timeout_is_distinct_from_socket_timeout(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
+    import fcntl
     state = tmp_path / "state"
     holder = _hold_lock(state)
     monkeypatch.setattr(_cli_get_services(), "_stopped_process", lambda _pid, _identity: False)
@@ -265,6 +282,7 @@ def test_teardown_lock_timeout_is_distinct_from_socket_timeout(
         holder.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_a_replacement_taking_over_does_not_prove_the_old_process_exited(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -283,6 +301,7 @@ def test_a_replacement_taking_over_does_not_prove_the_old_process_exited(
     gone" is the only thing that can end it well.
     """
 
+    import fcntl
     state = tmp_path / "state"
     old_holder = _hold_lock(state)
     replacement_ready = threading.Event()
@@ -333,6 +352,7 @@ def test_a_replacement_taking_over_does_not_prove_the_old_process_exited(
         old_holder.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_receipts_still_end_the_wait_when_there_is_no_pid_to_watch(
     tmp_path: Path,
 ) -> None:
@@ -344,6 +364,7 @@ def test_receipts_still_end_the_wait_when_there_is_no_pid_to_watch(
     have traded one silent failure for a guaranteed timeout on a healthy stop.
     """
 
+    import fcntl
     state = tmp_path / "state"
     holder = _hold_lock(state)
     fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
@@ -358,9 +379,11 @@ def test_receipts_still_end_the_wait_when_there_is_no_pid_to_watch(
         holder.close()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_public_stop_does_not_wait_on_replacement_socket(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
+    import fcntl
     state = tmp_path / "state"
     socket_path = state / "daemon.sock"
     old_holder = _hold_lock(state)

@@ -70,7 +70,7 @@ the binding rules for this package are:
   floating tool layer (default collapsed, expand on click), mounted outside the
   product `#root`, never altering product layout and never entering production
   builds.
-- Three anti-regression gates wired into `.forgejo/workflows/gate-gui.yml`:
+- Three anti-regression gates wired into `.github/workflows/gate-gui.yml`:
   the static gate (`verify:dev-product-parity`), the dual-entry browser parity
   gate (`verify:dev-browser-parity`) and the production artifact gate
   (`verify:production-copy`). A missing browser or artifact is FAIL, never a

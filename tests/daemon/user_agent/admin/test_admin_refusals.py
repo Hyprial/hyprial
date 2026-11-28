@@ -108,12 +108,11 @@ OTHER_NOT_A_TARGET = frozenset({
     "message.history", "message.pending.batch", "message.query",
     "message.send", "message.send.key_lookup", "message.send.lookup", "message.status",
     "network.expose", "org.acl.ls", "org.acl.revoke", "orgfs.checkout", "orgfs.create", "orgfs.export",
-    "orgfs.history", "orgfs.import", "orgfs.invite", "orgfs.join", "orgfs.ls",
-    "orgfs.members", "orgfs.mkdir", "orgfs.move", "orgfs.purge", "orgfs.purge_plan",
-    "orgfs.purge_status", "orgfs.read", "orgfs.read_at", "orgfs.remove",
-    "orgfs.remove_member", "orgfs.resolve", "orgfs.restore", "orgfs.serve",
-    "orgfs.space_purge", "orgfs.spaces", "orgfs.stat", "orgfs.stat_at", "orgfs.status",
-    "orgfs.trash", "orgfs.unban", "orgfs.watch", "orgfs.write", "progress.list",
+    "orgfs.import", "orgfs.invite", "orgfs.join", "orgfs.ls",
+    "orgfs.members", "orgfs.mkdir", "orgfs.move", "orgfs.read", "orgfs.remove",
+    "orgfs.remove_member", "orgfs.resolve", "orgfs.restore",
+    "orgfs.space_purge", "orgfs.spaces", "orgfs.stat", "orgfs.status",
+    "orgfs.trash", "orgfs.watch", "orgfs.write", "progress.list",
     "routine.audit", "routine.list", "routine.pause", "routine.plan", "routine.resume",
     "routine.status", "service.connect", "service.disconnect", "service.guide",
     "session.turn.refresh", "targets", "userKey.sign", "workflow.history.list",
@@ -143,8 +142,6 @@ DEEP_PARAMS = {
     ("onboarding.firstRun.begin", "agentUri"): "the first-run agent must have a harness and "
     "one credential; the user agent has neither and is refused before any write "
     "(``test_first_run_refusal``)",
-    ("orgfs.purge_plan", "targets[].to"): "the end of a tree or document revision range, "
-    "not an agent",
 }
 """Params the depth/name widening matched beyond the top-level six, and why each is fine."""
 
