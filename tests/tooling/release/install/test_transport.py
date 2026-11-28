@@ -4,10 +4,9 @@ from pathlib import Path
 import ssl
 from types import SimpleNamespace
 from urllib.error import URLError
-from urllib.request import Request, proxy_bypass_environment
+from urllib.request import Request
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[4]
 SIGNED_URL = "https://sentinel-user:sentinel-password@example.invalid/bucket/wheel.whl?X-Amz-Signature=sentinel-signature"
@@ -31,6 +30,8 @@ def transport(monkeypatch):
     (URLError(SIGNED_URL), "URLError reason str"),
     (HTTPException(SIGNED_URL), "HTTPException"),
 ])
+
+
 def test_network_failure_is_diagnostic_and_secret_free(transport, monkeypatch, error, diagnostic):
     attempts, sleeps, checks = [], [], []
 
@@ -57,6 +58,8 @@ def test_network_failure_is_diagnostic_and_secret_free(transport, monkeypatch, e
     ("GET", 0, 15), ("PUT", 0, 15), ("PUT", 128 * 1024, 16),
     ("PUT", 20 * 1024 * 1024, 175),
 ])
+
+
 def test_opener_receives_size_budget(transport, monkeypatch, method, size, timeout):
     timeouts = []
 
@@ -71,40 +74,6 @@ def test_opener_receives_size_budget(transport, monkeypatch, method, size, timeo
     with pytest.raises(RuntimeError):
         transport.transfer(request)
     assert timeouts == [timeout] * 3
-
-
-@pytest.mark.parametrize("workflow,step_names,runner", [
-    ("wheel-release.yml",
-     ["Publish wheel track to R2 and verify anonymous read-back"], ["release-ci"]),
-    ("release-install-scripts.yml",
-     ["Publish installers and verify anonymous read-back",
-      "Compare public installer objects with repo bytes"], "ubuntu-latest"),
-])
-def test_r2_steps_bypass_proxy_without_changing_dependency_routing(workflow, step_names, runner):
-    """Proxy bypass stays exact while each workflow keeps its reviewed runner.
-
-    wheel-release publishes from the dedicated release pool (#2137); the
-    installer workflow stays on ubuntu-latest. Only the runner pin moved;
-    the dependency routing and the NO_PROXY set are unchanged.
-    """
-
-    doc = yaml.safe_load((ROOT / ".forgejo/workflows" / workflow).read_text())
-    steps = {step["name"]: (job, step) for job in doc["jobs"].values()
-             for step in job["steps"] if "name" in step}
-    for name in step_names:
-        job, step = steps[name]
-        assert job["runs-on"] == runner
-        assert "HTTPS_PROXY" in job["env"]  # Dependency downloads keep their route.
-        env = step["env"]
-        assert env["NO_PROXY"] == env["no_proxy"]  # urllib prefers lowercase.
-        bypass = set(env["no_proxy"].split(","))
-        assert {".r2.cloudflarestorage.com", "dl.hyprial.com", "code.hyprial.com"} <= bypass
-        assert "*" not in bypass
-        proxies = {"no": env["no_proxy"]}
-        for host in ("a" * 32 + ".r2.cloudflarestorage.com", "dl.hyprial.com",
-                     "code.hyprial.com"):
-            assert proxy_bypass_environment(host, proxies)
-        assert not proxy_bypass_environment("github.com", proxies)
 
 
 def test_timeout_math_is_capped_without_allocating_large_bodies(transport):

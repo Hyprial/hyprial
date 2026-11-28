@@ -110,3 +110,41 @@ The aggregate view also carries `unavailableOrgs` and `dataProblems`:
   for status compatibility. An unknown non-empty string state reports
   `unknown-state` and is `partial`; explicit `creating`/`partial` fail closed;
   explicit `deleted` keeps the dev behaviour.
+
+## Leave requests
+
+A member leaving an org (`org.leave`, CLI `hyprial org leave`) removes its own
+device row and files one leave request at `directory/leaves/<user>.json`, a
+protected document whose path user is the requester. The record is a JSON
+object written by the requester's node:
+
+```json
+{
+  "org": "group-acme",
+  "user": "bob@example",
+  "deviceId": "node-b",
+  "requestedAt": "2026-10-03T12:00:00+00:00",
+  "memberAddedAt": "2026-10-01T08:30:00.123456Z"
+}
+```
+
+`memberAddedAt` is copied verbatim from `addedAt` of the requester's current
+member row in the org's directory space at the moment the request is filed.
+The writer omits it only when that row cannot be read; such a request is never
+fulfilled.
+
+The owner/admin sweep (`process_leave_requests`) fulfils a request only when:
+
+- the filename names a valid user;
+- the document's authors are exactly that user; and
+- `memberAddedAt` is a non-empty string equal to `addedAt` of that user's
+  current member row.
+
+A missing, non-string or empty `memberAddedAt`, an absent member row, or any
+other value counts as stale: the request is skipped with the
+`org.leaves.stale` log event and left in place. This keeps a request filed in
+an earlier membership period from removing the user after they are removed
+and invited again (a re-invite writes a new `addedAt`). The field is
+self-reported like the rest of the record; it guards against stale requests,
+not against a forging node. Requests written before this field existed are
+therefore never fulfilled automatically.

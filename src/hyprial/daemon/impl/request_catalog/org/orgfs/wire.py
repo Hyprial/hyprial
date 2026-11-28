@@ -1,3 +1,20 @@
+# Decision record (phase D, package S, 2026-11-25):
+# - ``orgfs.status`` returns the state runtime's status (design §1.1):
+#   ``space_id``, ``synced`` (``null`` until a holder was observed),
+#   ``holders_online``, ``content_pending`` and ``rejected_updates``.  The
+#   journal fields (``unconfirmed_commits``, ``durable_holders_seen``,
+#   ``parked_commits``) left with the journal store.
+# - ``ORGFS_LAYOUT_UNSUPPORTED`` (design §2.7) is declared, with its own data
+#   schema, only on the methods that look a space up by ``spaceId``: those
+#   are the ones that reach a space the startup scan refused.  Its data names
+#   the space, the ``reason`` and the migration ``guide``; a corrupt file also
+#   names its ``path``.
+# Decision record (phase D, package D4b, 2026-11-25): the journal-only codes
+# ``log-key-conflict``, ``purged``, ``snapshot-barrier`` and ``stale-plan``
+# have no producer on the state host and leave the declaration groups with
+# ``ORGFS_ERROR_CODES``; the unreferenced ``PURGE_STATUS`` schema and its
+# error group go with them.  ``orgfs.checkout`` declares
+# ``ORGFS_LAYOUT_UNSUPPORTED`` like the other space-scoped writes.
 """Shared JSON schemas and error vocabulary for the orgfs.* MethodSpecs.
 
 The orgfs runtime exposes one closed error vocabulary (``ORGFS_ERROR_CODES``)
@@ -82,6 +99,34 @@ ORG_CONTEXT_ERRORS = (
     *SESSION_ERRORS,
 )
 
+LAYOUT_UNSUPPORTED_DATA = {
+    "type": "object",
+    "properties": {
+        "spaceId": String,
+        "reason": {
+            "type": "string",
+            "enum": [
+                "legacy-journal",
+                "unknown-space-json",
+                "space-id-mismatch",
+                "corrupt-file",
+            ],
+        },
+        "guide": String,
+        "path": String,
+    },
+    "required": ["spaceId", "reason", "guide"],
+    "additionalProperties": False,
+}
+
+LAYOUT_UNSUPPORTED_ERRORS = (
+    MethodError(
+        ipc_errors.ORGFS_LAYOUT_UNSUPPORTED,
+        LAYOUT_UNSUPPORTED_DATA,
+        description="the space is stored in a layout this daemon does not open; see guide",
+    ),
+)
+
 #: Error data is an object owned by the producer.  The contract freezes the
 #: error code; it deliberately does not freeze every diagnostic field, because
 #: one code (for example ``invalid-argument``) carries different fields from
@@ -96,12 +141,11 @@ ERROR_DATA: dict[str, Any] = {
 }
 
 
-def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
+def node_schema() -> dict[str, Any]:
     """One orgfs node as projected by ``_orgfs_json``.
 
     ``read``/``ls``/``stat`` receive a dataclass directly and therefore name the
-    field ``contentState``; histories embed the node through ``asdict`` and
-    keep the dataclass spelling ``content_state``.  Both spellings are real.
+    field ``contentState``.
     """
 
     return {
@@ -120,7 +164,7 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
             "modified_via": {"type": ["string", "null"]},
             "name_conflict": Boolean,
             "deleted": Boolean,
-            content_state_key: {
+            "contentState": {
                 "type": ["string", "null"],
                 "enum": ["arrived", "pending", "unverifiable", None],
             },
@@ -140,7 +184,7 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
             "modified_via",
             "name_conflict",
             "deleted",
-            content_state_key,
+            "contentState",
             "uri",
         ],
         "additionalProperties": False,
@@ -148,7 +192,6 @@ def node_schema(content_state_key: str = "contentState") -> dict[str, Any]:
 
 
 NODE = node_schema()
-HISTORY_NODE = node_schema("content_state")
 
 SPACE = {
     "type": "object",
@@ -175,45 +218,21 @@ MEMBER = {
     "additionalProperties": False,
 }
 
-HISTORY_ENTRY = {
-    "type": "object",
-    "properties": {
-        "node": HISTORY_NODE,
-        "changed": {
-            "type": "string",
-            "enum": ["position", "content", "both", "created", "removed", "restored"],
-        },
-        "author": String,
-        "actor": {"type": ["string", "null"]},
-        "at": String,
-    },
-    "required": ["node", "changed", "author", "actor", "at"],
-    "additionalProperties": False,
-}
-
 SPACE_STATUS = {
     "type": "object",
     "properties": {
         "space_id": String,
-        "unconfirmed_commits": Integer,
-        "durable_holders_seen": {"type": "array", "items": String},
+        "synced": {"type": ["boolean", "null"]},
         "holders_online": {"type": "array", "items": String},
-        "parked_commits": {
-            "type": "array",
-            "items": {
-                "type": "array",
-                "items": {"type": ["string", "integer"]},
-                "minItems": 2,
-                "maxItems": 2,
-            },
-        },
+        "content_pending": {"type": "integer", "minimum": 0},
+        "rejected_updates": {"type": "integer", "minimum": 0},
     },
     "required": [
         "space_id",
-        "unconfirmed_commits",
-        "durable_holders_seen",
+        "synced",
         "holders_online",
-        "parked_commits",
+        "content_pending",
+        "rejected_updates",
     ],
     "additionalProperties": False,
 }
@@ -233,35 +252,18 @@ CHANGE_EVENT = {
     "additionalProperties": False,
 }
 
-PURGE_STATUS = {
-    "type": "object",
-    "properties": {
-        # ``_orgfs_json`` serialises the dataclass with ``asdict``; the real
-        # PurgeStatus therefore keeps the snake_case field name.  ``planId``
-        # is only the request parameter spelling.
-        "plan_id": String,
-        "acknowledged": {"type": "array", "items": String},
-        "pending": {"type": "array", "items": String},
-    },
-    "required": ["plan_id", "acknowledged", "pending"],
-    "additionalProperties": False,
-}
-
 _READ_CODES = frozenset(
     {
         "ambiguous-path",
         "ambiguous-space",
         "blob-unavailable",
         "closed",
-        "log-key-conflict",
         "no-holder-online",
         "not-a-member",
         "not-owner",
         "out-of-range",
         "protected-path",
-        "purged",
         "resource-exhausted",
-        "snapshot-barrier",
         "stale-write",
         "too-large",
         "unavailable",
@@ -279,7 +281,6 @@ _READ_CODES = frozenset(
 _WRITE_EXTRA = frozenset(
     {
         "checkout-io",
-        "stale-plan",
         "space-purge-incomplete",
         "space-purge-refused",
         ipc_errors.ORGFS_ACL_SPACE_EXTERNAL_MUTATION,
@@ -313,7 +314,6 @@ def _errors(codes: frozenset[str]) -> tuple[MethodError, ...]:
 
 
 READ_ERRORS = _errors(_READ_CODES)
-PURGE_STATUS_ERRORS = _errors(_READ_CODES | {"stale-plan"})
 WRITE_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA)
 PATH_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA | _PATH_EXTRA)
 PURGE_ERRORS = _errors(_READ_CODES | _WRITE_EXTRA)

@@ -57,7 +57,7 @@ __all__ = [
 
 
 def load_manifest(root: Path) -> dict:
-    path = root / ".forgejo/ci-downloads.json"
+    path = root / ".github/ci-downloads.json"
     return (
         json.loads(path.read_text())
         if path.is_file()

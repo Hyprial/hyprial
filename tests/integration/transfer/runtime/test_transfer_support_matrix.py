@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-MATRIX = Path(__file__).resolve().parents[4] / 'docs/evidence/transfer-at12-support-matrix.json'
+ROOT = Path(__file__).resolve().parents[4]
+MATRIX = ROOT / 'tests/fixtures/transfer_at12/transfer-at12-support-matrix.json'
 
 STATUSES = {"PASS", "UNSUPPORTED", "NOT_RUN"}
 REQUIRED_KEYS = {
@@ -61,7 +62,7 @@ def test_a_pass_row_says_how_it_was_produced() -> None:
 def test_the_runbook_table_agrees_with_the_machine_readable_matrix() -> None:
     """The prose table and the JSON are one matrix; they must not drift."""
 
-    runbook = MATRIX.parents[1] / "guides" / "transfer-at12-cross-machine-runbook.md"
+    runbook = ROOT / "docs" / "guides" / "transfer-at12-cross-machine-runbook.md"
     in_table = False
     doc_statuses: list[str] = []
     for line in runbook.read_text(encoding="utf-8").splitlines():

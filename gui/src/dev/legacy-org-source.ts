@@ -18,7 +18,7 @@ const summary = (name: string, owner: boolean, id = ID): OrgSummary => ({
   ownerLabel: '模拟所有者', authorityDevice: false, deviceCount: null,
 });
 const emptyDetail: OrgDetail = { people: [], agents: null, machines: null, spaces: null,
-  files: {}, trash: {}, history: {}, config: null, routes: null, stats: null, updatedAt: null };
+  files: {}, trash: {}, config: null, routes: null, stats: null, updatedAt: null };
 
 /** Translate old J5 scenario data into the shared organization domain, never a second page. */
 export function legacyOrgSource(model: OrgViewModel | undefined, dispatch?: (action: SessionAction) => void, validate?: (action: SessionAction) => string | undefined, orgName?: string, getSession?: () => LinkedSession | undefined): OrgDomainSource | undefined {

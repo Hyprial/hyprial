@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from hyprial.daemon.impl.org.network.binding import resolve_org_acl_space
+from hyprial.daemon.impl.org.network.binding import ACL_POLICY_DOC, resolve_org_acl_space
 from hyprial.daemon.impl.orgfs.api import OrgFs, OrgFsError
 from hyprial.identity import (
     ROLE_MEMBER,
@@ -32,9 +32,6 @@ __all__ = [
     "OrgFsDerivedPolicy",
     "roles_from_orgfs",
 ]
-
-#: Concrete role-to-permission grants, readable by every org member.
-ACL_POLICY_DOC = "policy/role-grants.json"
 
 _Logger = Callable[..., None]
 

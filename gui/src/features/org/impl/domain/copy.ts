@@ -80,7 +80,7 @@ export const ORG_COPY = {
   noInbound: '没有等待处理的迁入请求。',
   filesSecretHint: '组织成员都能读取这里的文件，不要存放秘密。',
   historyAnomaly: '状态未确认：历史记录异常，等待空间所有者修复',
-  historyAnomalyReason: '该空间的历史记录异常，写操作和历史暂不可用。',
+  historyAnomalyReason: '该空间的历史记录异常，等待空间所有者修复后才能写入。',
   spaceUnknownReason: '该空间状态未确认，刷新后再操作。',
   noWriteReason: '你没有该空间的写权限。',
   statsScope: '只统计本机能看到的通信；没有数据不代表没有活动。',

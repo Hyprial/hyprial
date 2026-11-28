@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Decision record (phase D, package D4b, 2026-11-25): the fake daemon keeps
+# the last params of each method so the runner pins what reaches the daemon
+# for ``orgfs.remove`` (``permanent``) and ``orgfs.restore`` (no ``version``);
+# MCP drops unknown tool arguments silently, so the tool list alone does not.
 from __future__ import annotations
 
 import asyncio
@@ -57,13 +61,15 @@ BATCH_RESPONSE = {
 
 
 class Connection:
-    def __init__(self, calls: list[str]) -> None:
+    def __init__(self, calls: list[str], params: dict[str, dict[str, Any]]) -> None:
         self.calls = calls
+        self.params = params
 
     async def request(
         self, method: str, params: dict[str, Any], *, request_id: str | None = None
     ) -> dict[str, Any]:
         self.calls.append(method)
+        self.params[method] = dict(params)
         if method == "message.pending.batch":
             return BATCH_RESPONSE
         if method == "conversations.history":
@@ -75,10 +81,11 @@ class Connection:
 class Factory:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.params: dict[str, dict[str, Any]] = {}
 
     @asynccontextmanager
     async def connect(self) -> AsyncIterator[Connection]:
-        yield Connection(self.calls)
+        yield Connection(self.calls, self.params)
 
 
 async def main() -> None:
@@ -138,39 +145,13 @@ async def main() -> None:
                 "destinationPath": "/archive",
             },
         ),
-        ("orgfs_remove", {"spaceId": "space-1", "node": "id:node-1"}),
-        (
-            "orgfs_history",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "limit": 25,
-                "before": "version-3",
-            },
-        ),
-        (
-            "orgfs_read_at",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "version": "version-1",
-            },
-        ),
-        (
-            "orgfs_stat_at",
-            {
-                "spaceId": "space-1",
-                "node": "id:node-1",
-                "version": "version-1",
-            },
-        ),
+        ("orgfs_remove", {"spaceId": "space-1", "node": "id:node-1", "permanent": True}),
         ("orgfs_trash", {"spaceId": "space-1", "limit": 25}),
         (
             "orgfs_restore",
             {
                 "spaceId": "space-1",
                 "node": "id:node-1",
-                "version": "version-1",
                 "recursive": False,
             },
         ),
@@ -183,7 +164,6 @@ async def main() -> None:
             },
         ),
         ("orgfs_status", {"spaceId": "space-1"}),
-        ("orgfs_purge_status", {"spaceId": "space-1", "planId": "plan-1"}),
         (
             "orgfs_invite",
             {"spaceId": "space-1", "user": "user:bob", "mode": "ro"},
@@ -253,21 +233,24 @@ async def main() -> None:
         "orgfs.mkdir",
         "orgfs.move",
         "orgfs.remove",
-        "orgfs.history",
-        "orgfs.read_at",
-        "orgfs.stat_at",
         "orgfs.trash",
         "orgfs.restore",
         "orgfs.watch",
         "orgfs.status",
-        "orgfs.purge_status",
         "orgfs.invite",
         "orgfs.remove_member",
         "orgfs.members",
         "orgfs.join",
         "conversations.history",
     ]
-    print("mcp-tools: PASS 33/33")
+    business = {"actor", "sessionRef"}
+    assert {
+        key: value for key, value in factory.params["orgfs.remove"].items() if key not in business
+    } == {"spaceId": "space-1", "node": "id:node-1", "permanent": True}
+    assert {
+        key: value for key, value in factory.params["orgfs.restore"].items() if key not in business
+    } == {"spaceId": "space-1", "node": "id:node-1", "recursive": False}
+    print("mcp-tools: PASS 29/29")
 
 
 if __name__ == "__main__":

@@ -189,6 +189,11 @@
 # Every external ACL-space mutation is refused at the shared orgfs.* bridge;
 # only daemon-internal org lifecycle code may write the space.
 #
+# >>> ORGFS_LAYOUT_UNSUPPORTED
+# OrgFS minimal (design 2026-11-25 §2.7, phase D P0): a space directory in the
+# old journal layout, or a damaged v3 directory, is refused per space with this
+# code and a ``reason`` detail; the other spaces keep working.
+#
 # >>> ORG_ACL_WRITE_DENIED
 # The owner-node ACL entry gate: a content write whose caller is neither the
 # owner's terminal nor an explicitly granted agent.
@@ -469,6 +474,7 @@ ORG_SPACE_NOT_JOINED = "ORG_SPACE_NOT_JOINED"
 ORG_PATH_SHAPE_INVALID = "ORG_PATH_SHAPE_INVALID"
 ORGFS_CONTENT_PENDING = "content-pending"
 ORGFS_INVALID_SPACE_DIRECTORY = "ORGFS_INVALID_SPACE_DIRECTORY"
+ORGFS_LAYOUT_UNSUPPORTED = "ORGFS_LAYOUT_UNSUPPORTED"
 ORGFS_INVALID_URI = "invalid-uri"
 ORGFS_CROSS_SPACE_URI = "cross-space-uri"
 ORGFS_ACL_SPACE_EXTERNAL_MUTATION = "ORGFS_ACL_SPACE_EXTERNAL_MUTATION"

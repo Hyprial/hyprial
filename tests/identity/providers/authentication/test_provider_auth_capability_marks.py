@@ -3,6 +3,19 @@
 The coordinator takes ``capability_store`` and a mandatory ``owner_key``; no
 ``users.json`` exists in these homes.  Marks must persist across store objects
 (a daemon restart) and recovery must clear them.
+
+Decision (2026-11-26, PR #78 gate run 45792478153): the last statement of
+``test_a_restarted_coordinator_resumes_from_the_persisted_marks`` releases the
+first coordinator's round, and that ``hyprial-provider-auth-*`` thread then
+clears its marks, i.e. it writes ``state/`` after the test has returned.  On a
+loaded runner the write met the suite's protocol-end reclamation of
+``tmp_path`` and the xdist worker died on ``ENOTEMPTY``.  The test now ends
+with a bounded wait for the ``hyprial-provider-auth-*`` threads it started.
+The wait only covers such threads that appeared after the test began: a
+same-named thread that already existed when the test started (leaked by an
+earlier test in the same process) is not awaited.
+Only that name prefix is awaited: the ``org-network-*`` projection threads
+live until the process exits and are unrelated to this test.
 """
 
 from __future__ import annotations
@@ -142,6 +155,7 @@ def test_failure_marks_persist_and_recovery_clears_them_without_users_json(
 
 
 def test_a_restarted_coordinator_resumes_from_the_persisted_marks(tmp_path: Path) -> None:
+    threads_before = set(threading.enumerate())
     store = RuntimeCapabilityStore(tmp_path / "state" / "runtime-capabilities.json")
     first_runner = Runner()
     first = build(tmp_path, first_runner, Notifier(), store)
@@ -165,3 +179,21 @@ def test_a_restarted_coordinator_resumes_from_the_persisted_marks(tmp_path: Path
     wait_until(lambda: len(notifier.texts) == 2, what="alert + recovery notice")
     assert all(item.status == "available" for item in marks(store))
     first_runner.release()
+
+    still_running: list[str] = []
+
+    def round_threads_are_done() -> bool:
+        still_running[:] = sorted(
+            thread.name
+            for thread in threading.enumerate()
+            if thread not in threads_before and thread.name.startswith("hyprial-provider-auth-")
+        )
+        return not still_running
+
+    try:
+        wait_until(round_threads_are_done, what="provider-auth round threads to finish")
+    except AssertionError as error:
+        raise AssertionError(
+            f"timed out waiting for provider-auth round threads to finish; "
+            f"still alive: {still_running}"
+        ) from error

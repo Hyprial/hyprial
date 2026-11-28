@@ -53,13 +53,13 @@ PARTS_DIR = "tests/integration/native_harnesses/resident_metadata/"
 PART_PATTERN = re.compile(r"native_origins_[a-z](?:_[a-z])?\.py\Z")
 PART_SYMBOL = "NATIVE_ORIGINS_PART"
 WORKFLOW_PATHS = (
-    ".forgejo/workflows/tests.yml",
-    ".forgejo/workflows/gate-python.yml",
-    ".forgejo/workflows/gate-pr-hygiene.yml",
-    ".forgejo/workflows/gate-pr-declarations.yml",
-    ".forgejo/workflows/wheel-release.yml",
-    ".forgejo/workflows/github-publish.yml",
-    ".forgejo/workflows/gui.yml",
+    ".github/workflows/tests.yml",
+    ".github/workflows/gate-python.yml",
+    ".github/workflows/gate-pr-hygiene.yml",
+    ".github/workflows/gate-pr-declarations.yml",
+    ".github/workflows/wheel-release.yml",
+    ".github/workflows/github-publish.yml",
+    ".github/workflows/gui.yml",
 )
 RUSTIFY_PATH_PREFIXES = ("crates/", "conformance/actor_engine/", "scripts/build/")
 RUSTIFY_BRANCH_PREFIXES = ("infra-ops/rustify-", "ci/rustify-")

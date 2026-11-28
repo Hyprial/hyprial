@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / "tests/fixtures/agent_home_p20"
 SNAPSHOT = (
     ROOT
-    / "docs/notes/evidence/agent-home-p2-p20-20260921/probe-snapshot.json"
+    / "tests/fixtures/agent_home_evidence/agent-home-p2-p20-20260921/probe-snapshot.json"
 )
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "probe_agent_home_p20", ROOT / "scripts/archived/probe_agent_home_p20.py"

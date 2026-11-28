@@ -451,7 +451,7 @@ export function RestoreDialog({
   return (
     <ConfirmDialog
       title={zh`恢复 ${entry.path}？`}
-      lead={entry.kind === 'folder' ? '恢复到原路径；文件夹中的内容一起恢复。' : '恢复到原路径。'}
+      lead={entry.kind === 'folder' ? '恢复到原路径；和文件夹一起删除的内容一起恢复，此前单独删除的项仍留在回收站。' : '恢复到原路径。'}
       confirmLabel="恢复"
       devUi="DEV-UI-ORG-012"
       blockOnFailure

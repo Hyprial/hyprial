@@ -33,7 +33,6 @@ from hyprial.daemon.impl.orgfs.storage.blobs  import (
     BlobIntegrityError,
     BlobMissing,
     BlobPayload,
-    BlobPurged,
     BlobRangeError,
     BlobStore)
 
@@ -89,6 +88,13 @@ class _ReleaseBlob:
 
 
 @dataclass(frozen=True, slots=True)
+class _UnpinBlob:
+    space_id: str
+    digest: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class _DeleteBlobIfUnreferenced:
     digest: str
 
@@ -117,6 +123,7 @@ _BlobOperation = (
     | _ListBlobReferences
     | _FindOtherBlobReferences
     | _ReleaseBlob
+    | _UnpinBlob
     | _DeleteBlobIfUnreferenced
     | _ReadBlobChunk
     | _ReadBlobChunkAlias
@@ -325,6 +332,10 @@ class BlobAuthority:
                 )
             elif isinstance(operation, _ReleaseBlob):
                 value = self._store.release(operation.space_id, operation.digest)
+            elif isinstance(operation, _UnpinBlob):
+                value = self._store.unpin(
+                    operation.space_id, operation.digest, operation.reason
+                )
             elif isinstance(operation, _DeleteBlobIfUnreferenced):
                 value = self._store.delete_if_unreferenced(operation.digest)
             elif isinstance(operation, _ReadBlobChunk):
@@ -377,8 +388,6 @@ class BlobAuthority:
         details = dict(error.details)
         if error.error_type == "BlobMissing":
             return BlobMissing(str(details.get("digest", "")))
-        if error.error_type == "BlobPurged":
-            return BlobPurged(str(details.get("digest", "")))
         if error.error_type == "BlobRangeError":
             return BlobRangeError(error.message, details=details)
         if error.error_type == "BlobIntegrityError":
@@ -484,6 +493,9 @@ class BlobAuthority:
     def release(self, space_id: str, digest: str) -> None:
         self._call(_ReleaseBlob(space_id, digest))
 
+    def unpin(self, space_id: str, digest: str, reason: str) -> None:
+        self._call(_UnpinBlob(space_id, digest, reason))
+
     def delete_if_unreferenced(self, digest: str) -> bool:
         return self._call(_DeleteBlobIfUnreferenced(digest))
 
@@ -504,29 +516,6 @@ class BlobAuthority:
     def handle_request(self, request: bytes | Mapping[str, Any]) -> bytes:
         return self._call(_HandleBlobRequest(self._freeze_request(request)))
 
-    def register_purge_checker(self, space_id: str, checker: Any) -> None:
-        # This is immutable callback configuration, not a DB operation. Keep
-        # it outside mailbox payloads and invoke it without holding its map lock.
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.register_purge_checker(space_id, checker)
-
-    def register_purge_projection(
-        self, space_id: str, digests: tuple[str, ...] | frozenset[str]
-    ) -> None:
-        """Install a versioned immutable purge projection for one space."""
-
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.register_purge_projection(space_id, digests)
-
-    def unregister_purge_projection(self, space_id: str) -> None:
-        with self._lock:
-            if self._closing or self._closed:
-                raise BlobError("blob authority is closed")
-        self._store.unregister_purge_projection(space_id)
 
     def close(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)

@@ -31,6 +31,11 @@ pausing automatic cyclic GC (``gc.disable()`` / ``finally: gc.enable()``, while
 reference counting still reclaims acyclic objects immediately) over a
 ``range(500)`` window keeps the ``>= 0.70`` contract threshold unchanged and
 deterministic.
+
+Decision 2026-11-27: the pure heartbeat window uses the application-owned
+``_ipc_stats_snapshot()`` so the measurement denominator contains no unbilled
+``ps`` request, and its coverage numerator is ``coverageCpuMs`` as defined by
+``src/hyprial/daemon/impl/ipc/ipc_stats.py:83,91``.
 """
 
 from __future__ import annotations
@@ -407,16 +412,16 @@ def test_four_sides_cover_a_pure_heartbeat_load(app: DaemonApplication) -> None:
     was_enabled = gc.isenabled()
     gc.disable()
     try:
-        before = _stats(app)
+        before = app._ipc_stats_snapshot()
         for _ in range(500):
             assert "error" not in app._response(raw)
-        after = _stats(app)
+        after = app._ipc_stats_snapshot()
     finally:
         if was_enabled:
             gc.enable()
-    instrumented_ms = after["instrumentedCpuMs"] - before["instrumentedCpuMs"]
+    coverage_ms = after["coverageCpuMs"] - before["coverageCpuMs"]
     delta_ms = 1000 * (after["processCpuSeconds"] - before["processCpuSeconds"])
-    assert instrumented_ms / delta_ms >= 0.70, (instrumented_ms, delta_ms)
+    assert coverage_ms / delta_ms >= 0.70, (coverage_ms, delta_ms)
 
 
 def test_session_effect_persistence_sides_preserve_ipc_origin(tmp_path: Path) -> None:

@@ -1,11 +1,64 @@
 """Ten-state classification, ledger reading, and JUnit reconciliation for Windows waves.
 
-Decision (2026-11-26, tier 1 smoke).  Split from run_waves.py to keep every script well
-under the 1000-line structural gate.  Ledger field names follow the ledger contract
-between the test harness and this runner (collect.errors, crash.reason, non-empty hang-gw<N>.txt, and non-fatal
-leak events recorded in manifest.leaks).  JUnit parsing supports both xunit2
-(classname-only) and xunit1 (file attribute), rejects duplicate nodeids, and
-synthesizes unreported::<path> errors for files still missing after reruns.
+Decision (2026-11-26, tier 1 smoke and tier 2 full suite).  Split from run_waves.py
+to keep every script well under the 1000-line structural gate.  Ledger field names
+follow the ledger contract between the test harness and this runner (collect.errors,
+crash.reason, non-empty hang-gw<N>.txt without a "hyprial watchdog: leak-timeout"
+header, and non-fatal leak events recorded in manifest.leaks).  Non-ledger JSONL
+side files (interceptor-hits.jsonl and acl-probe.jsonl) are excluded from ledger
+event streams.  JUnit parsing supports both xunit2 (classname-only) and xunit1
+(file attribute), rejects duplicate nodeids, and synthesizes unreported::<path>
+errors for files still missing after reruns.  Tier 1 enforces strict contract and
+non-contract skip rules; tier 2 keeps full ten-state classification without failing
+on legitimate conditional skips.
+
+Decision (2026-11-27, tier 2 full suite).  A module skipped at collection time (for
+example a module-level pytest.importorskip) produces one testcase with an empty
+classname and the dotted module path as name, so it cannot be attributed through
+classname.  Such a testcase marks its planned file as reported only when all four
+hold: classname is empty, name equals the dotted module path of exactly one planned
+file, it has a skipped child, and it has no failure child and no error child (any
+number of error children rejects it).  The file is reported through
+collection_skipped_files, never through nodeids_by_file, so the ledger end-event
+check and rerun deselection are unaffected.  Tier 1 still lists it as an
+unexpected skip.  A collection error keeps its "collection failure" error child and
+stays a hard red.
+
+Decision (2026-11-27, tier 2 full suite).  pytest 8.4 with xdist 3.8 writes a test
+whose call fails and whose teardown then raises as two testcases with the same name
+in the same XML file: the first with one failure child, the second with one error
+child.  Inside one XML file such a pair (exactly one failure-only case and exactly
+one error-only case, neither skipped) is merged into a single failed case.  Any
+other repeated name, any third occurrence, and any repeat across XML files is still
+rejected as duplicate-result.  summarize.py applies the same rule and keeps both
+messages.
+
+Decision (2026-11-27, tier 2 full suite).  pytest 8.4.2 exits 5 when it collected no
+test.  That is the exit code of a run whose only planned files are skipped at
+collection time, which the four conditions above already report, so exit code 5 is
+passed only when the planned set is not empty and every planned file is in
+collection_skipped_files.  Measured on pytest 8.4.2 without xdist: a collection-time
+skip next to a passing test exits 0, next to a failing test exits 1, and next to a
+file that collects nothing exits 5.  The last shape never reaches this condition:
+the file that collects nothing is missing from the reported files, so the
+unreported-files branch has already ended the classification.  The exemption covers
+the exit code only: a testcase holding a failure or an error child still fails the
+run whatever the exit code is, including a testcase that resolves to no planned file
+and therefore counts in neither the reported files nor collection_skipped_files.
+
+Decision (2026-11-27, tier 2 full suite).  A testcase element can carry neither a
+classname nor a name and hold nothing but a time attribute.  It names no test, so
+it is not a result.  Resolving it used to give one empty nodeid, so the second
+such record in a run raised duplicate-result with an empty nodeid and the wave
+loop stopped every later wave.  A nameless testcase is now counted per run as
+nameless-testcases:N before any resolution: it enters neither the nodeid set nor
+duplicate detection, and it counts as neither a pass nor a failure.  It never
+turns a run green.  A run that is already in a hard state keeps that state and
+gains the detail only.  A run that would otherwise pass or be failed is
+unreported-files instead.  The failed branch matters as much as the passed one:
+failed is the only state a list of expected failures can offset, so a run with
+a real failure and a nameless record would otherwise turn green in the summary
+without one line naming the nameless record.
 """
 
 from __future__ import annotations
@@ -62,6 +115,8 @@ class JUnitResult:
     nodeids_by_file: dict[str, tuple[str, ...]]
     parse_errors: tuple[str, ...] = ()
     other_skips: tuple[tuple[str, str], ...] = ()
+    collection_skipped_files: frozenset[str] = frozenset()
+    nameless_testcases: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +130,8 @@ class RunOutcome:
     leaks: tuple[dict[str, Any], ...]
     details: tuple[str, ...]
     offsettable: bool
+    collection_skipped_files: frozenset[str] = frozenset()
+    nameless_testcases: int = 0
 
 
 def is_offsettable(status: str) -> bool:
@@ -156,6 +213,45 @@ def _resolve_case_location(
     return None, fallback
 
 
+def _planned_module_names(planned: frozenset[str]) -> dict[str, str]:
+    by_name: dict[str, str] = {}
+    collisions: set[str] = set()
+    for path in planned:
+        if not path.endswith(".py"):
+            continue
+        dotted = path[:-3].replace("/", ".")
+        if dotted in by_name:
+            collisions.add(dotted)
+        by_name[dotted] = path
+    return {dotted: path for dotted, path in by_name.items() if dotted not in collisions}
+
+
+def _collection_skipped_file(case: ET.Element, module_names: dict[str, str]) -> str | None:
+    if case.attrib.get("classname", ""):
+        return None
+    if case.find("skipped") is None:
+        return None
+    if case.find("failure") is not None or case.find("error") is not None:
+        return None
+    return module_names.get(case.attrib.get("name", ""))
+
+
+def _is_nameless_case(case: ET.Element) -> bool:
+    return not case.attrib.get("classname", "") and not case.attrib.get("name", "")
+
+
+def single_outcome_kind(case: ET.Element) -> str | None:
+    failures = len(case.findall("failure"))
+    errors = len(case.findall("error"))
+    if case.find("skipped") is not None:
+        return None
+    if (failures, errors) == (1, 0):
+        return "failure"
+    if (failures, errors) == (0, 1):
+        return "error"
+    return None
+
+
 def read_junit(
     paths: Iterable[Path],
     planned_files: Sequence[str],
@@ -163,8 +259,10 @@ def read_junit(
     root: Path | None = None,
 ) -> JUnitResult:
     planned = frozenset(normalise_path(path) for path in planned_files)
+    module_names = _planned_module_names(planned)
     nodeids: set[str] = set()
     files: set[str] = set()
+    collection_skipped: set[str] = set()
     by_file: dict[str, list[str]] = {}
     failures = 0
     errors = 0
@@ -173,6 +271,7 @@ def read_junit(
     contract_skip_errors: list[str] = []
     other_skips: list[tuple[str, str]] = []
     parse_errors: list[str] = []
+    nameless = 0
     for path in paths:
         if not path.exists():
             continue
@@ -181,11 +280,36 @@ def read_junit(
         except ET.ParseError as error:
             parse_errors.append(f"{path.name}: {error}")
             continue
+        pair_candidates: dict[str, str] = {}
         for case in xml_root.iter("testcase"):
+            if _is_nameless_case(case):
+                nameless += 1
+                continue
+            skipped_module = _collection_skipped_file(case, module_names)
+            if skipped_module is not None:
+                if skipped_module in nodeids:
+                    raise ValueError(f"duplicate-result: {skipped_module}")
+                nodeids.add(skipped_module)
+                files.add(skipped_module)
+                collection_skipped.add(skipped_module)
+                skipped += 1
+                skipped_node = case.find("skipped")
+                reason = "" if skipped_node is None else skipped_node.attrib.get("message", "")
+                other_skips.append((skipped_module, reason))
+                continue
             resolved_file, nodeid = _resolve_case_location(case, planned, root)
+            kind = single_outcome_kind(case)
             if nodeid in nodeids:
-                raise ValueError(f"duplicate-result: {nodeid}")
+                previous = pair_candidates.pop(nodeid, None)
+                if previous is None or kind is None or {previous, kind} != {"failure", "error"}:
+                    raise ValueError(f"duplicate-result: {nodeid}")
+                if previous == "error":
+                    errors -= 1
+                    failures += 1
+                continue
             nodeids.add(nodeid)
+            if kind is not None:
+                pair_candidates[nodeid] = kind
             if resolved_file is not None and resolved_file in planned:
                 files.add(resolved_file)
                 by_file.setdefault(resolved_file, []).append(nodeid)
@@ -214,6 +338,8 @@ def read_junit(
         {key: tuple(values) for key, values in by_file.items()},
         tuple(parse_errors),
         tuple(other_skips),
+        frozenset(collection_skipped),
+        nameless,
     )
 
 
@@ -222,7 +348,7 @@ def _ledger_events(ledger_dir: Path) -> list[dict[str, Any]]:
     if not ledger_dir.exists():
         return events
     for path in sorted(ledger_dir.glob("*.jsonl")):
-        if path.name == "interceptor-hits.jsonl":
+        if path.name in {"interceptor-hits.jsonl", "acl-probe.jsonl"}:
             continue
         events.extend(read_jsonl(path))
     return events
@@ -307,6 +433,7 @@ def classify_run(
     planned_files: Sequence[str],
     root: Path | None = None,
     forced_status: str | None = None,
+    strict_skips: bool = True,
 ) -> RunOutcome:
     junit_list = list(junit_paths)
     planned = frozenset(normalise_path(path) for path in planned_files)
@@ -392,29 +519,39 @@ def classify_run(
         if uncovered:
             details.append(f"ledger-uncovered:{len(uncovered)}")
             status = "unreported-files"
-        elif returncode != 0 or result.failures or result.errors:
+        elif (
+            returncode != 0
+            and not (returncode == 5 and planned and planned <= result.collection_skipped_files)
+        ) or result.failures or result.errors:
             status = "failed"
         else:
             status = "passed"
-    if result.contract_skip_errors:
-        details.extend(f"invalid-contract-skip:{reason}" for reason in result.contract_skip_errors)
-        if status == "passed":
-            status = "failed"
-    if (
-        CONTRACT_TEST_FILE in planned
-        and CONTRACT_TEST_FILE in result.files
-        and CONTRACT_TEST_FILE not in partial_files
-        and result.contract_skips != 13
-    ):
-        details.append(f"contract-skips:{result.contract_skips}")
-        if status == "passed":
-            status = "failed"
-    if result.other_skips:
-        details.extend(
-            f"unexpected-skip:{nodeid}:{reason}" for nodeid, reason in result.other_skips
-        )
-        if status == "passed":
-            status = "failed"
+    if result.nameless_testcases:
+        details.append(f"nameless-testcases:{result.nameless_testcases}")
+        if status not in HARD_STATES:
+            status = "unreported-files"
+    if strict_skips:
+        if result.contract_skip_errors:
+            details.extend(
+                f"invalid-contract-skip:{reason}" for reason in result.contract_skip_errors
+            )
+            if status == "passed":
+                status = "failed"
+        if (
+            CONTRACT_TEST_FILE in planned
+            and CONTRACT_TEST_FILE in result.files
+            and CONTRACT_TEST_FILE not in partial_files
+            and result.contract_skips != 13
+        ):
+            details.append(f"contract-skips:{result.contract_skips}")
+            if status == "passed":
+                status = "failed"
+        if result.other_skips:
+            details.extend(
+                f"unexpected-skip:{nodeid}:{reason}" for nodeid, reason in result.other_skips
+            )
+            if status == "passed":
+                status = "failed"
     return RunOutcome(
         status,
         returncode,
@@ -425,7 +562,69 @@ def classify_run(
         _ledger_leaks(events),
         tuple(details),
         is_offsettable(status),
+        result.collection_skipped_files,
+        result.nameless_testcases,
     )
+
+
+def merge_wave_status(current: str, incoming: str) -> str:
+    if incoming in HARD_STATES:
+        return incoming
+    if incoming == "failed" and current not in HARD_STATES:
+        return "failed"
+    return current
+
+
+def load_planned_waves(
+    files_path: Path | None,
+    plan_manifest: Path | None,
+    shard: int | None,
+) -> list[list[str]]:
+    if files_path is not None and plan_manifest is not None:
+        raise ValueError("pass either --files or --plan-manifest, not both")
+    if plan_manifest is not None:
+        raw = json.loads(plan_manifest.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("plan manifest must be a JSON object")
+        raw_waves = raw.get("waves")
+        if not isinstance(raw_waves, list) or not raw_waves:
+            raise ValueError("plan manifest has no waves")
+        index = 0 if shard is None else int(shard)
+        if index < 0 or index >= len(raw_waves):
+            raise ValueError(f"shard index {index} out of range for {len(raw_waves)} shards")
+        shard_waves = raw_waves[index]
+        if not isinstance(shard_waves, list):
+            raise ValueError(f"shard {index} waves must be a list")
+        waves: list[list[str]] = []
+        seen: set[str] = set()
+        for wave in shard_waves:
+            if not isinstance(wave, list):
+                raise ValueError(f"shard {index} contains non-list wave")
+            items: list[str] = []
+            for entry in wave:
+                normalised = normalise_path(str(entry).strip())
+                if not normalised:
+                    continue
+                if normalised in seen:
+                    raise ValueError(f"duplicate test path across waves: {normalised}")
+                seen.add(normalised)
+                items.append(normalised)
+            if items:
+                waves.append(items)
+        if not waves:
+            raise ValueError(f"planned test file list is empty for shard {index}")
+        return waves
+    if files_path is None:
+        raise ValueError("either --files or --plan-manifest is required")
+    planned = [
+        normalise_path(line.strip())
+        for line in files_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    planned = sorted(dict.fromkeys(planned))
+    if not planned:
+        raise ValueError("planned test file list is empty")
+    return [planned]
 
 
 def synthesize_unreported(path: Path, missing: Sequence[str]) -> None:

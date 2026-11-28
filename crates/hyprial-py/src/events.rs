@@ -13,6 +13,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::IntoPyObjectExt;
 
+use crate::cell::{lock, Cell};
+use crate::engine::EngineInner;
+use crate::pool::Pool;
+
 /// Sinks attached to one actor (spawn-time) plus the engine-level sink.
 #[derive(Clone)]
 pub(crate) struct EventSinks {
@@ -58,6 +62,16 @@ fn call_sink(py: Python<'_>, sink: &Py<PyAny>, event: &Bound<'_, PyTuple>) {
 }
 
 pub(crate) fn emit(py: Python<'_>, sinks: &EventSinks, values: EventValues<'_>) {
+    emit_selected(py, sinks, values, true, true);
+}
+
+pub(crate) fn emit_selected(
+    py: Python<'_>,
+    sinks: &EventSinks,
+    values: EventValues<'_>,
+    emit_spec: bool,
+    emit_engine: bool,
+) {
     let command_type: Option<String> = match values.command_type_override {
         Some(overridden) => overridden,
         None => values.command.map(|command| type_name(command.bind(py))),
@@ -77,10 +91,60 @@ pub(crate) fn emit(py: Python<'_>, sinks: &EventSinks, values: EventValues<'_>) 
         elements.push(obj(py, key));
     }
     let tuple = PyTuple::new(py, elements).expect("event tuple construction");
-    if let Some(spec) = &sinks.spec_sink {
-        call_sink(py, spec, &tuple);
+    if emit_spec {
+        if let Some(spec) = &sinks.spec_sink {
+            call_sink(py, spec, &tuple);
+        }
     }
-    call_sink(py, &sinks.engine_sink, &tuple);
+    if emit_engine {
+        call_sink(py, &sinks.engine_sink, &tuple);
+    }
+}
+
+impl EngineInner {
+    pub(crate) fn emit_child_stopped(&self, py: Python<'_>, cell: &Cell) {
+        let generation = lock(&cell.inner).generation;
+        let (group, key) = cell
+            .keyed()
+            .map_or((None, None), |(g, k)| (Some(g), Some(k)));
+        emit(
+            py,
+            &cell.sinks,
+            EventValues {
+                kind: "child_stopped",
+                actor_id: &cell.id,
+                name: &cell.name,
+                generation,
+                command: None,
+                command_type_override: None,
+                code: None,
+                detail: None,
+                restart_delay: None,
+                group,
+                key,
+            },
+        );
+    }
+
+    pub(crate) fn emit_child_stopped_for_pool(&self, py: Python<'_>, pool: &Pool) {
+        emit(
+            py,
+            &pool.sinks,
+            EventValues {
+                kind: "child_stopped",
+                actor_id: &pool.id,
+                name: &pool.name,
+                generation: 1,
+                command: None,
+                command_type_override: None,
+                code: None,
+                detail: None,
+                restart_delay: None,
+                group: None,
+                key: None,
+            },
+        );
+    }
 }
 
 /// `type(command).__name__` for the event's `command_type` field.

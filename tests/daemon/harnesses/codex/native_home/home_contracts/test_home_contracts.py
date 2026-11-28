@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import pty
 import re
 import signal
 import shutil
@@ -632,11 +631,12 @@ def test_t04_thread_start_and_resume_pin_the_approved_tool_environment(
 
 
 @pytest.mark.skipif(shutil.which("codex") is None, reason="Codex binary is unavailable")
+@pytest.mark.posix_only("pty")
 def test_t04_t05_t07_t13_real_codex_load_and_resume_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Real P20/current app-server: projection, layers, skills, auth and resume."""
-
+    import pty
     codex_bin = shutil.which("codex")
     assert codex_bin is not None
     # The managed test sandbox denies the host `ps` call used only to bind a

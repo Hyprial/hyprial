@@ -9,33 +9,31 @@
 //!
 //! Decisions:
 //! - Handlers never run on a tokio worker. Each pump owns one dedicated OS
-//!   thread (the generation's executor) that owns the handler instance; a
-//!   wake hands that thread one drain request and the pump awaits the
-//!   outcome asynchronously. A blocked handler therefore occupies only its
-//!   own actor's thread, never the async worker set, so any number of
+//!   thread (the generation's executor) that owns the handler instance. A
+//!   sticky `WakeSignal` directly wakes that thread, which drains the cell's
+//!   canonical mailbox sequentially. A blocked handler therefore occupies
+//!   only its own actor's thread, never the async worker set, so any number of
 //!   blocked actors leaves every other actor runnable (LIV-01, FREE-02).
-//!   Per-actor FIFO and one-handler-at-a-time follow from the pump handling
-//!   one wake at a time and the executor draining sequentially.
-//! - A pump that observes stop acceptance stops itself after its drain
-//!   (confirming the stop first unless a racing stopper already did), and
-//!   a failing generation stops through the Ractor error path (which skips
-//!   `post_stop`). Either way dropping the pump state closes the request
-//!   channel and joins the executor, which is idle at that point, so a
-//!   stopped actor holds no OS thread (LIV-02) and a successful `shutdown`
-//!   leaves none behind (LIFE-02). A pump torn down mid-request (runtime
-//!   shutdown after a stop timed out) does not join: its executor exits
-//!   once the running handler returns.
-//! - The executor is an engine-owned thread for the exit gate
-//!   (`gate.rs`): it attaches only through `gate::attach`.
+//! - Ractor still supervises each pump and receives only low-frequency
+//!   `PumpMsg::Stopped` and `PumpMsg::Failed` notifications. The supervisor
+//!   wires a newly spawned pump and publishes its wake only after registration
+//!   and `child_restarted` ordering are complete.
+//! - Dropping pump state closes the wake signal before checking `in_flight`.
+//!   That prevents a new handler call from beginning, so confirmed stop and
+//!   shutdown join an idle executor. A pump torn down while a handler is in
+//!   flight leaves that handler to finish before its executor exits.
+//! - The executor is an engine-owned thread for the exit gate (`gate.rs`): it
+//!   attaches only through `gate::attach`.
 
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use pyo3::prelude::*;
 
 use crate::cell::{lock, Cell, FailureInfo, QueueEntry};
-use crate::events::{emit, EventValues};
+use crate::events::{emit, emit_selected, EventValues};
 use crate::execution::ExecutionGuard;
 
 /// Ask result handed back to the waiting `ask` caller.
@@ -48,7 +46,8 @@ pub(crate) enum AskOutcome {
 }
 
 pub(crate) enum PumpMsg {
-    Wake,
+    Stopped,
+    Failed,
 }
 
 /// Ractor error payload when a child fails; the real information travels in
@@ -77,6 +76,7 @@ pub(crate) struct PumpActor {
 
 pub(crate) struct PumpArgs {
     pub handler: crate::handlers::Handler,
+    pub wake: Arc<WakeSignal>,
 }
 
 /// What one drain request ended with, reported by the executor thread.
@@ -89,24 +89,98 @@ enum DrainOutcome {
     Failed,
 }
 
-type DrainRequest = tokio::sync::oneshot::Sender<DrainOutcome>;
+struct WakeState {
+    pending: bool,
+    closed: bool,
+}
 
-/// Pump state: the request channel into the generation's executor thread.
+pub(crate) struct WakeSignal {
+    state: Mutex<WakeState>,
+    closed: AtomicBool,
+    cv: Condvar,
+}
+
+impl WakeSignal {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(WakeState {
+                pending: false,
+                closed: false,
+            }),
+            closed: AtomicBool::new(false),
+            cv: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn notify(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.closed {
+            state.pending = true;
+            self.cv.notify_one();
+        }
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        self.cv.notify_all();
+    }
+
+    fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Acquire)
+    }
+
+    fn wait(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.pending {
+                state.pending = false;
+                return true;
+            }
+            state = self
+                .cv
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+/// Pump state: the generation wake signal and its executor thread.
 pub(crate) struct PumpState {
-    requests: Option<std::sync::mpsc::Sender<DrainRequest>>,
+    cell: Arc<Cell>,
+    wake: Arc<WakeSignal>,
     executor: Option<std::thread::JoinHandle<()>>,
-    /// A drain request is outstanding (the executor may be in a handler).
-    busy: bool,
 }
 
 impl Drop for PumpState {
-    /// Closing the channel ends the executor; it is joined when idle, and
-    /// left to finish its drain on its own when the pump was torn down
-    /// mid-request (runtime shutdown, kill).
     fn drop(&mut self) {
-        self.requests.take();
+        self.wake.close();
+        let in_flight = {
+            let mut inner = lock(&self.cell.inner);
+            if inner
+                .wake
+                .as_ref()
+                .is_some_and(|wake| Arc::ptr_eq(wake, &self.wake))
+            {
+                inner.wake = None;
+            }
+            inner.in_flight
+        };
         if let Some(executor) = self.executor.take() {
-            if !self.busy {
+            if !in_flight {
                 let _ = executor.join();
             }
         }
@@ -120,48 +194,36 @@ impl ractor::Actor for PumpActor {
 
     async fn pre_start(
         &self,
-        _myself: ractor::ActorRef<Self::Msg>,
+        myself: ractor::ActorRef<Self::Msg>,
         args: PumpArgs,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let (tx, rx) = std::sync::mpsc::channel::<DrainRequest>();
         let actor = self.clone();
         let handler = args.handler;
+        let wake = args.wake;
+        let executor_wake = wake.clone();
+        let executor_myself = myself.clone();
         let executor = std::thread::Builder::new()
             .name("hyprial-actor".into())
-            .spawn(move || actor.run_executor(handler, rx))?;
+            .spawn(move || actor.run_executor(handler, executor_wake, executor_myself))?;
         Ok(PumpState {
-            requests: Some(tx),
+            cell: self.cell.clone(),
+            wake,
             executor: Some(executor),
-            busy: false,
         })
     }
 
     async fn handle(
         &self,
         myself: ractor::ActorRef<Self::Msg>,
-        _message: Self::Msg,
-        state: &mut Self::State,
+        message: Self::Msg,
+        _state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
-        let (reply, outcome) = tokio::sync::oneshot::channel();
-        let sent = state
-            .requests
-            .as_ref()
-            .is_some_and(|requests| requests.send(reply).is_ok());
-        if !sent {
-            return Err(Box::new(ChildFailed) as ractor::ActorProcessingErr);
-        }
-        state.busy = true;
-        let outcome = outcome.await;
-        state.busy = false;
-        match outcome {
-            Ok(DrainOutcome::Idle) => Ok(()),
-            Ok(DrainOutcome::Stopped) => {
+        match message {
+            PumpMsg::Stopped => {
                 myself.stop(None);
                 Ok(())
             }
-            Ok(DrainOutcome::Failed) | Err(_) => {
-                Err(Box::new(ChildFailed) as ractor::ActorProcessingErr)
-            }
+            PumpMsg::Failed => Err(Box::new(ChildFailed) as ractor::ActorProcessingErr),
         }
     }
 }
@@ -187,16 +249,31 @@ impl PumpActor {
     fn run_executor(
         &self,
         mut handler: crate::handlers::Handler,
-        requests: std::sync::mpsc::Receiver<DrainRequest>,
+        wake: Arc<WakeSignal>,
+        myself: ractor::ActorRef<PumpMsg>,
     ) {
         crate::gate::mark_engine_thread();
-        while let Ok(reply) = requests.recv() {
-            let outcome = self.drain_and_execute(&mut handler);
-            let _ = reply.send(outcome);
+        while wake.wait() {
+            match self.drain_and_execute(&mut handler, &wake) {
+                DrainOutcome::Idle => {}
+                DrainOutcome::Stopped => {
+                    let _ = myself.send_message(PumpMsg::Stopped);
+                    break;
+                }
+                DrainOutcome::Failed => {
+                    let _ = myself.send_message(PumpMsg::Failed);
+                    break;
+                }
+            }
         }
+        crate::gate::attach(|_py| drop(handler));
     }
 
-    fn drain_and_execute(&self, handler: &mut crate::handlers::Handler) -> DrainOutcome {
+    fn drain_and_execute(
+        &self,
+        handler: &mut crate::handlers::Handler,
+        wake: &WakeSignal,
+    ) -> DrainOutcome {
         loop {
             let popped = {
                 let mut inner = lock(&self.cell.inner);
@@ -204,6 +281,9 @@ impl PumpActor {
                     drop(inner);
                     self.confirm_stop_and_exit();
                     return DrainOutcome::Stopped;
+                }
+                if !wake.is_open() {
+                    return DrainOutcome::Idle;
                 }
                 match inner.queue.pop_front() {
                     Some(entry) => {
@@ -255,7 +335,7 @@ impl PumpActor {
                 std::panic::catch_unwind(AssertUnwindSafe(|| handler.call(py, command.clone())));
             match result {
                 Ok(Ok(value)) => {
-                    after_success(&self.cell, py, &command);
+                    after_success(&self.engine, &self.cell, py, &command);
                     CommandOutcome::Success(value)
                 }
                 Ok(Err(err)) => {
@@ -338,17 +418,24 @@ impl PumpActor {
     }
 }
 
-fn after_success(cell: &Arc<Cell>, py: Python<'_>, command: &Py<PyAny>) {
-    let (generation, sinks) = {
-        let inner = lock(&cell.inner);
-        (inner.generation, cell.sinks.clone())
-    };
+fn after_success(
+    engine: &crate::engine::EngineInner,
+    cell: &Arc<Cell>,
+    py: Python<'_>,
+    command: &Py<PyAny>,
+) {
+    let emit_spec = cell.sinks.spec_sink.is_some();
+    let emit_engine = engine.command_completed_enabled(py);
+    if !emit_spec && !emit_engine {
+        return;
+    }
+    let generation = lock(&cell.inner).generation;
     let (group, key) = cell
         .keyed()
         .map_or((None, None), |(g, k)| (Some(g), Some(k)));
-    emit(
+    emit_selected(
         py,
-        &sinks,
+        &cell.sinks,
         EventValues {
             kind: "command_completed",
             actor_id: &cell.id,
@@ -362,6 +449,8 @@ fn after_success(cell: &Arc<Cell>, py: Python<'_>, command: &Py<PyAny>) {
             group,
             key,
         },
+        emit_spec,
+        emit_engine,
     );
 }
 

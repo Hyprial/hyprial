@@ -64,7 +64,7 @@ def test_cli_space_output_and_error_match_across_prefix_retirement(isolated, mon
     import re
 
     from typer.testing import CliRunner
-    from hyprial.daemon.impl.orgfs.document.operations import spaces
+    from hyprial.daemon.impl.orgfs.document.coordinator import spaces
     from hyprial.kernel import daemon_request
     from hyprial.shell.impl.cli.commands.common import support
     from hyprial.shell.impl.cli.commands.common.root import app as cli_app
@@ -72,7 +72,7 @@ def test_cli_space_output_and_error_match_across_prefix_retirement(isolated, mon
     import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
 
     _, app, _, _ = isolated
-    monkeypatch.setattr(spaces, "_now", lambda: "2027-01-15T08:00:00Z")
+    monkeypatch.setattr(spaces, "timestamp", lambda: "2027-01-15T08:00:00Z")
     monkeypatch.setattr(get_services(), "require_initialized_hyprial_home", lambda: app.hyprial_home)
     monkeypatch.setattr(support, "_daemon_request", lambda method, params=None, **kwargs:
                         daemon_request(method, params, socket_path=app.socket_path, timeout=10))

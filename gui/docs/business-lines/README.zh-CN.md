@@ -175,7 +175,7 @@ org 线已经完成，需要 cherry-pick 对方的 org 相关 fixture 替换掉�
 | 组织文档 | `org context validate`、`org context show`、`org context status`、`org context fetch`、`org context import` | 后续：配置发布流程 v1 只做交互占位 |
 | Agent 迁移 | `agent teleport` | 后续：迁移向导交互已有，真实接线等 teleport 接入 |
 | 组织服务暴露 | `org service connect`、`org service disconnect`、`org service list`、`org service guide`、`org service expose`、`org service unexpose`、`org service exposures`、`org service whois` | 后续：服务暴露属组织网络管理面，v1 不做页面 |
-| 组织文件 OrgFS | `org fs ls`、`org fs resolve`、`org fs read`、`org fs write`、`org fs mkdir`、`org fs mv`、`org fs rm`、`org fs history`、`org fs watch`、`org fs import`、`org fs export`、`org fs space list`、`org fs space create`、`org fs space join`、`org fs space web`、`org fs space status`、`org fs space serve`、`org fs space checkout`、`org fs member invite`、`org fs member remove`、`org fs member list`、`org fs trash list`、`org fs trash restore`、`org fs purge plan`、`org fs purge run`、`org fs purge status`、`org fs purge unban` | 后续：组织页「文件」子页签保留交互，数据接线按 orgfs 改造进度 |
+| 组织文件 OrgFS | `org fs ls`、`org fs resolve`、`org fs read`、`org fs write`、`org fs mkdir`、`org fs mv`、`org fs rm`、`org fs watch`、`org fs import`、`org fs export`、`org fs space list`、`org fs space create`、`org fs space join`、`org fs space web`、`org fs space status`、`org fs space checkout`、`org fs member invite`、`org fs member remove`、`org fs member list`、`org fs trash list`、`org fs trash restore`、`org fs purge run` | 后续：组织页「文件」子页签保留交互，数据接线按 orgfs 改造进度 |
 
 ### 6.5 整族不进 GUI v1（一行理由）
 

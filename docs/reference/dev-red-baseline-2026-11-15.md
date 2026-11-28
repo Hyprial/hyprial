@@ -224,7 +224,7 @@ CI 取证方法：读取 `dev` 最近提交的 combined status、当天 2311 条
 - 现象。CI 日志（`pytest-shard (4)`，job 155714，17:30）：“assert not ['unaccounted current image contexts']”。
 - 实测：模板运行该 nodeid，两种 Python 下各 2 次，4 次全部失败（单次约 90 秒）。
   另用同一套扫描器直接求差集，唯一未登记项是
-  `('.forgejo/workflows/native-conformance.yml', 'plan', 'runner-image release-ci')`。
+  `('.github/workflows/native-conformance.yml', 'plan', 'runner-image release-ci')`。
 - 原因（读代码）：#2821 在 `native-conformance.yml` 增加了 `plan` job（`runs-on: [release-ci]`），
   `tests/support/ci_download/release_images.py` 的 `INTRODUCED_NATIVE_CONFORMANCE_IMAGE_CONTEXTS` 仍只有三项。
 - 修复方向：在该集合补上面这一条。这是登记事实，不是放宽门禁。无需产品决定。

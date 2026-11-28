@@ -7,7 +7,6 @@ import stat
 from hyprial.kernel import (
     PrivateAccessUnsupported,
     ProcessFileLock,
-    current_uid,
     open_private_file,
     private_metadata_violation,
     read_private_file,
@@ -59,9 +58,13 @@ class Slot:
             fail("TAILNET_STORAGE_UNSAFE", "storage")
 
     @staticmethod
-    def _file_safe(metadata, mode):
-        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != current_uid()
-                or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != mode):
+    def _file_safe(path, metadata, mode):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            fail("TAILNET_STORAGE_UNSAFE", "storage")
+        try:
+            if private_metadata_violation(path, metadata, mode=mode) is not None:
+                fail("TAILNET_STORAGE_UNSAFE", "storage")
+        except (OSError, PrivateAccessUnsupported):
             fail("TAILNET_STORAGE_UNSAFE", "storage")
 
     def read(self, parts, *, mode=0o600, maximum=1024 * 1024):
@@ -77,10 +80,11 @@ class Slot:
     def read_with_marker(self, parts, *, mode=0o600, maximum=1024 * 1024):
         try:
             with self.directory(parts[:-1]) as directory:
+                path = directory / parts[-1]
                 data, metadata = read_private_file(
-                    directory / parts[-1], mode=mode, max_bytes=maximum
+                    path, mode=mode, max_bytes=maximum
                 )
-                self._file_safe(metadata, mode)
+                self._file_safe(path, metadata, mode)
                 return data, self._marker(metadata, data)
         except FileNotFoundError:
             return None
@@ -91,15 +95,16 @@ class Slot:
         if type(raw) is not bytes:
             raise ValueError("slot writes require bytes")
         with self.directory(parts[:-1], create=True) as directory:
+            path = directory / parts[-1]
             try:
                 metadata = write_private_file_atomic(
-                    directory / parts[-1], raw, exclusive=exclusive
+                    path, raw, exclusive=exclusive
                 )
             except FileExistsError:
                 fail("TAILNET_STAGING_CONFLICT", "storage")
             except (OSError, PrivateAccessUnsupported):
                 fail("TAILNET_STORAGE_UNSAFE", "storage")
-            self._file_safe(metadata, 0o600)
+            self._file_safe(path, metadata, 0o600)
             return self._marker(metadata, raw)
 
     def _existing_target(self, directory, name):
@@ -107,7 +112,7 @@ class Slot:
         path = directory / name
         try:
             with open_private_file(path) as (_descriptor, metadata):
-                self._file_safe(metadata, 0o600)
+                self._file_safe(path, metadata, 0o600)
                 return True
         except FileNotFoundError:
             return False
@@ -119,9 +124,9 @@ class Slot:
             lock = ProcessFileLock(path)
             try:
                 lock.acquire(timeout=15.0)
-                self._file_safe(path.lstat(), 0o600)
+                self._file_safe(path, path.lstat(), 0o600)
                 yield
-                self._file_safe(path.lstat(), 0o600)
+                self._file_safe(path, path.lstat(), 0o600)
             finally:
                 lock.release()
 

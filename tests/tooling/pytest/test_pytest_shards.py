@@ -188,6 +188,8 @@ def test_a_failed_probe_wave_never_skips_the_rest_of_its_shard(impact, monkeypat
     monkeypatch.setattr(impact.subprocess, "run", run)
     monkeypatch.setattr(sys, "argv", ["pytest_impact.py", "--shard", "3/4", "--", "-q", "-n", "2"])
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
     assert impact.main() == (probe_status or rest_status)
     assert len(calls) == 2
 

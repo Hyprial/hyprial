@@ -25,6 +25,7 @@ class Fs:
         self.calls = Counter()
         self.fail = None
         self.crash = None
+        self.incomplete = None
         self.binding = True
         self.policy = True
         self.devices = []
@@ -34,6 +35,9 @@ class Fs:
         if self.fail == space:
             raise OrgFsError("not-a-member", {"spaceId": space})
         self.joined.add(space)
+        if self.incomplete == space:
+            self.incomplete = None
+            raise OrgFsError("unavailable", {"spaceId": space, "reason": "join-incomplete"})
         if self.crash == space:
             self.crash = None
             raise Crash()
@@ -155,6 +159,29 @@ def test_crash_after_directory_effect_before_checkpoint_resumes_without_rejoin(t
     assert result["ok"]
     assert fs.calls == {link.space_id: 1, link.acl_space_id: 1}
     assert calls["redeem"] == 1
+    assert recovered.list([{"payload": payload}])["settled"] == 1
+
+
+@pytest.mark.parametrize("space_kind", ["directory", "acl"])
+def test_a_listed_space_whose_join_did_not_finish_is_joined_again(tmp_path, space_kind):
+    from hyprial.daemon.impl.org.membership.invites.journal import AcceptJournal
+
+    payload, invite = _invite()
+    link = decode_invite(invite["link"])
+    fs, calls = Fs(link), Counter()
+    space = link.space_id if space_kind == "directory" else link.acl_space_id
+    fs.incomplete = space
+    params = {"invite_id": invite["id"], "link": invite["link"]}
+    with pytest.raises(OrgFsError) as error:
+        InviteService(orgs=network(tmp_path, fs, calls)).accept(**params)
+    assert error.value.details["status"] == "partial"
+    assert space in {item.space_id for item in fs.spaces()}
+    recovered = InviteService(orgs=network(tmp_path, fs, calls))
+    assert recovered.accept(**params)["ok"]
+    assert fs.calls[space] == 2
+    assert fs.calls == {link.space_id: fs.calls[link.space_id], link.acl_space_id: fs.calls[link.acl_space_id]}
+    assert sum(fs.calls.values()) == 3
+    assert "unfinishedJoins" not in AcceptJournal(tmp_path, invite["id"]).record
     assert recovered.list([{"payload": payload}])["settled"] == 1
 
 
