@@ -5,6 +5,12 @@ Decision (2026-11-26, tier 1 smoke).  Exercises the ten-state ledger classifier
 rejection, unreported-file error synthesis, rerun --deselect flow, and
 fail-closed summarize.py validation using synthetic ledgers and JUnit XMLs on
 Linux.
+
+Decision (2026-11-27, tier 2 full suite).  A duplicate result no longer stops the
+wave loop: the attempt that raised is hard red and its files stay pending under
+the ordinary rerun rule, so one wave of three raising attempts records three runs
+and still ends unreported-files.  Nameless testcases and the two duplicate
+fields are covered in test_nameless_and_duplicates.py.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from typing import Any
 import pytest
 
 from scripts.ci.windows import run_waves as run_waves_module
+from scripts.ci.windows import wave_state as wave_state_module
 from scripts.ci.windows.run_waves import (
     CONTRACT_TEST_FILE,
     HARD_STATES,
@@ -474,18 +481,24 @@ def test_run_waves_catches_duplicate_result_inside_rerun_loop(
 
     manifest = run_waves(args, tmp_path)
 
-    assert calls == 1
+    assert calls == 3
     assert manifest["status"] == "unreported-files"
     assert manifest["offsettable"] is False
-    assert isinstance(manifest["duplicateResult"], str)
-    assert manifest["duplicateResult"].startswith("duplicate-result:")
+    assert manifest["duplicateResult"] == "duplicate-result: tests/a.py::test_dup"
     assert manifest["plannedFiles"] == ["tests/a.py"]
-    assert len(manifest["runs"]) == 1
-    assert manifest["runs"][0]["status"] == "unreported-files"
-    assert any(
+    assert manifest["reportedFiles"] == []
+    assert len(manifest["runs"]) == 3
+    assert [run["status"] for run in manifest["runs"]] == ["unreported-files"] * 3
+    assert all(run["details"] for run in manifest["runs"])
+    assert all(
         detail.startswith("duplicate-result:")
-        for detail in manifest["runs"][0]["details"]
+        for run in manifest["runs"]
+        for detail in run["details"]
     )
+    assert manifest["duplicateRuns"] == [
+        {"wave": 1, "run": run, "result": "duplicate-result: tests/a.py::test_dup"}
+        for run in (1, 2, 3)
+    ]
 
 
 def test_leak_timeout_with_a_hang_file_is_a_worker_crash(tmp_path: Path) -> None:
@@ -691,3 +704,127 @@ def test_summary_validates_contract_skips_only_when_contract_file_is_planned(
     unplanned_ok, unplanned_errors, _ = summarize_leg(unplanned_leg, "w1", waves=True)
     assert unplanned_ok is False
     assert "contract skips found for an unplanned file" in unplanned_errors
+
+
+def test_ledger_events_excludes_acl_probe_and_interceptor_hits(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    junit = tmp_path / "result.xml"
+    write_junit(junit, [{"classname": "tests.a", "name": "test_ok"}])
+    write_complete_ledger(ledger, ["tests/a.py::test_ok"])
+    write_events(
+        ledger / "acl-probe.jsonl",
+        [
+            {"event": "os.mkdir", "path": "C:/tmp/a", "nodeid": "tests/a.py::test_ok"},
+            {"event": "start", "nodeid": "tests/a.py::never_ended"},
+        ],
+    )
+    write_events(ledger / "interceptor-hits.jsonl", [])
+
+    events = wave_state_module._ledger_events(ledger)
+    assert all(event.get("event") in {"collect", "end"} for event in events)
+    outcome = classify_run(
+        returncode=0, junit_paths=[junit], ledger_dir=ledger, planned_files=["tests/a.py"]
+    )
+    assert outcome.status == "passed"
+
+
+def test_run_waves_tier2_multi_wave_and_allows_conditional_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = tmp_path / "plan-manifest.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "selection": "full",
+                "suiteRequired": True,
+                "requiredLegs": ["shard-0", "shard-1"],
+                "shards": [["tests/z.py"], ["tests/a.py", "tests/b.py", "tests/c.py"]],
+                "waves": [[["tests/z.py"]], [["tests/a.py", "tests/b.py"], ["tests/c.py"]]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    seen_waves: list[tuple[int, list[str]]] = []
+
+    def fake_run_one(
+        *, files: list[str], deselect: list[str], args: argparse.Namespace,
+        run_number: int, wave_number: int, wave_deadline: float, job_deadline: float, root: Path,
+    ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
+        seen_waves.append((wave_number, list(files)))
+        junit = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.xml"
+        ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
+        ledger.mkdir(parents=True, exist_ok=True)
+        if wave_number == 1:
+            write_junit(
+                junit,
+                [
+                    {"classname": "tests.a", "name": "test_ok"},
+                    {
+                        "classname": "tests.b",
+                        "name": "test_cond_skip",
+                        "outcome": "skipped",
+                        "message": "platform conditional skip",
+                    },
+                ],
+            )
+            write_complete_ledger(ledger, ["tests/a.py::test_ok", "tests/b.py::test_cond_skip"])
+        else:
+            write_junit(junit, [{"classname": "tests.c", "name": "test_ok"}])
+            write_complete_ledger(ledger, ["tests/c.py::test_ok"])
+        return 0, junit, ledger, None, []
+
+    monkeypatch.setattr(run_waves_module, "_run_one", fake_run_one)
+    monkeypatch.setattr(run_waves_module, "_self_check", lambda: {"passed": True})
+    args = argparse.Namespace(
+        tier="2", files=None, plan_manifest=plan_path, shard=1, acl_probe=True, workers=4,
+        watchdog_seconds=600, idle_seconds=900, wave_minutes=40, deadline_minutes=140,
+        step_minutes=150, job_minutes=170, basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results", ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+
+    manifest = run_waves(args, tmp_path)
+
+    assert manifest["status"] == "passed"
+    assert (manifest["tier"], manifest["shard"], manifest["waveCount"]) == ("2", 1, 2)
+    assert manifest["aclProbe"] is True
+    assert manifest["plannedFiles"] == ["tests/a.py", "tests/b.py", "tests/c.py"]
+    assert manifest["reportedFiles"] == ["tests/a.py", "tests/b.py", "tests/c.py"]
+    assert seen_waves == [(1, ["tests/a.py", "tests/b.py"]), (2, ["tests/c.py"])]
+    assert [entry["wave"] for entry in manifest["runs"]] == [1, 2]
+
+
+def test_run_one_propagates_acl_probe_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_envs: list[dict[str, str]] = []
+
+    class FakeChild:
+        def __init__(self, *, command: list[str], output: Path, env: dict[str, str], cwd: Path) -> None:
+            captured_envs.append(dict(env))
+
+    monkeypatch.setattr(run_waves_module, "_ManagedChild", FakeChild)
+    monkeypatch.setattr(run_waves_module, "_wait_with_watchdogs", lambda child, **kw: (0, None))
+    monkeypatch.setattr(run_waves_module, "_query_windows_processes", lambda needles: [])
+    monkeypatch.delenv("HYPRIAL_TEST_ACL_PROBE", raising=False)
+
+    base_args = argparse.Namespace(
+        tier="2", files=None, plan_manifest=tmp_path / "plan.json", shard=0, acl_probe=True,
+        workers=2, watchdog_seconds=300, idle_seconds=600, wave_minutes=20, deadline_minutes=25,
+        step_minutes=30, job_minutes=45, basetemp_root=tmp_path / "bt",
+        results=tmp_path / "results", ledger_root=tmp_path / "ledger",
+        report=tmp_path / "results" / "run-manifest.json",
+    )
+    run_waves_module._run_one(
+        files=["tests/a.py"], deselect=[], args=base_args, run_number=1, wave_number=1,
+        wave_deadline=1000.0, job_deadline=2000.0, root=tmp_path,
+    )
+    base_args.acl_probe = False
+    run_waves_module._run_one(
+        files=["tests/a.py"], deselect=[], args=base_args, run_number=2, wave_number=1,
+        wave_deadline=1000.0, job_deadline=2000.0, root=tmp_path,
+    )
+    assert captured_envs[0].get("HYPRIAL_TEST_ACL_PROBE") == "1"
+    assert "HYPRIAL_TEST_ACL_PROBE" not in captured_envs[1]

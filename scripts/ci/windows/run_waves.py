@@ -1,14 +1,49 @@
 """Run Windows pytest waves with process-tree and ledger accounting.
 
-Decision (2026-11-26, tier 1 smoke).  The wrapper is the single owner of the fixed
-pytest arguments, watchdog loop, Job Object teardown, and manifest output.
-Ten-state classification, ledger parsing, and JUnit reconciliation live in
-scripts/ci/windows/wave_state.py so every script stays well under 1000 lines.
-Argsfiles carry file paths only (never nodeids); partial-file reruns pass
---deselect on argv so union XMLs stay duplicate-free.  Windows uses a
-kill-on-close Job Object without BREAKAWAY_OK via _winapi.CreateProcess with
-CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, while Linux keeps a real
+Decision (2026-11-26, tier 1 smoke and tier 2 full suite).  The wrapper is the
+single owner of the fixed pytest arguments, watchdog loop, Job Object teardown,
+and manifest output.  Ten-state classification, ledger parsing, plan loading, and
+JUnit reconciliation live in scripts/ci/windows/wave_state.py so every script
+stays well under 1000 lines.  Argsfiles carry file paths only (never nodeids);
+partial-file reruns pass --deselect on argv so union XMLs stay duplicate-free.
+Tier 1 enforces strict contract and non-contract skip rules; tier 2 executes
+multi-wave shard plans from plan-manifest.json, forwards HYPRIAL_TEST_ACL_PROBE=1
+when --acl-probe or WINDOWS_SUITE_ACL_PROBE is enabled, and keeps full ten-state
+hard-red classification without failing on legitimate conditional skips.  Windows
+uses a kill-on-close Job Object without BREAKAWAY_OK via _winapi.CreateProcess
+with CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, while Linux keeps a real
 subprocess path so self-tests exercise the wrapper directly.
+
+Decision (2026-11-27, tier 2 full suite).  The manifest key collectionSkippedFiles
+lists, with a count, every planned file reported only through a collection-time
+module skip (the four-condition rule in wave_state.py), so the summary can show it.
+
+Decision (2026-11-27, tier 2 full suite).  A repeated nodeid in the XML of one
+attempt is still a hard red that nothing offsets, but it no longer stops the
+waves after it.  Stopping only lost evidence: every later wave of the shard went
+unrun while the status was already red.  The attempt that raised is recorded as
+unreported-files with the raised text in details, its files stay pending for the
+next attempt under the ordinary rerun rule, and the wave loop goes on to the
+next wave after the last attempt.
+
+The manifest keeps the two kinds of duplicate apart.  duplicateRuns lists every
+attempt that raised inside the wave loop, each as wave, run and the raised text.
+duplicateUnion holds what the final read of all attempt XMLs together raised.
+duplicateResult is the first entry of duplicateRuns, else duplicateUnion, so a
+union duplicate cannot hide a run-time one; summarize.py rejects each of the three.
+
+When the final read raises, the status is set to a hard red at that point unless
+it already is one.  The assignment is reachable: one attempt is classified on its
+own XML, so a record that resolves to no planned file raises nothing as long as
+each XML holds it once, while the final read of all attempt XMLs together sees
+it once per attempt and raises.  Two passing waves that each hold such a record
+arrive at that line with the status passed.  The assignment turns the manifest
+red on that input and leaves every other hard state as it is.  The strict skip
+checks that follow the read are skipped when it raises; they only ever turn a
+passed status into failed, so skipping them cannot turn the run green.  The
+files still pending are reported through unreported.xml as in every other
+case.  Only a duplicate-result error is caught here; any other ValueError is
+raised as it is inside the wave loop.
 """
 
 from __future__ import annotations
@@ -33,7 +68,8 @@ try:
         RunOutcome,
         classify_run,
         is_offsettable,
-        normalise_path,
+        load_planned_waves,
+        merge_wave_status,
         read_junit,
         read_jsonl,
         synthesize_unreported,
@@ -47,7 +83,8 @@ except ModuleNotFoundError:
     RunOutcome = _wave_state.RunOutcome
     classify_run = _wave_state.classify_run
     is_offsettable = _wave_state.is_offsettable
-    normalise_path = _wave_state.normalise_path
+    load_planned_waves = _wave_state.load_planned_waves
+    merge_wave_status = _wave_state.merge_wave_status
     read_junit = _wave_state.read_junit
     read_jsonl = _wave_state.read_jsonl
     synthesize_unreported = _wave_state.synthesize_unreported
@@ -502,15 +539,20 @@ def _run_one(
     job_deadline: float,
     root: Path,
 ) -> tuple[int, Path, Path, str | None, list[dict[str, Any]]]:
-    argsfile = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.args"
+    shard_tag = (
+        int(getattr(args, "shard", 0))
+        if getattr(args, "plan_manifest", None) is not None
+        else 1
+    )
+    argsfile = args.results / f"shard-{shard_tag}-wave-{wave_number}-run-{run_number}.args"
     argsfile.parent.mkdir(parents=True, exist_ok=True)
     argsfile.write_text("\n".join(files) + "\n", encoding="utf-8")
-    junit = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.xml"
-    log = args.results / f"shard-1-wave-{wave_number}-run-{run_number}.log"
+    junit = args.results / f"shard-{shard_tag}-wave-{wave_number}-run-{run_number}.xml"
+    log = args.results / f"shard-{shard_tag}-wave-{wave_number}-run-{run_number}.log"
     snapshot_path = args.results / f"hang-snapshot-wave-{wave_number}-run-{run_number}.json"
     ledger = args.ledger_root / f"wave-{wave_number}-run-{run_number}"
     ledger.mkdir(parents=True, exist_ok=True)
-    base = args.basetemp_root / f"b1w{wave_number}r{run_number}"
+    base = args.basetemp_root / f"b{shard_tag}w{wave_number}r{run_number}"
     env = dict(os.environ)
     env.update(
         {
@@ -521,6 +563,8 @@ def _run_one(
             "NO_COLOR": "1",
         }
     )
+    if getattr(args, "acl_probe", False):
+        env["HYPRIAL_TEST_ACL_PROBE"] = "1"
     command = build_pytest_command(
         workers=args.workers,
         junit=junit,
@@ -553,6 +597,10 @@ def _emit_manifest(manifest: dict[str, Any], *, report: Path, log_path: Path) ->
     print(line, flush=True)
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes"}
+
+
 def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     validate_durations(
         args.watchdog_seconds,
@@ -562,122 +610,151 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
         args.step_minutes,
         args.job_minutes,
     )
-    planned = [
-        normalise_path(line.strip())
-        for line in args.files.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-    planned = sorted(dict.fromkeys(planned))
-    if not planned:
-        raise ValueError("planned test file list is empty")
+    plan_manifest = getattr(args, "plan_manifest", None)
+    shard_index = getattr(args, "shard", None)
+    waves = load_planned_waves(getattr(args, "files", None), plan_manifest, shard_index)
+    planned = sorted({path for wave in waves for path in wave})
+    strict_skips = str(args.tier) == "1"
     args.results.mkdir(parents=True, exist_ok=True)
     args.ledger_root.mkdir(parents=True, exist_ok=True)
     args.basetemp_root.mkdir(parents=True, exist_ok=True)
     job_started = time.monotonic()
     job_deadline = job_started + args.deadline_minutes * 60
-    wave_deadline = job_started + args.wave_minutes * 60
     self_check = _self_check()
     runs: list[dict[str, Any]] = []
     all_junits: list[Path] = []
     completed_files: set[str] = set()
     completed_nodeids_by_file: dict[str, set[str]] = {}
+    collection_skipped_files: set[str] = set()
     leaks: list[dict[str, Any]] = []
     leaked_processes: list[dict[str, Any]] = []
-    pending = list(planned)
     final_status = "passed"
-    duplicate_error: str | None = None
-    for attempt in range(1, 4):
+    duplicate_runs: list[dict[str, Any]] = []
+    duplicate_union: str | None = None
+    stop_all = False
+    for wave_number, wave_files in enumerate(waves, start=1):
         if time.monotonic() >= job_deadline:
             final_status = "job-deadline"
             break
-        deselect = sorted(
-            nodeid
-            for file_name in pending
-            for nodeid in completed_nodeids_by_file.get(file_name, ())
-        )
-        started = time.monotonic()
-        returncode, junit, ledger, forced_status, survivors = _run_one(
-            files=pending,
-            deselect=deselect,
-            args=args,
-            run_number=attempt,
-            wave_number=1,
-            wave_deadline=wave_deadline,
-            job_deadline=job_deadline,
-            root=root,
-        )
-        all_junits.append(junit)
-        leaked_processes.extend(survivors)
-        try:
-            outcome = classify_run(
-                returncode=returncode,
-                junit_paths=[junit],
-                ledger_dir=ledger,
-                planned_files=pending,
-                root=root,
-                forced_status=forced_status,
+        wave_deadline = min(job_deadline, time.monotonic() + args.wave_minutes * 60)
+        wave_pending = list(wave_files)
+        for attempt in range(1, 4):
+            if time.monotonic() >= job_deadline:
+                final_status = "job-deadline"
+                stop_all = True
+                break
+            deselect = sorted(
+                nodeid
+                for file_name in wave_pending
+                for nodeid in completed_nodeids_by_file.get(file_name, ())
             )
-        except ValueError as error:
-            duplicate_error = str(error)
-            if not duplicate_error.startswith("duplicate-result:"):
-                raise
-            final_status = "unreported-files"
+            started = time.monotonic()
+            returncode, junit, ledger, forced_status, survivors = _run_one(
+                files=wave_pending,
+                deselect=deselect,
+                args=args,
+                run_number=attempt,
+                wave_number=wave_number,
+                wave_deadline=wave_deadline,
+                job_deadline=job_deadline,
+                root=root,
+            )
+            all_junits.append(junit)
+            leaked_processes.extend(survivors)
+            try:
+                outcome = classify_run(
+                    returncode=returncode,
+                    junit_paths=[junit],
+                    ledger_dir=ledger,
+                    planned_files=wave_pending,
+                    root=root,
+                    forced_status=forced_status,
+                    strict_skips=strict_skips,
+                )
+            except ValueError as error:
+                if not str(error).startswith("duplicate-result:"):
+                    raise
+                duplicate_runs.append(
+                    {"wave": wave_number, "run": attempt, "result": str(error)}
+                )
+                final_status = "unreported-files"
+                runs.append(
+                    {
+                        "wave": wave_number,
+                        "run": attempt,
+                        "status": "unreported-files",
+                        "offsettable": False,
+                        "returncode": returncode,
+                        "junit": str(junit),
+                        "duration": round(time.monotonic() - started, 3),
+                        "details": [str(error)],
+                    }
+                )
+                continue
+            for file_name, nodeids in outcome.nodeids_by_file.items():
+                completed_nodeids_by_file.setdefault(file_name, set()).update(nodeids)
+            completed_files.update(outcome.reported_files - outcome.partial_files)
+            collection_skipped_files.update(outcome.collection_skipped_files)
+            leaks.extend(outcome.leaks)
             runs.append(
                 {
+                    "wave": wave_number,
                     "run": attempt,
-                    "status": "unreported-files",
-                    "offsettable": False,
+                    "status": outcome.status,
+                    "offsettable": outcome.offsettable,
                     "returncode": returncode,
                     "junit": str(junit),
                     "duration": round(time.monotonic() - started, 3),
-                    "details": [duplicate_error],
+                    "details": list(outcome.details),
                 }
             )
+            final_status = merge_wave_status(final_status, outcome.status)
+            wave_pending = sorted(set(wave_files) - completed_files)
+            if outcome.status == "job-deadline":
+                stop_all = True
+                break
+            if not wave_pending:
+                break
+        if stop_all:
             break
-        for file_name, nodeids in outcome.nodeids_by_file.items():
-            completed_nodeids_by_file.setdefault(file_name, set()).update(nodeids)
-        completed_files.update(outcome.reported_files - outcome.partial_files)
-        leaks.extend(outcome.leaks)
-        runs.append(
-            {
-                "run": attempt,
-                "status": outcome.status,
-                "offsettable": outcome.offsettable,
-                "returncode": returncode,
-                "junit": str(junit),
-                "duration": round(time.monotonic() - started, 3),
-                "details": list(outcome.details),
-            }
-        )
-        if outcome.status in HARD_STATES:
-            final_status = outcome.status
-        elif outcome.status == "failed" and final_status not in HARD_STATES:
-            final_status = "failed"
-        pending = sorted(set(planned) - completed_files)
-        if not pending or outcome.status == "job-deadline":
-            break
+    pending = sorted(set(planned) - completed_files)
     try:
         union_junit = read_junit(all_junits, planned, root=root)
-        if (
-            CONTRACT_TEST_FILE in completed_files
-            and (union_junit.contract_skip_errors or union_junit.contract_skips != 13)
-            and final_status == "passed"
-        ):
-            final_status = "failed"
-        if union_junit.other_skips and final_status == "passed":
-            final_status = "failed"
+        if strict_skips:
+            if (
+                CONTRACT_TEST_FILE in completed_files
+                and (union_junit.contract_skip_errors or union_junit.contract_skips != 13)
+                and final_status == "passed"
+            ):
+                final_status = "failed"
+            if union_junit.other_skips and final_status == "passed":
+                final_status = "failed"
     except ValueError as error:
-        duplicate_error = str(error)
+        if not str(error).startswith("duplicate-result:"):
+            raise
+        duplicate_union = str(error)
+        if final_status not in HARD_STATES:
+            final_status = "unreported-files"
+    duplicate_result = duplicate_runs[0]["result"] if duplicate_runs else duplicate_union
     if pending:
         if final_status not in HARD_STATES:
             final_status = "unreported-files"
         synthesize_unreported(args.results / "unreported.xml", pending)
     manifest: dict[str, Any] = {
+        "tier": str(args.tier),
+        "waveCount": len(waves),
+        "aclProbe": bool(getattr(args, "acl_probe", False)),
         "status": final_status,
         "offsettable": is_offsettable(final_status),
-        "duplicateResult": duplicate_error,
+        "duplicateResult": duplicate_result,
+        "duplicateRuns": duplicate_runs,
+        "duplicateUnion": duplicate_union,
         "plannedFiles": planned,
         "reportedFiles": sorted(completed_files),
+        "collectionSkippedFiles": {
+            "files": len(collection_skipped_files),
+            "paths": sorted(collection_skipped_files),
+        },
         "runs": runs,
         "leakedProcesses": leaked_processes,
         "leaks": leaks,
@@ -691,6 +768,8 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
             "jobMinutes": args.job_minutes,
         },
     }
+    if plan_manifest is not None:
+        manifest["shard"] = 0 if shard_index is None else int(shard_index)
     _emit_manifest(manifest, report=args.report, log_path=args.results / "waves.log")
     return manifest
 
@@ -698,7 +777,10 @@ def run_waves(args: argparse.Namespace, root: Path) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tier", required=True)
-    parser.add_argument("--files", type=Path, required=True)
+    parser.add_argument("--files", type=Path, default=None)
+    parser.add_argument("--plan-manifest", type=Path, default=None)
+    parser.add_argument("--shard", type=int, default=0)
+    parser.add_argument("--acl-probe", action="store_true", default=False)
     parser.add_argument("--workers", type=int, required=True)
     parser.add_argument("--watchdog-seconds", type=int, required=True)
     parser.add_argument("--idle-seconds", type=int, default=None)
@@ -711,8 +793,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ledger-root", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
+    if (args.files is None) == (args.plan_manifest is None):
+        parser.error("pass exactly one of --files or --plan-manifest")
     if args.idle_seconds is None:
         args.idle_seconds = args.watchdog_seconds + 300
+    args.acl_probe = bool(args.acl_probe or _env_truthy("WINDOWS_SUITE_ACL_PROBE"))
     try:
         manifest = run_waves(args, Path.cwd())
     except Exception as error:

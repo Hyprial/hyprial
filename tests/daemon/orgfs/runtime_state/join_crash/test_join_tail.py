@@ -598,3 +598,35 @@ def test_join_locks_do_not_outlive_their_joins(peers: Peers) -> None:
     member.fs.join(space_id)
 
     assert runtime._join_locks == {}  # noqa: SLF001
+
+
+def test_join_lock_wait_has_a_bounded_failure(peers: Peers, monkeypatch: pytest.MonkeyPatch) -> None:
+    _owner, member, (space_id,) = _pair(peers)
+    runtime = member.runtime
+    assert runtime is not None
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_join_lock() -> None:
+        with runtime._join_guard(space_id):  # noqa: SLF001
+            entered.set()
+            release.wait(timeout=2.0)
+
+    holder = threading.Thread(target=hold_join_lock)
+    holder.start()
+    assert entered.wait(timeout=2.0)
+    monkeypatch.setattr(join_module, "JOIN_LOCK_TIMEOUT_SECONDS", 0.05)
+    try:
+        started = time.monotonic()
+        with pytest.raises(OrgFsError) as error:
+            runtime._join_sync(space_id)  # noqa: SLF001
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join(timeout=2.0)
+
+    assert elapsed < 1.0
+    assert error.value.code == "unavailable"
+    assert error.value.details["reason"] == "join-lock-timeout"
+    assert error.value.details["budgetSeconds"] == 0.05
+    assert runtime._join_locks == {}  # noqa: SLF001

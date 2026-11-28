@@ -136,7 +136,14 @@ def test_the_cli_logout_is_one_daemon_request_and_the_process_returns_to_bootstr
     lifecycle.assert_nothing_left(child.pid)
 
 
-@pytest.mark.parametrize("stopper", ["daemon-stop", "sigterm", "sigint"])
+@pytest.mark.parametrize(
+    "stopper",
+    [
+        "daemon-stop",
+        pytest.param("sigterm", marks=pytest.mark.posix_only("SIGTERM-exit-143")),
+        "sigint",
+    ],
+)
 def test_a_shutdown_after_a_promotion_exits_and_never_reopens_bootstrap(lifecycle, stopper):
     child = lifecycle.spawn()
     lifecycle.wait_phase({"bootstrap"}, child)
@@ -156,6 +163,7 @@ def test_a_shutdown_after_a_promotion_exits_and_never_reopens_bootstrap(lifecycl
     assert json.loads((lifecycle.home / "settings.json").read_text()).get("owner") == OWNER
 
 
+@pytest.mark.posix_only("SIGTERM-exit-143")
 def test_sigterm_during_the_logout_to_bootstrap_transition_ends_in_exit(lifecycle):
     child = lifecycle.spawn(Z2_SIGTERM_BEFORE_OPEN="2")
     lifecycle.wait_phase({"bootstrap"}, child)

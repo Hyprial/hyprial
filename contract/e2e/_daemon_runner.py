@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -701,7 +700,14 @@ class IsolatedDaemon:
         workers and log drainers have stopped.  Scenarios that immediately
         delete their temporary root must wait for that later boundary or a
         legitimate final adapter log can race ``TemporaryDirectory`` cleanup.
+
+        ``fcntl`` is imported here rather than at module level because the
+        scenario scripts import this module on every platform and the lock
+        is POSIX-only; the import then fails only when this method is
+        actually called where the lock does not exist.
         """
+
+        import fcntl
 
         lock_path = self.root / "state" / "daemon.lock"
         started = time.monotonic()
