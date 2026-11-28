@@ -1,10 +1,17 @@
+from dataclasses import replace
 from types import SimpleNamespace
+
+import pytest
 
 from hyprial.daemon.impl.cells.actor import (
     CellActorMemberSnapshot,
     CellActorSnapshot,
+    CellActorState,
     CellMemberPhase,
 )
+from hyprial.daemon.impl.cells.observability.model import RunFacts
+from hyprial.identity.impl.agents.actor.ports import AgentProjection
+from hyprial.kernel import subject_cell_id
 from hyprial.daemon.impl.cells.observability.policy import RunPolicies
 from hyprial.daemon.impl.composition.cell_observation.mount import CellActorMount
 from hyprial.daemon.impl.composition.cell_observation.run_states import run_states
@@ -98,3 +105,43 @@ def test_actor_source_refresh_does_not_read_owner_observation_sources():
         assert cut.binding_revision == 1
     finally:
         view.close()
+
+
+def test_identity_projection_provides_the_subject_cell_id():
+    entity = AgentProjection(1, ACTOR, "worker", "owner", "node", "10" * 16)
+    assert entity.cell_id == subject_cell_id("agent", entity.agent_id)
+
+
+@pytest.mark.parametrize("facts, revision, stale, expected", [
+    (RunFacts(known=True, running=True), 1, False, "idle"),
+    (RunFacts(known=True, running=True, open_count=1), 1, False, "in-turn"),
+    (RunFacts(known=True, running=True, open_count=1), 2, False, "unknown"),
+    (RunFacts(known=True, running=True), 1, True, "unknown"),
+    (RunFacts(known=True, running=True, scope="carrier-deliveries"), 1, False, "unknown"),
+])
+def test_managed_execution_observed_inside_active_cell(facts, revision, stale, expected):
+    snap = replace(_snapshot(CellMemberPhase.MISSING), state=CellActorState.ACTIVE, source_stale=stale)
+    view, entity, actors = _view({("pi:worker", "entity", revision): facts}, (), snap)
+    row = run_states(view, {}, {}, now_ms=10, monotonic_ms=10, cell_actors=actors)[entity.uri]
+    assert row["state"] == expected
+
+
+def test_only_a_receipt_for_this_unbound_incarnation_observes_it_stopped():
+    projection = AgentProjection(1, ACTOR, "worker", "owner", "node", "10" * 16)
+    uri = "agent:owner:node:" + projection.agent_id
+    projection = replace(projection, uri=uri)
+    snap = CellActorSnapshot(cell_id=projection.cell_id, epoch="epoch",
+                             state=CellActorState.ACTIVE,
+                             members=(CellActorMemberSnapshot(uri, "harness"),))
+    view, _, actors = _view({}, (), snap)
+    view._agents = SimpleNamespace(read_agents=lambda: (projection,))
+    view._identity = lambda _: (projection, None)
+    def state(receipts):
+        rows = run_states(view, {}, {}, now_ms=42, monotonic_ms=42,
+                          cell_actors=actors, completed_stops=receipts)
+        return rows[uri]["state"]
+    assert state({"agent:owner:node:old-name": "old-stop"}) == "unknown"
+    assert state({uri: "current-stop"}) == "not-running"
+    _, binding = _view({}, (), snap)[0]._identity(ACTOR)
+    view._identity = lambda _: (projection, binding)
+    assert state({uri: "previous-stop"}) == "unknown"

@@ -633,3 +633,18 @@ def test_start_failure_readback_uses_latest_journal_reservation(tmp_path):
     store.set_state(failed.operation_id, LifecycleState.COMPENSATED,
                     "late old completion", "HARNESS_START_FAILED")
     assert store.read_start_failures() == {}
+
+
+def test_completed_stop_is_invalidated_by_next_reservation(tmp_path):
+    from hyprial.daemon.impl.lifecycle_manager.store import _LifecycleStore
+    from hyprial.daemon.impl.state_db import StateDatabase
+
+    store = _LifecycleStore(StateDatabase(tmp_path / "state.sqlite3"))
+    target = _spec("stop-test")
+    stop = LifecycleOperation.deactivate("stop", target)
+    store.reserve(stop)
+    assert store.read_runtime_receipts() == ({}, {})
+    store.set_state("stop", LifecycleState.COMPLETED)
+    assert store.read_runtime_receipts() == ({}, {target.actor: "stop"})
+    store.reserve(LifecycleOperation.resume("restart", target))
+    assert store.read_runtime_receipts() == ({}, {})

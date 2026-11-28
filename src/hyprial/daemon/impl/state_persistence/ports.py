@@ -172,6 +172,8 @@ def run_journal_query(journal: _LifecycleStore, command: ReadJournalQuery) -> An
     op_id = command.operation_id
     if command.operation is JournalQuery.PENDING:
         result = journal.pending()
+    elif command.operation is JournalQuery.RUNTIME_RECEIPTS:
+        result = journal.read_runtime_receipts()
     elif command.operation is JournalQuery.START_FAILURES:
         result = journal.read_start_failures()
     else:

@@ -77,7 +77,7 @@ class _WorkerSnapshotMixin:
         finally:
             self._worker_snapshot_local.current = previous
 
-    def _cell_run_state_rows(self, *, sessions=None):
+    def _cell_run_state_rows(self, *, sessions=None, completed_stops=None):
         domains = getattr(self, "_agent_session_domains", None)
         if domains is None:
             return {}
@@ -85,7 +85,7 @@ class _WorkerSnapshotMixin:
         return domains.cells.run_states(self._cell_interactive_facts(sessions=sessions), {},
                                         now_ms=time.time_ns() // 1_000_000,
                                         monotonic_ms=time.monotonic_ns() // 1_000_000,
-                                        cell_actors=actor_registry)
+                                        cell_actors=actor_registry, completed_stops=completed_stops)
 
     def _cell_run_state_field(self, actor):
         snapshot = self._current_worker_snapshot()
@@ -175,12 +175,13 @@ class _WorkerSnapshotMixin:
                 name=spec.name,
                 member=spec.member,
             )
-        read_failures = getattr(getattr(self, "_lifecycle_manager", None), "read_start_failures", None)
+        journal = getattr(self, "_lifecycle_manager", None)
+        failures, stops = journal.read_runtime_receipts() if journal is not None else ({}, {})
         return _WorkerStatusSnapshot(
-            start_failures=read_failures() if callable(read_failures) else {},
+            start_failures=failures,
             statuses=tuple(statuses),
             running_by_actor=running_by_actor,
             session_ref_by_actor=session_ref_by_actor,
             desired=desired_loaded,
-            run_states=_WorkerSnapshotMixin._cell_run_state_rows(self, sessions=sessions),
+            run_states=_WorkerSnapshotMixin._cell_run_state_rows(self, sessions=sessions, completed_stops=stops),
         )

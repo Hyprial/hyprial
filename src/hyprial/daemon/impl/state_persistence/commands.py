@@ -36,6 +36,7 @@ class DesiredQuery(StrEnum):
 
 class JournalQuery(StrEnum):
     PENDING = "pending"
+    RUNTIME_RECEIPTS = "read_runtime_receipts"
     START_FAILURES = "read_start_failures"
     LOAD = "load"
     STATE = "state"
