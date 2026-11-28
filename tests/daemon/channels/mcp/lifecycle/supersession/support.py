@@ -20,17 +20,20 @@ plain "not registered" fence (``STALE_SESSION``); on the supersede verdict the
 child goes quiet (stops re-registering) but never tears itself down. Teardown is
 driven solely by parent-process liveness (``os.getppid`` drift), so a restart
 race can never terminate a child whose parent is alive.
+
+Decision (2026-11-26): ``_pid_alive`` is ``tests.support.process_table.alive``,
+which probes through ``pid_alive`` and treats a zombie (an exited orphan that a
+minimal container's pid 1 has not reaped yet) as gone, on POSIX and Windows.
 """
 
 from __future__ import annotations
 
+from tests.support.process_table import alive
 from tests.support.runtime._tmp import hyprial_test_tmp_root
 
 import json
-import os
 import shutil
 import socket
-import subprocess
 import tempfile
 import threading
 import time
@@ -407,28 +410,7 @@ def sock_path() -> Iterator[Path]:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    # In minimal Linux containers pid 1 may not reap an orphan immediately.
-    # ``kill(pid, 0)`` still succeeds for that exited zombie, which used to make
-    # this process-level contract report a live channel even after os._exit.
-    # POSIX ``ps`` exposes the same state on Linux and macOS; zombies have
-    # already stopped executing and count as exited for this assertion.
-    status = subprocess.run(
-        ["ps", "-o", "stat=", "-p", str(pid)],
-        text=True,
-        capture_output=True,
-        timeout=2,
-        check=False,
-    )
-    if status.returncode != 0:
-        return False
-    process_state = status.stdout.strip()
-    return bool(process_state) and not process_state.startswith("Z")
+    return alive(pid)
 
 
 

@@ -206,8 +206,12 @@ def test_register_identity_failure_cleans_group_not_only_leader(
         assert_owned_group_gone(leader, child_pid)
         assert owner.stopped()
     finally:
+        killpg = getattr(os, "killpg", None)
         try:
-            os.killpg(leader.pid, signal.SIGKILL)
+            if killpg is None:
+                leader.kill()
+            else:
+                killpg(leader.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             pass
 

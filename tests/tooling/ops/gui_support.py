@@ -14,6 +14,11 @@ runner-level settings describe the post-upgrade GUI child only.  The runner
 models the final state a test asserts on (service active, installed wheel, GUI
 child alive).  A ``daemon status`` read only times out while a daemon answers,
 and a daemon "moved" by the GUI start is a new daemon after a stop.
+
+Decision (2026-11-26): the fake child keys its hard-stop outcome on ``KILL``,
+which is ``signal.SIGKILL`` where it exists and 9 (its POSIX number) otherwise,
+so the module never evaluates ``signal.SIGKILL`` on a host without it and the
+``SIGTERM`` and hard-stop outcomes stay two separate keys there.
 """
 
 from __future__ import annotations
@@ -53,6 +58,8 @@ __all__ = [
     "smoke",
     "summary_of",
 ]
+
+KILL = getattr(signal, "SIGKILL", 9)
 
 
 class Listener:
@@ -160,7 +167,7 @@ class FakeChild:
         self.signals.append(number)
         exits = {
             signal.SIGTERM: self.cfg["exits_on_sigterm"],
-            signal.SIGKILL: self.cfg["exits_on_sigkill"],
+            KILL: self.cfg["exits_on_sigkill"],
         }.get(number, False)
         if exits:
             self.returncode = 128 + int(number)
@@ -177,7 +184,7 @@ class FakeChild:
         self.signals.append(number)
         exits = {
             signal.SIGTERM: self.cfg["group_exits_on_sigterm"],
-            signal.SIGKILL: self.cfg["group_exits_on_sigkill"],
+            KILL: self.cfg["group_exits_on_sigkill"],
         }.get(number, False)
         if exits:
             self._residual_alive = False

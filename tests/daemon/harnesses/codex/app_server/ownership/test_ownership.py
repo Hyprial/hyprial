@@ -1,6 +1,14 @@
+# Decision (2026-11-26): teardown never needs ``os.killpg`` or
+# ``signal.SIGKILL``: ``_kill_group`` kills a leader's process group where
+# ``os.killpg`` exists and the pid itself otherwise, with ``SIGKILL`` where it
+# exists. The cases that exercise the POSIX process-group owner (a real group
+# from ``spawn_owned_group``, a ``SIGSTOP``-ed server, a patched ``os.killpg``)
+# keep their behaviour unchanged; whether they are skipped on Windows is not
+# decided here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import threading
@@ -23,6 +31,19 @@ from ..support import (
     spec,
     wait_for_pid_file,
 )
+
+KILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _kill_group(pid: int) -> None:
+    """Teardown kill of a group leader's process group, or of the pid itself where there are no process groups."""
+
+    killpg = getattr(os, "killpg", None)
+    with contextlib.suppress(ProcessLookupError):
+        if killpg is None:
+            os.kill(pid, KILL)
+        else:
+            killpg(pid, KILL)
 
 
 def test_windows_codex_clients_select_the_job_owned_process_group(
@@ -176,7 +197,7 @@ def test_stop_drains_owned_group_when_clean_app_server_exit_leaves_child(
         assert not process_is_running(child_pid)
     finally:
         if child_pid is not None and process_is_running(child_pid):
-            os.kill(child_pid, signal.SIGKILL)
+            os.kill(child_pid, KILL)
 
 
 def test_stop_force_closes_sigstopped_app_server_during_active_turn(
@@ -204,7 +225,7 @@ def test_stop_force_closes_sigstopped_app_server_during_active_turn(
             os.killpg(server_pid, 0)
     finally:
         if server_pid is not None and process_is_running(server_pid):
-            os.killpg(server_pid, signal.SIGKILL)
+            _kill_group(server_pid)
 
 
 def test_force_close_refuses_reused_process_group_identity(monkeypatch) -> None:
@@ -239,10 +260,7 @@ def test_stop_intent_before_register_rejects_and_cleans_entire_new_group(
         assert_owned_group_gone(leader, child_pid)
         assert owner.stopped()
     finally:
-        try:
-            os.killpg(leader.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(leader.pid)
 
 
 def test_stop_during_register_identity_query_is_sticky_and_cleans_new_group(
@@ -286,10 +304,7 @@ def test_stop_during_register_identity_query_is_sticky_and_cleans_new_group(
     finally:
         release.set()
         register_thread.join(3.0)
-        try:
-            os.killpg(leader.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(leader.pid)
 
 
 def test_stop_after_identity_before_ownership_publish_rejects_register(
@@ -313,10 +328,7 @@ def test_stop_after_identity_before_ownership_publish_rejects_register(
         assert_owned_group_gone(leader, child_pid)
         assert owner.stopped()
     finally:
-        try:
-            os.killpg(leader.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(leader.pid)
 
 
 def test_repeated_force_close_completes_a_previously_incomplete_cleanup(
@@ -416,10 +428,7 @@ def test_process_stop_before_spawn_rejects_late_generation_within_deadline(
         release.set()
         stop_thread.join(3.0)
         for pid in spawned:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_group(pid)
 
 
 def test_process_stop_during_identity_rejects_generation_within_deadline(
@@ -466,10 +475,7 @@ def test_process_stop_during_identity_rejects_generation_within_deadline(
         release.set()
         stop_thread.join(3.0)
         for pid in observed_pid:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _kill_group(pid)
 
 
 def test_repeated_process_stop_finishes_an_incomplete_forced_cleanup() -> None:

@@ -6,6 +6,9 @@ runs through `build_plan` and `start_session` exactly as `hyprial gui` does,
 with the wheel's built-in asset directory replaced by a small verified tree.
 Decision: portable-process-cleanup-20261119.  Liveness is ``process_table.alive`` (``kill 0``
 plus ``ps`` state), not a ``/proc`` read, so a zombie counts as gone on macOS too.
+Decision (2026-11-26): a frontend left after the run is killed through its
+process group where ``os.killpg`` exists and by pid otherwise (on Windows
+``os.kill`` with 9 is ``TerminateProcess``), so the teardown is not POSIX-only.
 """
 
 from __future__ import annotations
@@ -281,10 +284,11 @@ def test_cli_port_zero_and_stdin_stop_leave_the_daemon_running() -> None:
             if cli is not None and cli.poll() is None:
                 cli.kill()
                 cli.wait(timeout=10)
+            kill = getattr(os, "killpg", os.kill)
             for pid in pids:
                 if _alive(pid):
                     try:
-                        os.killpg(pid, 9)
+                        kill(pid, 9)
                     except (ProcessLookupError, PermissionError):
                         pass
             if daemon.poll() is None:

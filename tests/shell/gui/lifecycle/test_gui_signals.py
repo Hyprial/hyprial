@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from hyprial.shell.impl.gui import launcher, termination
 from hyprial.shell.impl.cli.commands.common.root import app as _cli_root_app
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401  (installs the explicit CLI composition)
+from tests.support.windows_suite.host import pid_alive
 
 POSIX = pytest.mark.skipif(
     os.name == "nt", reason="POSIX SIGTERM and process-group semantics"
@@ -228,12 +229,9 @@ def _wait_until_dead(*pids: int, timeout: float = 5.0) -> bool:
 
 def _is_dead(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
+        return not pid_alive(pid)
     except PermissionError:
         return False
-    return False
 
 
 def _ports_free(*ports: int, timeout: float = 5.0) -> bool:

@@ -26,9 +26,15 @@ def _spawn_sleeping_group() -> subprocess.Popen[bytes]:
 
 
 def _reap_group(worker: subprocess.Popen[bytes]) -> None:
+    """Teardown: ``SIGKILL`` to the worker's process group where groups exist, ``kill`` of the worker otherwise."""
+
     if worker.poll() is None:
+        killpg = getattr(os, "killpg", None)
         try:
-            os.killpg(worker.pid, signal.SIGKILL)
+            if killpg is None:
+                worker.kill()
+            else:
+                killpg(worker.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except ProcessLookupError:
             pass
     worker.wait(timeout=2.0)

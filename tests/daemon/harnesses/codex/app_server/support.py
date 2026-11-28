@@ -1,3 +1,8 @@
+# Decision (2026-11-26): liveness probes here go through ``pid_alive``
+# (``hyprial.kernel.probe_process``) instead of a signal-zero ``os.kill``, which
+# is a console Ctrl+C on Windows. ``assert_process_group_gone`` probes the group
+# with ``os.killpg`` where it exists and the leader pid otherwise, because a
+# Windows process has no process group to probe.
 from __future__ import annotations
 
 import importlib
@@ -23,6 +28,7 @@ from hyprial.daemon.impl.harnesses.codex import (
 )
 from hyprial.daemon.impl.harnesses.worker_channel import WorkerChannel, build_worker_channel
 from hyprial.kernel.impl.log import Logger
+from tests.support.windows_suite.host import pid_alive
 
 FAKE_CODEX = Path(__file__).resolve().parents[5] / 'tests/fixtures/harnesses/fake_codex_app_server.py'
 
@@ -137,9 +143,7 @@ def read_log(path: Path) -> list[dict[str, object]]:
 
 
 def process_is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not pid_alive(pid):
         return False
     if sys.platform.startswith("linux"):
         try:
@@ -226,11 +230,16 @@ def assert_owned_group_gone(leader: subprocess.Popen[bytes], child_pid: int) -> 
 
 def assert_process_group_gone(pid: int, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
+    killpg = getattr(os, "killpg", None)
     while time.monotonic() < deadline:
-        try:
-            os.killpg(pid, 0)
-        except ProcessLookupError:
-            return
+        if killpg is None:
+            if not pid_alive(pid):
+                return
+        else:
+            try:
+                killpg(pid, 0)
+            except ProcessLookupError:
+                return
         time.sleep(0.01)
     pytest.fail(f"process group {pid} survived stop deadline")
 

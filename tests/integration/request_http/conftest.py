@@ -1,4 +1,10 @@
-"""Real isolated daemon + real request-http process fixtures."""
+"""Real isolated daemon + real request-http process fixtures.
+
+Decision (2026-11-26): ``signal_group`` stops a fixture process through the
+process group it leads where ``os.killpg`` exists (``SIGKILL`` for a hard stop)
+and through ``terminate``/``kill`` of the process itself otherwise, so the
+fixture teardown does not depend on POSIX process groups.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +29,21 @@ import pytest
 from hyprial.kernel import daemon_request_once
 from tests.support.runtime.environment import UNIT_USER_ID
 
-OWNER = "h01-owner"
+
+def signal_group(process: subprocess.Popen[Any], *, hard: bool) -> None:
+    """Stop ``process`` through the group it leads where groups exist; ``terminate``/``kill`` it otherwise."""
+
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        if hard:
+            process.kill()
+        else:
+            process.terminate()
+        return
+    killpg(os.getpgid(process.pid), getattr(signal, "SIGKILL", signal.SIGTERM) if hard else signal.SIGTERM)
+
+
+OWNER ="h01-owner"
 NODE = "h01-node"
 ACTOR = f"user:{OWNER}"
 
@@ -166,13 +186,13 @@ class DaemonProcess:
         if process is None or process.poll() is not None:
             return
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            signal_group(process, hard=False)
         except ProcessLookupError:
             return
         try:
             process.wait(timeout=30)
         except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            signal_group(process, hard=True)
             process.wait(timeout=10)
         deadline = time.monotonic() + 10
         while self.isolation.socket_path.exists() and time.monotonic() < deadline:
@@ -348,7 +368,7 @@ def _spawn_request_http(
             break
         time.sleep(0.05)
     else:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        signal_group(process, hard=True)
         process.wait(timeout=10)
         log.close()
         raise AssertionError(
@@ -377,11 +397,11 @@ def _spawn_request_http(
         yield http
     finally:
         if process.poll() is None:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            signal_group(process, hard=False)
             try:
                 process.wait(timeout=20)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                signal_group(process, hard=True)
                 process.wait(timeout=10)
         log.close()
 

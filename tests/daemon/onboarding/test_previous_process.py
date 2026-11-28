@@ -8,6 +8,7 @@ import time
 import pytest
 
 from hyprial.daemon.impl.onboarding import processes
+from tests.support.windows_suite.host import pid_alive
 
 
 @pytest.mark.parametrize("pid,birth", [(0, "x"), (-1, "x"), (True, "x"), (1, "")])
@@ -93,7 +94,7 @@ def test_exited_but_unreaped_process_counts_as_exited(tmp_path):
         deadline = time.monotonic() + 10
         while not processes.process_exited_unreaped(child.pid, birth) and time.monotonic() < deadline:
             time.sleep(0.01)
-        os.kill(child.pid, 0)
+        assert pid_alive(child.pid)
         assert processes.process_birth_identity(child.pid) == birth
         processes.require_previous_process_exit(child.pid, birth)
     finally:

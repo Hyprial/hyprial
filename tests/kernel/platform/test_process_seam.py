@@ -5,10 +5,15 @@ the platform, so these two helpers are the only place its process-group
 behaviour lives.  The cases below pin both platforms without starting or killing
 a real process: ``os.killpg``, ``subprocess.run`` and the process handle are all
 fakes.
+Decision (2026-11-26): the POSIX cases fake the POSIX branch completely, so
+they run on any host: ``os.killpg`` is patched with ``raising=False`` (Windows
+has no such attribute) and ``_posix`` swaps the seam's ``signal`` module for
+``POSIX_SIGNALS``, whose ``SIGKILL`` is 9 where the host has none.
 """
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -17,6 +22,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from hyprial.kernel.impl.manysys.process import spawn as seam
+
+POSIX_SIGNALS = SimpleNamespace(
+    SIGINT=signal.SIGINT,
+    SIGTERM=signal.SIGTERM,
+    SIGKILL=getattr(signal, "SIGKILL", 9),
+)
 
 
 class FakeProcess:
@@ -76,6 +87,7 @@ def test_hidden_subprocess_kwargs_are_windows_only(monkeypatch):
 
 def _posix(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(seam, "signal", POSIX_SIGNALS)
 
 
 def test_group_stop_escalates_int_then_term(monkeypatch):
@@ -88,7 +100,7 @@ def test_group_stop_escalates_int_then_term(monkeypatch):
         if signal_number == seam.signal.SIGTERM:
             alive.clear()
 
-    monkeypatch.setattr(seam.os, "killpg", killpg)
+    monkeypatch.setattr(seam.os, "killpg", killpg, raising=False)
     monkeypatch.setattr(seam, "_group_alive", lambda _group: bool(alive))
     process = FakeProcess()
 
@@ -106,7 +118,7 @@ def test_group_stop_reaches_sigkill_when_nothing_else_lands(monkeypatch):
         if signal_number == seam.signal.SIGKILL:
             raise ProcessLookupError
 
-    monkeypatch.setattr(seam.os, "killpg", killpg)
+    monkeypatch.setattr(seam.os, "killpg", killpg, raising=False)
     monkeypatch.setattr(seam, "_group_alive", lambda _group: True)
     process = FakeProcess()
 
@@ -122,7 +134,7 @@ def test_group_stop_reaches_sigkill_when_nothing_else_lands(monkeypatch):
 def test_group_stop_stops_when_the_group_is_already_gone(monkeypatch):
     _posix(monkeypatch)
     calls: list[int] = []
-    monkeypatch.setattr(seam.os, "killpg", lambda *args: calls.append(args))
+    monkeypatch.setattr(seam.os, "killpg", lambda *args: calls.append(args), raising=False)
     monkeypatch.setattr(seam, "_group_alive", lambda _group: False)
     process = FakeProcess()
 
@@ -135,7 +147,7 @@ def test_group_stop_stops_when_the_group_is_already_gone(monkeypatch):
 def test_group_stop_falls_back_to_the_handle_on_killpg_error(monkeypatch):
     _posix(monkeypatch)
     monkeypatch.setattr(
-        seam.os, "killpg", MagicMock(side_effect=OSError("no such group"))
+        seam.os, "killpg", MagicMock(side_effect=OSError("no such group")), raising=False
     )
     monkeypatch.setattr(seam, "_group_alive", lambda _group: True)
     process = FakeProcess()
@@ -149,7 +161,7 @@ def test_group_stop_falls_back_to_the_handle_on_killpg_error(monkeypatch):
 def test_group_stop_returns_on_process_lookup(monkeypatch):
     _posix(monkeypatch)
     monkeypatch.setattr(
-        seam.os, "killpg", MagicMock(side_effect=ProcessLookupError)
+        seam.os, "killpg", MagicMock(side_effect=ProcessLookupError), raising=False
     )
     monkeypatch.setattr(seam, "_group_alive", lambda _group: True)
     process = FakeProcess()
@@ -296,7 +308,7 @@ def test_windows_stop_tolerates_a_handle_without_poll(monkeypatch):
 
 @pytest.mark.parametrize("error", [ProcessLookupError(), PermissionError(), OSError()])
 def test_group_probe_maps_errors_to_liveness(monkeypatch, error):
-    monkeypatch.setattr(seam.os, "killpg", MagicMock(side_effect=error))
+    monkeypatch.setattr(seam.os, "killpg", MagicMock(side_effect=error), raising=False)
 
     alive = seam._group_alive(99)
 

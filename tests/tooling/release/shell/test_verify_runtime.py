@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.windows_suite.host import pid_alive
 from tests.tooling.release.shell.support import LOCK, load
 
 VERSION = "0.0.1+gccccccc"
@@ -129,8 +130,7 @@ def test_a_child_that_ignores_eof_fails_and_is_killed(tmp_path: Path, parent: Pa
     code, line, evidence = _verify(_runtime(tmp_path, "ignore-eof"), parent, monkeypatch, stop=2.0)
     assert code == 1 and line.startswith("FAIL stdin-stop"), line
     pid = evidence["record"]["frontend_pid"]
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    assert not pid_alive(pid)
 
 
 def test_tampered_or_linked_runtime_fails_before_running(tmp_path: Path, parent: Path, monkeypatch: pytest.MonkeyPatch) -> None:

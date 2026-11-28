@@ -14,11 +14,21 @@ signalled; ``record`` without a birth keeps the birth a pid already has.  The
 ``GuiCommand`` and ``LifecycleHome`` cases plant a different live process under a
 reaped launcher's pid in a fake table and require that it is never adopted or signalled,
 that ``release`` is idempotent, and that a survivor fails the teardown with its pid and command.
+Decision (2026-11-26): the leader's teardown kills its process group where
+``os.killpg`` exists and otherwise adopts the leader's descendants and hard-stops
+them through the ledger, so the cleanup is not POSIX-only.  The Windows branch
+of the ledger is covered here on any host by fakes: a fake ``kernel32`` drives
+the Toolhelp32 parser (rows, skipped pid 0, the snapshot handle closed, an
+invalid handle refused), ``state`` is ``"R"`` or ``""`` from ``pid_alive``, a
+stale parent pid whose process is younger than its child is not a parent, and
+``signal``/``kill``/``stop`` reach only ``terminate_fenced_process`` with the
+recorded birth and never ``os.kill``.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import select
 import signal
@@ -31,7 +41,7 @@ import pytest
 from tests.integration.daemon_lifecycle.support import LifecycleHome
 from tests.integration.gui_daemon_first.support import GuiCommand
 from tests.support import process_table
-from tests.support.process_table import Ledger, Row, alive, children_of, descendants_of, exists, table, wait_until
+from tests.support.process_table import KILL, Ledger, Row, alive, children_of, descendants_of, exists, table, wait_until
 
 PARENT = r'''
 import subprocess, sys, time
@@ -59,11 +69,20 @@ def _leader() -> Iterator[tuple[subprocess.Popen, Ledger]]:
         yield child, ledger
     finally:
         if child.returncode is None and ledger.exists(child.pid):
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(child.pid, signal.SIGKILL)
+            _end_group(child, ledger)
         child.wait(timeout=30)
         if child.stdout is not None:
             child.stdout.close()
+
+
+def _end_group(child: subprocess.Popen, ledger: Ledger) -> None:
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None:
+        with contextlib.suppress(ProcessLookupError):
+            killpg(child.pid, KILL)
+        return
+    ledger.adopt_descendants(child.pid)
+    ledger.stop(kill=10)
 
 
 def _sleeper() -> subprocess.Popen:
@@ -89,8 +108,8 @@ def test_the_ledger_finds_a_grandchild_refuses_a_reused_pid_and_reaps_both() -> 
         wrong = Ledger()
         assert wrong.record(grandchild, "not-the-birth-of-this-process")
         assert wrong.same(grandchild) is False
-        assert wrong.signal(grandchild, signal.SIGKILL) is False
-        assert Ledger().signal(grandchild, signal.SIGKILL) is False
+        assert wrong.signal(grandchild, KILL) is False
+        assert Ledger().signal(grandchild, KILL) is False
         assert alive(grandchild) and ledger.same(grandchild)
 
         assert ledger.stop(term=10, kill=10) == []
@@ -138,7 +157,7 @@ def test_an_alive_pid_whose_birth_cannot_be_read_is_a_survivor_that_is_not_signa
         assert ledger.record(victim.pid)
         monkeypatch.setattr(process_table, "process_birth_identity", lambda pid: None)
         assert ledger.live() == [victim.pid]
-        assert ledger.signal(victim.pid, signal.SIGKILL) is False
+        assert ledger.signal(victim.pid, KILL) is False
         assert ledger.stop(term=0.2, kill=0.2) == [victim.pid]
         assert victim.poll() is None
         message = ledger.describe([victim.pid])
@@ -152,13 +171,13 @@ def test_a_supplied_birth_that_does_not_match_is_a_survivor_but_a_live_read_mism
     try:
         supplied = Ledger()
         assert supplied.record(victim.pid, "a birth formatted some other way")
-        assert supplied.live() == [victim.pid] and supplied.signal(victim.pid, signal.SIGKILL) is False
+        assert supplied.live() == [victim.pid] and supplied.signal(victim.pid, KILL) is False
         assert "birth unverifiable" in supplied.describe([victim.pid])
 
         read = Ledger()
         assert read.record(victim.pid)
         monkeypatch.setattr(process_table, "process_birth_identity", lambda pid: "the birth of a reused pid")
-        assert read.live() == [] and read.signal(victim.pid, signal.SIGKILL) is False
+        assert read.live() == [] and read.signal(victim.pid, KILL) is False
         assert victim.poll() is None
     finally:
         _end(victim)
@@ -174,7 +193,7 @@ def test_recording_without_a_birth_keeps_the_birth_a_pid_already_has(monkeypatch
         assert ledger.record(victim.pid) is True
         assert ledger.births[victim.pid] == original
         assert ledger.same(victim.pid) is False
-        assert ledger.signal(victim.pid, signal.SIGKILL) is False
+        assert ledger.signal(victim.pid, KILL) is False
         assert victim.poll() is None
     finally:
         _end(victim)
@@ -252,3 +271,127 @@ def test_the_lifecycle_cleanup_reports_every_failure_not_only_the_first() -> Non
     with pytest.raises(ExceptionGroup) as raised:
         home.cleanup()
     assert sorted(str(error) for error in raised.value.exceptions) == ["the first releaser failed", "the second releaser failed"]
+
+
+class _Kernel:
+    """A fake ``kernel32`` that serves one Toolhelp32 snapshot of ``entries`` and records closed handles."""
+
+    def __init__(self, entries: list[tuple[int, int, str]], handle: int | None = 7) -> None:
+        self.entries = entries
+        self.handle = handle
+        self.closed: list[int] = []
+        self.at = 0
+
+    def CreateToolhelp32Snapshot(self, flags: int, pid: int) -> int | None:
+        assert (flags, pid) == (process_table.TH32CS_SNAPPROCESS, 0)
+        return self.handle
+
+    def _fill(self, handle: int, ref: object) -> bool:
+        assert handle == self.handle
+        entry = ref._obj  # type: ignore[attr-defined]
+        assert entry.dwSize == ctypes.sizeof(process_table.ProcessEntry32W)
+        if self.at >= len(self.entries):
+            return False
+        entry.th32ProcessID, entry.th32ParentProcessID, entry.szExeFile = self.entries[self.at]
+        self.at += 1
+        return True
+
+    def Process32FirstW(self, handle: int, ref: object) -> bool:
+        self.at = 0
+        return self._fill(handle, ref)
+
+    def Process32NextW(self, handle: int, ref: object) -> bool:
+        return self._fill(handle, ref)
+
+    def CloseHandle(self, handle: int) -> bool:
+        self.closed.append(handle)
+        return True
+
+
+def test_the_toolhelp_parser_reads_pid_parent_and_image_and_closes_the_snapshot() -> None:
+    kernel = _Kernel([(0, 0, "[System Process]"), (4, 0, "System"), (900, 4, "python.exe"), (901, 900, "sleep.exe")])
+    rows = process_table.toolhelp_rows(kernel)
+    assert rows == {
+        4: Row(4, 0, "R", "System"),
+        900: Row(900, 4, "R", "python.exe"),
+        901: Row(901, 900, "R", "sleep.exe"),
+    }
+    assert kernel.closed == [7]
+    assert not any(row.dead for row in rows.values())
+
+
+@pytest.mark.parametrize("handle", [None, 0, process_table.INVALID_HANDLE_VALUE])
+def test_the_toolhelp_parser_refuses_a_snapshot_it_did_not_get(handle: int | None) -> None:
+    kernel = _Kernel([(900, 4, "python.exe")], handle=handle)
+    with pytest.raises(OSError, match="no process snapshot"):
+        process_table.toolhelp_rows(kernel)
+    assert kernel.closed == []
+
+
+def _as_windows(monkeypatch: pytest.MonkeyPatch, present: dict[int, str]) -> list[tuple[int, str | None]]:
+    """Run the module's Windows branch: ``present`` maps a live pid to its birth; returns the fenced terminations."""
+
+    terminated: list[tuple[int, str | None]] = []
+
+    def terminate(pid: int, *, birth_marker: str | None = None, process_group: bool = False) -> bool:
+        assert not process_group
+        terminated.append((pid, birth_marker))
+        if present.get(pid) != birth_marker:
+            return False
+        del present[pid]
+        return True
+
+    def forbidden(*_args: object) -> None:
+        raise AssertionError("os.kill must not be called on the Windows branch")
+
+    monkeypatch.setattr(process_table, "WINDOWS", True)
+    monkeypatch.setattr(process_table, "pid_alive", lambda pid: pid in present)
+    monkeypatch.setattr(process_table, "process_birth_identity", lambda pid: present.get(pid))
+    monkeypatch.setattr(process_table, "terminate_fenced_process", terminate)
+    monkeypatch.setattr(process_table.os, "kill", forbidden)
+    return terminated
+
+
+def test_on_windows_state_is_running_or_gone_and_a_denied_probe_still_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    _as_windows(monkeypatch, {900: "win-filetime:5"})
+    assert process_table.state(900) == "R" and alive(900) and exists(900)
+    assert process_table.state(901) == "" and not alive(901) and not exists(901)
+
+    def denied(pid: int) -> bool:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(process_table, "pid_alive", denied)
+    assert process_table.state(902) == "R"
+
+
+def test_on_windows_a_parent_pid_older_than_its_parent_is_not_a_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    births = {900: "win-filetime:100", 901: "win-filetime:150", 902: "win-filetime:50", 903: "win-filetime:200"}
+    _as_windows(monkeypatch, dict(births))
+    monkeypatch.setattr(process_table, "process_birth_identity", births.get)
+    fake = {
+        901: Row(901, 900, "R", "child.exe"),
+        902: Row(902, 900, "R", "older.exe"),
+        903: Row(903, 901, "R", "grandchild.exe"),
+        904: Row(904, 900, "R", "unreadable.exe"),
+    }
+    monkeypatch.setattr(process_table, "table", lambda: fake)
+    assert children_of(900) == [901]
+    assert descendants_of(900) == [901, 903]
+
+
+def test_on_windows_signal_kill_and_stop_terminate_only_the_recorded_birth(monkeypatch: pytest.MonkeyPatch) -> None:
+    present = {900: "win-filetime:5", 901: "win-filetime:6", 902: "win-filetime:7"}
+    terminated = _as_windows(monkeypatch, present)
+    monkeypatch.setattr(process_table, "table", lambda: {})
+    ledger = Ledger()
+    assert ledger.record(900) and ledger.record(901) and ledger.record(902, "win-filetime:99")
+
+    assert ledger.signal(900, signal.SIGTERM) is True
+    assert terminated == [(900, "win-filetime:5")] and 900 not in present
+    assert ledger.signal(900, signal.SIGTERM) is False
+
+    assert ledger.kill(902) is False and 902 in present
+    assert ledger.stop(kill=0.2) == [902]
+    assert (901, "win-filetime:6") in terminated and 901 not in present
+    assert all(pid != 902 for pid, _ in terminated)
+    assert "alive, birth unverifiable" in ledger.describe([902])
