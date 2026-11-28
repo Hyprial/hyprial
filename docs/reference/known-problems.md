@@ -573,6 +573,16 @@
 - 依据：#2721 的 PR 正文与 CI 记录；本地对照运行的命令与轮次见该 PR。
 - 负责人：OrgFS 网络同步与 transport 维护者；teleport 协调者负责在相关 PR 中引用本条。
 
+### KP-048 2026-11-14 新现场：关联关系尚未证实
+
+- 现象：本轮 [job150084](https://code.hyprial.com/api/v1/repos/HyprialOS/hyprial/actions/jobs/150084/logs)、[job150520](https://code.hyprial.com/api/v1/repos/HyprialOS/hyprial/actions/jobs/150520/logs)、[job150682](https://code.hyprial.com/api/v1/repos/HyprialOS/hyprial/actions/jobs/150682/logs) 分别在 identity shape、squire custody、OrgFS purge 现场报告 xdist worker `Not properly terminated`。日志没有 worker 的退出信号、wait status、OOM 事件或 native fault 栈；150084 不是 identity shape 断言失败。
+- 影响：对应分片红，被打断的 nodeid 不能作为责任模块证据；这三个现场与本条历史 Zenoh query 崩溃同源仍 UNKNOWN。
+- 规避：无已验证规避；不跳过用例、不重启 worker 或添加 retry 制造通过。
+- 决定：本轮 CI 稳定化继续调查，先补自有 worker 退出状态观测，再收集 cgroup/原生栈和进程生命周期证据；不凭137推断OOM，也不直接给出站 query 加锁。
+- 依据：[本轮证据与决策记录](../notes/dev-ci-stability-2026-11-14/README.md#worker-crash-与启动现场)。历史样本和本轮现场分别保留，不合并统计。
+- 负责人：CI runner/测试进程生命周期维护者、OrgFS 网络同步与 transport 维护者。
+- 诊断已合入：[#2772](https://code.hyprial.com/HyprialOS/hyprial/pulls/2772)，merge `0de4a45c3ea840a5842a46e7b6ce28ada75ebfa6`，补充异常worker退出码/信号观测并保持原pytest失败。它不是三个历史crash的根因修复，历史signal/OOM仍UNKNOWN。
+
 ## KP-058 provider-key HTTP 方法尚无 Contract Mock 示例
 
 2026-11-14 rebase：原集成分支编号为 KP-047；dev 已将该编号用于 teleport，故本条改为 KP-058，问题语义与状态不变。
@@ -720,6 +730,17 @@
 742 PASS / 35 FAIL / 6 SKIP，35 个失败 nodeid 均已在上述固定 dev 失败集合中；额外 66 项与
 收集错误消除。候选未因此获得全量 PASS。远端 `754e29c60` GUI push/PR 均通过，Python checks
 及 CLI inventory 仍失败；具体远端日志仍未取得。原始复跑记录为 `/tmp/gui-ci-prepared-failures.log`。
+
+2026-11-14 CI整理补证：本条daemon-lifecycle缺少actor_host由独立契约fixture候选修复。
+旧基线候选`42e48f03ff1d0acca570ff70184fbbfe01f209d2`及整合dev
+`2a494edccdee0135b0a4dbb6fd7f7cf755b803f0`后的候选`98067a9c5`，均经Sol独立执行
+`./contract/run-all.sh --isolated-only`，exit0且全部段PASS。只闭合本地契约fixture缺口，
+不把本条其他CLI/原生/环境失败一起标已修；远端head和CI另记。
+证据见[本轮CI记录](../notes/dev-ci-stability-2026-11-14/README.md#追加2727合入后的重新整合)。
+
+最终集成补证：#2765已合入dev；在最终代码`bef9dd3aed18b8573e777278b5034d10cf0a96c6`，
+Sol隔离Python3.12环境再次执行完整isolated contracts，各段PASS/exit0。
+本条的actor_host契约fixture子问题已有合入与最终本地验收；其他历史失败不随此关闭，完整CI仍0/5。
 
 ## KP-060 四步引导浏览器验收等待旧按钮颜色超时
 

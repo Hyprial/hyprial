@@ -4,7 +4,9 @@
 
 初始设计基线：Forgejo `dev` `b15393e3933b6eda6fbeffe503761876a77e6b0b`。已重读该基线 AGENTS.md、GLOSSARY.md、known-problems 的相关记录与 [GUI 单启动设计](gui-single-launch-2026-11-14.md)。本稿结合 Astra 架构与 Sol 施工/验收，由用户批准后进入持续施工；已获得的真实job与局部验收见后文，缺失的runner诊断继续补齐。未复现根因均为UNKNOWN，不把假设写成结论。
 
-整合更新：#2727已进入dev，当前基线`2a494edccdee0135b0a4dbb6fd7f7cf755b803f0`；AGENTS未变，GLOSSARY与KP已重核。最新dev已占用KP-049至060（049为GUI自动升级），本设计早先“reference预留049”不再适用；新条目从061分配，保留原有49–60。历史红绿仍属于原SHA，不重写为新基线结果。持续目标见[ROADMAP G4](../../ROADMAP.md#g4--dev-ci-稳定性闭环与残余问题归属)。
+整合更新：#2727已进入dev，当时基线`2a494edccdee0135b0a4dbb6fd7f7cf755b803f0`；AGENTS未变，GLOSSARY与KP已重核。最新dev已占用KP-049至060（049为GUI自动升级），本设计早先“reference预留049”不再适用；dev其后已占用061–063，本轮条目从064分配，保留原有049–063。历史红绿仍属于原SHA，不重写为新基线结果。持续目标见[ROADMAP G4](../../ROADMAP.md#g4--dev-ci-稳定性闭环与残余问题归属)。
+
+后续选路更新：#2761已进入dev `28d75429e671ae95f7643315b384b56904bcdd58`，仅改变CI计划、pytest影响选择及其测试；AGENTS未变。本设计各基线都是对应审计时刻，不锁定未来dev。实际CI新增Python测试文件、依赖pins和Python runner输入触发，并允许无其他测试引用的变更模块单跑；本地AGENTS纪律与实际CI覆盖不能混称。
 
 用户已批准本方案，并在2026-11-14授权主协调者：本任务已由Sol独立验收的小PR若仅被无关失败卡住，可以强行合入dev；相关失败不能跳过。执行时记录base/head、无关失败的对照证据、独立验收及实际merge结果，不修改保护、不将合入写成CI通过。该授权不扩展到未经本任务验收的其他PR。
 
@@ -104,7 +106,7 @@ Sol 独立验收不能只复述 Terra 日志：检查最终 diff、冻结最终 
 
 单 PR 门槛：根因证据足够或明确只做诊断；基线/候选验证及原始失败签名留存；修改产品或测试结构时先跑结构门与模块边界；任何代码改动均跑相关焦点测试、邻域/原分片；契约与 skill 影响交代；每个未测项 UNKNOWN/BLOCKED；无禁区、retry/skip/xfail/断言放宽；独立评审确认。既有存量 ruff/KP 依据最新 dev 的规定单列，不能把新增失败算存量。
 
-最新 AGENTS 要求只有 `src/hyprial/` 变化才追加全量 `uv run --with libcst==1.9.0 pytest tests/` 与交付前 `uv run ruff check .`；tests/scripts/pyproject/lock 或 GUI 变化不单独触发全量，普通文档不要求 pytest/Ruff。CI scope/plan 策略测试和适用结构检查仍要跑。本任务最终五次全 CI 需使用显式 full validation，不能利用 docs-only 或 tests-only 的 scope 缩减结果冒充全套；手动触发形态与权限待协调者核验。
+本地AGENTS纪律仍要求只有`src/hyprial/`变化才追加全量pytest/Ruff，普通文档不要求它们；但#2761已拓宽实际CI Python选路到`tests/**/*.py`、pyproject/lock及Python runner输入。变更模块若独立则PR可以单跑，不等于全tests。适用CI策略/结构检查仍要跑；#2757此前pytest全skip不得计作通过。本任务最终五次必须显式full并核实际selection，不能用docs-only或PR子集冒充全套。
 
 多PR顺序合入最新dev，每次记录合并结果SHA和真实checks，不仅分支head；依赖变动先整合、核对diff并重验受影响面，不无差别重做未受影响测量。强行合入的审计必须列出无关失败的具体证据及Sol验收；相关失败不在授权例外内。
 
