@@ -47,9 +47,7 @@ def _result(row: dict[str, object]) -> dict[str, object]:
         "unavailableOrgs": [],
         "dataProblems": [],
         "directory": {"group-acme": [row]},
-        "directoryPending": {
-            "group-acme": {"contentPending": [], "parkedCommits": None}
-        },
+        "directoryPending": {"group-acme": {"contentPending": []}},
         "self": {
             "deviceId": "device-a",
             "owner": "alice",

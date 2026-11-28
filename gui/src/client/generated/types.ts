@@ -1264,7 +1264,7 @@ export interface OrgNetworkResult {
   casdoorSync?: Record<string, { casdoorMissing?: Array<string>; casdoorOnly?: Array<string>; lastError?: Record<string, unknown> | null; lastFullSyncAt?: null | string; lastSyncAt?: null | string; syncHalted?: Record<string, unknown> | null }> | null;
   dataProblems?: Array<{ deviceId?: string; org: string; owner?: string; path: string; reason: string; value?: string; version?: string }>;
   directory?: Record<string, Array<{ addressPresent: boolean; clientPublic: string; clientPublicByServer: Record<string, string>; deviceId: string; deviceUid?: null | string; encryptionKeyId?: string; encryptionPublicKey?: string; firstPublishedAt?: string; keyGeneration: number; machineFingerprint?: string; owner: string; presence: string; serverPublic: string; updatedAt: string }>>;
-  directoryPending?: Record<string, null | { contentPending: Array<{ deviceId: string; owner: string; reason: string }>; dataProblems?: Array<{ deviceId?: string; org: string; owner?: string; path: string; reason: string; value?: string; version?: string }>; parkedCommits: Array<{ author: string; commits: number }> | null }>;
+  directoryPending?: Record<string, null | { contentPending: Array<{ deviceId: string; owner: string; reason: string }>; dataProblems?: Array<{ deviceId?: string; org: string; owner?: string; path: string; reason: string; value?: string; version?: string }> }>;
   mappedPeers?: Array<{ dialed: boolean; endpoint: null | string; peer: string; slot?: number | string }> | null;
   orgs?: Array<string>;
   owner?: null | string;
@@ -1604,7 +1604,6 @@ export interface OrgfsRestoreParams {
   node: string;
   recursive?: boolean;
   spaceId: string;
-  version: string;
 }
 
 export interface OrgfsRestoreResult {

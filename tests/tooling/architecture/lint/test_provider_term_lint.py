@@ -182,6 +182,19 @@ _SETUP_SECRET_WIRE_LINES = (
     '    "actor": "squire", "grantId": "example-model", "source": "user-provider",',
 )
 
+_SERVICE_GRANT_PROVIDER_LINES = (
+    ("daemon/impl/service_grants/consumer/__init__.py", "user-provider"),
+    ("daemon/impl/service_grants/consumer/derive.py", "user-provider"),
+    ("daemon/impl/service_grants/consumer/keys.py", "provider"),
+    ("daemon/impl/service_grants/service.py", "provider"),
+    ("identity/impl/facade/types.py", "user_provider"),
+    ("identity/impl/provider_keys/envelope.py", "provider-key"),
+    ("identity/impl/sealed_envelope/__init__.py", "provider keys"),
+    ("identity/impl/sealed_envelope/core.py", "provider-key"),
+    ("identity/impl/sealed_envelope/profile.py", "provider-key"),
+    ("shell/impl/cli/commands/service/grants.py", "user-provider"),
+)
+
 # Each rule is (path regex, line-content regex). A hit is allowed when at
 # least one rule matches both the path and the matched line content.
 _ADAPTER_PROVIDER_LINES += ADAPTER_SOURCE_PROVIDER_LINES
@@ -235,6 +248,10 @@ _RULES: tuple[tuple[str, str], ...] = (
     (r"^src/hyprial/daemon/impl/composition/cell_observation/run_states\.py$", r"^\s+provider_block=bool\(blocks\.get\(entity\.uri, entity\.block is not None\)\)\)$"),
     (r"^src/hyprial/shell/impl/cli/output/status/__init__\.py$", r"^\s+(?:# A diagnostic label must never become a raw prompt/provider error renderer\.|text \+= \" provider-blocked=true\")$"),
     *((f"^{re.escape(path)}$", f"^{re.escape(line)}$") for path, line in _ADAPTER_PROVIDER_LINES),
+    *((
+        f"^src/hyprial/{re.escape(path)}$",
+        f".*{re.escape(term)}.*",
+    ) for path, term in _SERVICE_GRANT_PROVIDER_LINES),
     *((f"^{re.escape('src/hyprial/daemon/impl/request_catalog/' + path)}$", f"^{re.escape(line)}$") for path, line in _NATIVE_AUTH_WIRE_LINES),
     *(
         (r"^src/hyprial/daemon/impl/request_catalog/agent/provider\.py$", f"^{re.escape(line)}$")

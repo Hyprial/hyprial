@@ -393,7 +393,8 @@ def test_missing_entry_is_restored_and_ledger_loss_leaves_entries_alone(world: d
     source = consumer(world)
     source.refresh()
     path = providers_dir(world["bob_home"]) / f"{entry_id}.json"
-    path.unlink()
+    path.unlink(missing_ok=True)
+    assert not path.exists()
 
     source.refresh()
 
