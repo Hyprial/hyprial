@@ -61,6 +61,11 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Fetch the fixed selector replay snapshot
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 22eb4003760a4af0cac43db5030c7dc8cb748921
+          git cat-file -e 22eb4003760a4af0cac43db5030c7dc8cb748921^{commit}
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
