@@ -194,6 +194,7 @@ from hyprial.kernel import atomic_json_write, fsync_directory
 
 VERIFY_BATCH = 256
 JOIN_ROUND_TIMEOUT_SECONDS = 10.0
+JOIN_LOCK_TIMEOUT_SECONDS = JOIN_ROUND_TIMEOUT_SECONDS
 CATALOG_RETRY_BASE_SECONDS = 60.0
 CATALOG_RETRY_MAX_SECONDS = 960.0
 JOIN_DISCARD_WAIT_SECONDS = 5.0
@@ -561,7 +562,11 @@ class StateLifecycle:
         with self._join_locks_guard:
             entry = self._join_locks.setdefault(space_id, _JoinLock())
             entry.users += 1
-        held = entry.lock.acquire(blocking)
+        held = (
+            entry.lock.acquire(timeout=JOIN_LOCK_TIMEOUT_SECONDS)
+            if blocking
+            else entry.lock.acquire(blocking=False)
+        )
         try:
             yield held
         finally:
@@ -620,7 +625,17 @@ class StateLifecycle:
 
     def _join_sync(self, space_id: str) -> SpaceInfo:
         self._require_space_id(space_id)
-        with self._join_guard(space_id):
+        with self._join_guard(space_id) as held:
+            if not held:
+                raise OrgFsError(
+                    "unavailable",
+                    {
+                        "spaceId": space_id,
+                        "reason": "join-lock-timeout",
+                        "message": "OrgFS join lock wait timed out",
+                        "budgetSeconds": JOIN_LOCK_TIMEOUT_SECONDS,
+                    },
+                )
             return self._join_locked(space_id)
 
     def _join_locked(self, space_id: str) -> SpaceInfo:
@@ -855,6 +870,7 @@ class StateLifecycle:
 __all__ = [
     "CATALOG_RETRY_BASE_SECONDS",
     "CATALOG_RETRY_MAX_SECONDS",
+    "JOIN_LOCK_TIMEOUT_SECONDS",
     "JOIN_ROUND_TIMEOUT_SECONDS",
     "StateLifecycle",
     "VERIFY_BATCH",
