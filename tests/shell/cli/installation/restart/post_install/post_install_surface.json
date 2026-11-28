@@ -162,7 +162,7 @@
     "hyprial.shell.impl.gui.apps",
     "hyprial.shell.impl.gui.errors"
   ],
-  "primedModuleCount": 614,
+  "primedModuleCount": 621,
   "primedModules": [
     "hyprial",
     "hyprial.biz",
@@ -201,6 +201,13 @@
     "hyprial.daemon.impl.delivery.system_residue",
     "hyprial.daemon.impl.delivery.wake",
     "hyprial.daemon.impl.desired_state",
+    "hyprial.daemon.impl.desired_state.bindings",
+    "hyprial.daemon.impl.desired_state.bindings.cleanup",
+    "hyprial.daemon.impl.desired_state.bindings.codec",
+    "hyprial.daemon.impl.desired_state.bindings.models",
+    "hyprial.daemon.impl.desired_state.bindings.schema",
+    "hyprial.daemon.impl.desired_state.bindings.store",
+    "hyprial.daemon.impl.desired_state.bindings.transactions",
     "hyprial.daemon.impl.desired_state.documents",
     "hyprial.daemon.impl.desired_state.services",
     "hyprial.daemon.impl.desired_state.sessions",

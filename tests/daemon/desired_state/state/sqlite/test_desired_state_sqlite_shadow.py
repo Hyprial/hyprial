@@ -71,6 +71,9 @@ def test_legacy_interactive_rows_gain_process_columns_without_a_verdict(
 
 
 _TABLE_KEY: dict[str, tuple[str, ...]] = {
+    "model_bindings": ("agent_id", "member_id"),
+    "model_binding_operations": ("agent_id", "member_id", "operation_id"),
+    "model_agent_lifecycle": ("agent_id",),
     "desired_state_meta": ("key",),
     "root_state": ("id",),
     "harnesses": ("harness", "name", "member"),
@@ -115,6 +118,9 @@ def _expected_tables(state: DesiredState) -> dict[str, list[dict[str, Any]]]:
     """Derive every expected shadow row from the authoritative JSON state."""
 
     return {
+        "model_bindings": [],
+        "model_binding_operations": [],
+        "model_agent_lifecycle": [],
         "adapters": [],
         "adapter_model_backup": [],
         "desired_state_meta": [
@@ -152,6 +158,7 @@ def _expected_tables(state: DesiredState) -> dict[str, list[dict[str, Any]]]:
                 # assertion's observation method (test-local forward mapping
                 # vs the shadow's rows) is unchanged.
                 "status": item.status,
+                "model_binding_json": _json_text(dict(item.model_binding)) if item.model_binding is not None else None,
             }
             for item in state.harnesses
         ],

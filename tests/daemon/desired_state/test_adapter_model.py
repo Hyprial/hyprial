@@ -63,7 +63,7 @@ def test_legacy_file_migration_is_durable_and_idempotent(tmp_path):
     assert DesiredStateStore(path).load() == state
 
 
-@pytest.mark.parametrize("version", [0, 4, True, "3"])
+@pytest.mark.parametrize("version", [0, 5, True, "3"])
 def test_unknown_schema_fails_loudly(version):
     with pytest.raises(DesiredStateError, match="schema version"):
         DesiredState.from_json(legacy_document(version))

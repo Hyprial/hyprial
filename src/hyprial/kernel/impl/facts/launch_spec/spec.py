@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import shutil
+from types import MappingProxyType
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
@@ -206,10 +208,19 @@ class HarnessLaunchSpec:
     # rows that earned their place.
     status: str = "running"
     member: str | None = None
+    model_binding: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.member is None:
             object.__setattr__(self, "member", self.name)
+        if self.model_binding is not None:
+            value = self.model_binding
+            if not isinstance(value, Mapping) or set(value) != {"bindingRef", "bindingRevision"}:
+                raise DesiredStateError("invalid modelBinding snapshot reference")
+            ref, revision = value["bindingRef"], value["bindingRevision"]
+            if not isinstance(ref, str) or not ref or len(ref) > 512 or ref != ref.strip() or any(ord(c) < 32 or ord(c) == 127 for c in ref) or type(revision) is not int or not 0 < revision < 2**63:
+                raise DesiredStateError("invalid modelBinding snapshot reference")
+            object.__setattr__(self, "model_binding", MappingProxyType(dict(value)))
 
     def with_default_args(self, stored: tuple[str, ...]) -> Self:
         """Apply stored defaults while retaining explicit launch precedence."""
@@ -326,6 +337,7 @@ class HarnessLaunchSpec:
             model=_optional_string(record.get("model"), f"{label}.model"),
             effort=_optional_string(record.get("effort"), f"{label}.effort"),
             status=str(raw_status),
+            model_binding=record.get("modelBinding"),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -333,6 +345,7 @@ class HarnessLaunchSpec:
             "provider": self.harness,
             "name": self.name,
             "headless": self.headless,
+            **({"modelBinding": dict(self.model_binding)} if self.model_binding is not None else {}),
             **({"member": self.member} if self.member is not None and self.member != self.name else {}),
             "args": list(self.args),
             "ownership": self.ownership,

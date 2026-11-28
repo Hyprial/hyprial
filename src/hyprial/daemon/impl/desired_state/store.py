@@ -40,6 +40,8 @@ from .sessions import _DesiredStateSessionsMixin
 from .store_io import _DesiredStateStoreIoMixin
 from .services import ServiceRegistry
 from .settlements import _HarnessSettlementStoreMixin
+from .bindings.store import ModelBindingStore
+from .bindings.schema import migrate_launch_reference
 
 
 _STORES_BY_DB_PATH: "weakref.WeakValueDictionary[Path, DesiredStateStore]" = (
@@ -97,6 +99,10 @@ class DesiredStateStore(
     _DesiredStateStoreIoMixin,
 ):
 
+    @property
+    def model_binding_store(self) -> ModelBindingStore:
+        return ModelBindingStore(self)
+
     def __init__(self, legacy_path: Path, state_db: StateDatabase | None = None) -> None:
         self.legacy_path = Path(legacy_path)
         self.versioned_path = Path(f"{legacy_path}.v1")
@@ -131,6 +137,7 @@ class DesiredStateStore(
                 self._sqlite_shadow.migrate_harness_status()
                 self._sqlite_shadow.migrate_interactive_process_identity()
                 self._sqlite_shadow.migrate_adapters()
+                migrate_launch_reference(self.state_db)
 
     def harness_spec(
         self, name: str, *, excluding: str | None = None
@@ -170,6 +177,11 @@ class DesiredStateStore(
             return self.load() if self._published_state is None else self._published_state
 
     def _publish_incremental(self, state: DesiredState) -> None:
+        with self.state_db.read() as db:
+            version = db.execute("SELECT schema_version FROM root_state WHERE id=1").fetchone()
+        if version and version[0] >= 4:
+            self.load()
+            return
         self._published_state = state
 
     def save(self, state: DesiredState) -> None:

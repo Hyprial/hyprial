@@ -17,6 +17,8 @@ from hyprial.daemon.impl.lifecycle.lifecycle_receipts  import (
 )
 from hyprial.kernel import DesiredStateError, HarnessLaunchSpec  # canonical defs (MP-1)
 from .services import ServiceConnection, ServiceRegistry
+from .bindings import codec as binding_codec
+from .bindings.models import Binding, Operation, Cleanup
 
 
 from hyprial.daemon.impl.adapters.spec import AdapterSpec, split_legacy_launch_rows
@@ -26,7 +28,7 @@ from hyprial.kernel import MemberLaunchKey
 SCHEMA_VERSION = 3
 
 
-SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
 
 
 ROLLBACK_GUARD_PROVIDER = "__hyprial_desired_state_schema_v1__"
@@ -260,6 +262,9 @@ class DesiredState:
     zenoh: ZenohEndpoints = ZenohEndpoints()
     service_connections: tuple[ServiceConnection, ...] = ()
     service_registry: ServiceRegistry | None = None
+    model_bindings: tuple[Binding, ...] = ()
+    model_binding_operations: tuple[Operation, ...] = ()
+    model_agent_lifecycle: tuple[Cleanup, ...] = ()
 
     def __post_init__(self) -> None:
         if any(spec.harness not in DECLARED_HARNESSES for spec in self.harnesses):
@@ -297,6 +302,8 @@ class DesiredState:
             HarnessLaunchSpec.from_json(item, f"providers[{index}]")
             for index, item in enumerate(harnesses)
         )
+        if version < 4 and any(item.model_binding is not None for item in parsed_harnesses):
+            raise DesiredStateError("model binding launch references require schema 4")
         harness_keys = [
             MemberLaunchKey(item.member or item.name, item.harness)
             for item in parsed_harnesses
@@ -384,8 +391,9 @@ class DesiredState:
             raise DesiredStateError("desired state contains duplicate service connections")
         raw_registry = record.get("serviceRegistry")
         service_registry = None if raw_registry is None else ServiceRegistry.from_json(raw_registry)
+        bindings, operations, cleanup = binding_codec.parse(record)
         return cls(
-            schema_version=SCHEMA_VERSION,
+            schema_version=max(version, SCHEMA_VERSION),
             as_mailbox=as_mailbox,
             harnesses=parsed_harnesses,
             adapters=parsed_adapters,
@@ -397,11 +405,17 @@ class DesiredState:
             zenoh=zenoh,
             service_connections=service_connections,
             service_registry=service_registry,
+            model_bindings=bindings,
+            model_binding_operations=operations,
+            model_agent_lifecycle=cleanup,
         )
 
     def to_json(self) -> dict[str, object]:
+        if self.schema_version < 4 and (self.model_bindings or self.model_binding_operations or self.model_agent_lifecycle or any(item.model_binding is not None for item in self.harnesses)):
+            raise DesiredStateError("model bindings require schema 4")
         return {
-            "schemaVersion": SCHEMA_VERSION,
+            "schemaVersion": max(self.schema_version, SCHEMA_VERSION),
+            **(binding_codec.project(self.model_bindings, self.model_binding_operations, self.model_agent_lifecycle) if self.schema_version == 4 else {}),
             "asMailbox": self.as_mailbox,
             "providers": [item.to_json() for item in self.harnesses],
             "adapters": [item.to_json() for item in self.adapters],
