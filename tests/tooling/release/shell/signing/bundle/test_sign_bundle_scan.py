@@ -148,9 +148,9 @@ def test_archives_the_tool_cannot_look_into_are_reported_by_kind(tmp_path: Path)
     assert kinds == {"a.tar": "tar", "b.gz": "gzip", "c.bz2": "bzip2", "d.xz": "xz", "e.zst": "zstd", "f.pkg": "xar", "libg.a": "ar"}
 
 
-def test_home_paths_are_written_with_a_tilde(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    home = tmp_path / "home" / "someone"
-    monkeypatch.setenv("HOME", str(home))
+def test_home_paths_are_written_with_a_tilde(monkeypatch: pytest.MonkeyPatch) -> None:
+    home = "/nowhere/someone"
+    monkeypatch.setenv("HOME", home)
     text = f"{home}/out/x.dmg and {home}.other and {home}"
     assert sign_bundle.scrub(text) == f"~/out/x.dmg and {home}.other and ~"
     assert sign_bundle.scrub({"argv": [f"{home}/a"], "n": 1}) == {"argv": ["~/a"], "n": 1}

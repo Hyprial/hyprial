@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-`.forgejo/workflows/wheel-release.yml` builds five platform wheels and publishes
+`.github/workflows/wheel-release.yml` builds five platform wheels and publishes
 them to the INTERNAL Forgejo PyPI registry. Nothing ever copies them to the
 public GitHub release, so every public release shows `assets: 0`. A public
 installer then has nothing to download and falls back to building from source

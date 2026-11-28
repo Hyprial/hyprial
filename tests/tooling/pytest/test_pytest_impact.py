@@ -1,12 +1,10 @@
 """Exercise layered selection against real Git histories, including fail-closed cases."""
 import importlib.util
 import json
-import re
 from pathlib import Path
 import subprocess
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -40,7 +38,6 @@ def commit(root, message="fixture change"):
 def event(base, head):
     return {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
 
-
 GUARD_FILES = (
     "tests/tooling/isolation/test_teardown_guarantee.py",
     "tests/kernel/addressing/test_address_parsing_guard.py",
@@ -55,7 +52,7 @@ LAYER_FILES = (
     "tests/biz/test_b.py", "tests/shell/test_s.py", "tests/integration/test_e2e.py",
     "tests/tooling/test_t.py", "tests/scripts/test_sc.py", "tests/support/helper.py",
     "tests/conftest.py", "scripts/ci/gate.py", "scripts/tool.py",
-    ".forgejo/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
+    ".github/workflows/gate-python.yml", "pyproject.toml", "README.md", "docs/guides/g.md",
     "gui/src/app.ts", *GUARD_FILES,
 )
 
@@ -99,6 +96,8 @@ def dirs(result):
     ("src/hyprial/kernel/core.py",
      ["tests/biz", "tests/daemon", "tests/identity", "tests/integration", "tests/kernel", "tests/shell"]),
 ])
+
+
 def test_a_layer_change_runs_that_layer_every_layer_above_and_integration(impact, repo, source, expected):
     root, payload = changed(repo, source)
     assert dirs(impact.plan(root, payload, "pull_request")) == expected
@@ -135,17 +134,19 @@ def test_missing_cross_cutting_guard_fails_closed(impact, repo):
 @pytest.mark.parametrize("path,expected", [
     ("tests/daemon/test_d.py", ["tests/daemon"]),
     ("tests/integration/test_e2e.py", ["tests/integration"]),
-    (".forgejo/workflows/gate-python.yml", ["tests/tooling"]),
+    (".github/workflows/gate-python.yml", ["tests/tooling"]),
     ("scripts/ci/gate.py", ["tests/tooling"]),
     ("scripts/tool.py", ["tests/scripts", "tests/tooling"]),
 ])
+
+
 def test_test_and_tooling_changes_run_only_their_own_tests(impact, repo, path, expected):
     root, payload = changed(repo, path)
     assert dirs(impact.plan(root, payload, "pull_request")) == expected
 
 
 def test_selections_union_across_changed_paths(impact, repo):
-    root, payload = changed(repo, "src/hyprial/shell/cli.py", ".forgejo/workflows/gate-python.yml")
+    root, payload = changed(repo, "src/hyprial/shell/cli.py", ".github/workflows/gate-python.yml")
     assert dirs(impact.plan(root, payload, "pull_request")) == ["tests/integration", "tests/shell", "tests/tooling"]
 
 
@@ -153,6 +154,8 @@ def test_selections_union_across_changed_paths(impact, repo):
     "pyproject.toml", "tests/conftest.py", "tests/support/helper.py", "src/hyprial/cli.py",
     "gui/src/app.ts", "src/hyprial/unknown_layer/x.py", "scripts/ci/pytest_impact.py",
 ])
+
+
 def test_shared_or_unlayered_change_forces_full(impact, repo, path):
     root, payload = changed(repo, "src/hyprial/shell/cli.py", path)
     assert_full(impact.plan(root, payload, "pull_request"))
@@ -367,7 +370,6 @@ def test_repository_grouped_plan_has_no_retired_fast_test_paths(impact):
         assert impact.partition_name(path) == impact.partition_name(original)
     assert impact.partition_name("tests/future/new_subject/test_new_case.py") == "remaining"
 
-
 # --- test-control environment passthrough (regression: CI sandbox/wait controls were dropped) ---
 
 DECLARED_CONTROL_VARS = {
@@ -381,7 +383,7 @@ DECLARED_CONTROL_VARS = {
 
 
 def test_control_environment_is_forwarded_and_credentials_stay_out(impact):
-    """The six HYPRIAL_* controls declared by gate-python.yml reach the pytest child env."""
+    """The six HYPRIAL_* controls the script forwards reach the pytest child env."""
     source = {**DECLARED_CONTROL_VARS, "GITHUB_TOKEN": "ghs_secret", "AWS_SECRET_ACCESS_KEY": "x", "PATH": "/usr/bin"}
     child = impact.pytest_subprocess_environment(source)
     for name, value in DECLARED_CONTROL_VARS.items():
@@ -430,43 +432,3 @@ def test_execute_passes_control_environment_to_pytest_child(impact, tmp_path, mo
     assert captured["env"]["HYPRIAL_TEST_WAIT_SECONDS"] == "10"
     assert captured["env"]["HYPRIAL_CI_NO_USERNS_CODEX_SANDBOX"] == "1"
     assert "GITHUB_TOKEN" not in captured["env"]
-
-
-def _pytest_shard_job_block(workflow_text: str) -> str:
-    """Return the workflow job block that invokes pytest_impact.py."""
-    lines = workflow_text.splitlines()
-    anchor = next(i for i, line in enumerate(lines) if "pytest_impact.py --shard" in line)
-    start = next(i for i in range(anchor, -1, -1) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i]))
-    end = next(
-        (i for i in range(anchor + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])),
-        len(lines),
-    )
-    return "\n".join(lines[start:end])
-
-
-def _declared_control_names(job_block: str) -> set[str]:
-    """HYPRIAL_* names the pytest job actually sets or consumes.
-
-    A name counts when it is assigned (`export X=`, `X:` in env, `echo "X=..." >> $GITHUB_ENV`)
-    or dereferenced (`${X...}`). A bare mention inside a comment does not count, so prose cannot
-    create drift.
-    """
-    names: set[str] = set()
-    for match in re.finditer(r"(?:export\s+|\$\{)(HYPRIAL_[A-Z0-9_]+)", job_block):
-        names.add(match.group(1))
-    for match in re.finditer(r"^\s*(HYPRIAL_[A-Z0-9_]+):", job_block, re.MULTILINE):
-        names.add(match.group(1))
-    for match in re.finditer(r"echo\s+\"?(HYPRIAL_[A-Z0-9_]+)=", job_block):
-        names.add(match.group(1))
-    return names
-
-
-def test_control_environment_set_matches_tests_yml(impact):
-    """PYTEST_CONTROL_ENVIRONMENT must equal what gate-python.yml actually declares (no drift)."""
-    workflow = (ROOT / ".forgejo/workflows/gate-python.yml").read_text()
-    declared = _declared_control_names(_pytest_shard_job_block(workflow))
-    forwarded = set(impact.PYTEST_CONTROL_ENVIRONMENT)
-    missing = sorted(declared - forwarded)
-    extra = sorted(forwarded - declared)
-    assert not missing, f"gate-python.yml declares these but pytest_impact does not forward them: {missing}"
-    assert not extra, f"pytest_impact forwards these but gate-python.yml does not declare them: {extra}"

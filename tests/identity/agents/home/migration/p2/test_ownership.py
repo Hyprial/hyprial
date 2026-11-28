@@ -240,7 +240,7 @@ def test_t16_support_table_round_trip_preserves_exact_dimensions() -> None:
 
 def test_t16_checked_in_support_table_matches_integrated_p23_rows() -> None:
     path = (
-        Path(__file__).resolve().parents[6] / 'docs/notes/evidence/agent-home-p2-p24-20260923/support-matrix.json'
+        Path(__file__).resolve().parents[6] / 'tests/fixtures/agent_home_evidence/agent-home-p2-p24-20260923/support-matrix.json'
     )
     matrix = SupportMatrix.from_json(json.loads(path.read_text(encoding="utf-8")))
     assert len(matrix.rows) == 18

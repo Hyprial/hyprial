@@ -25,7 +25,7 @@ for (const [name, paths, project, expected] of [
   ['root lockfile', ['package-lock.json'], 'gui', [true, true]],
   ['GUI browser lockfile', ['tools/browser/package-lock.json'], 'gui', [true, true]],
   ['launcher', ['scripts/start-gui.sh'], 'gui', [true, true]],
-  ['workflow', ['.forgejo/workflows/gate-python.yml'], 'gui', [true, true]],
+  ['workflow', ['.github/workflows/gate-python.yml'], 'gui', [true, true]],
   ['unknown input', ['new-component/config.json'], 'gui', [true, true]],
   ['mixed docs and UI', ['README.md', 'client/gui-workspace.inc.js'], 'gui', [true, true]],
   ['both UIs', ['client/workflow.js', 'client/gui-workspace.inc.js'], 'gui', [true, true]],
@@ -163,7 +163,7 @@ test('audited native CLI changes preserve every GUI gate and Python integration'
   for (const key of ['gui_integration', 'unit', 'browser', 'codex', 'package']) assert.equal(result[key], true, key);
 });
 for (const path of ['src/gui/integration/new-helper.mjs', 'src/gui/integration/pac-service.py',
-  'src/gui/scripts/install-local.sh', 'src/gui/package-lock.json', '.forgejo/workflows/gate-python.yml',
+  'src/gui/scripts/install-local.sh', 'src/gui/package-lock.json', '.github/workflows/gate-python.yml',
   'src/gui/scripts/ci-scope.mjs', 'src/hyprial/cli.py', 'tests/conftest.py']) {
   test(`native CLI mixed with ${path} retains full Python`, () => {
     assert.equal(classify([nativeSource, path], 'all').python, true);
@@ -205,7 +205,7 @@ test('missing audited CLI history and manual execution cannot select a subset', 
 
 for (const target of ['dev', 'main', 'intg/gui']) {
   for (const path of ['README.md', 'src/gui/client/gui-workspace.inc.js', nativeSource,
-    'src/hyprial/cli.py', '.forgejo/workflows/gate-python.yml', 'src/gui/integration/unknown.mjs']) {
+    'src/hyprial/cli.py', '.github/workflows/gate-python.yml', 'src/gui/integration/unknown.mjs']) {
     test(`tier ${target}: ${path}`, t => {
       const r = repository(t);
       const base = r.commit('README.md', 'base');

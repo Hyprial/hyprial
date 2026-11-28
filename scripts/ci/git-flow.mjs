@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const gitFlowPath = '.forgejo/git-flow.json';
+export const gitFlowPath = '.github/git-flow.json';
 
 export function readGitFlow(root) {
   let policy;
