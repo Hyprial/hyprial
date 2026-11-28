@@ -34,6 +34,14 @@ ipc-server failure with a directory occupying ``daemon.sock`` rather than an
 over-long path, because the CLI socket-path pre-flight now refuses the latter
 before launching any child. Importing ``runtime.entry`` installs the CLI
 services the launch-summary helpers read, so the file passes in isolation.
+
+The editable ``hyprial`` executable is located by install scheme. ``sysconfig``'s
+``venv`` scheme names the scripts directory of a virtual environment for the
+running platform (``Scripts`` on Windows, ``bin`` elsewhere), so the test holds
+no platform branch of its own. The base is the repository's ``.venv``, passed in
+explicitly rather than derived from the running interpreter's ``sys.prefix``.
+The file name comes from ``hyprial.kernel.executable_filename``, which is where
+the ``.exe`` suffix of Windows is decided.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ import inspect
 import textwrap
 import json
 import subprocess
+import sysconfig
 import tempfile
 import time
 from dataclasses import dataclass
@@ -55,13 +64,17 @@ import pytest
 
 from hyprial.daemon.impl.application import DaemonApplication
 from hyprial.daemon.impl.harnesses.runtime.ports import HarnessRestoreProjection
+from hyprial.kernel import executable_filename
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _deep_module_daemon_dependencies
 from tests.support.runtime.environment import UNIT_USER_ID
 import hyprial.shell.impl.cli.commands.common.daemon_start as _cli_owner_1
 import hyprial.shell.impl.cli.runtime.entry  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[3]
-HYPRIAL = ROOT / ".venv" / "bin" / "hyprial"
+VENV = ROOT / ".venv"
+HYPRIAL = Path(
+    sysconfig.get_path("scripts", "venv", vars={"base": str(VENV), "platbase": str(VENV)})
+) / executable_filename("hyprial")
 def _native_application_source() -> str:
     """Inventory real MRO method definitions; never execute a substitute class."""
     methods: dict[str, str] = {}

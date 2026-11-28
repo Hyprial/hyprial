@@ -1,3 +1,14 @@
+"""Daemon adapter lifecycle and persistence contract tests.
+
+The editable ``hyprial`` executable is located by install scheme. ``sysconfig``'s
+``venv`` scheme names the scripts directory of a virtual environment for the
+running platform (``Scripts`` on Windows, ``bin`` elsewhere), so the test holds
+no platform branch of its own. The base is the repository's ``.venv``, passed in
+explicitly rather than derived from the running interpreter's ``sys.prefix``.
+The file name comes from ``hyprial.kernel.executable_filename``, which is where
+the ``.exe`` suffix of Windows is decided.
+"""
+
 from __future__ import annotations
 
 from tests.support.runtime._tmp import hyprial_test_tmp_root
@@ -6,6 +17,7 @@ from tests.support.runtime.environment import isolated_environment
 import json
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from pathlib import Path
@@ -18,13 +30,17 @@ from hyprial.daemon.impl.application import (
     DaemonApplication,
     DaemonRequestError,
 )
+from hyprial.kernel import executable_filename
 
 
 from hyprial.shell.impl.daemon_wiring import daemon_dependencies as _app_injections
 
 
 ROOT = Path(__file__).resolve().parents[4]
-HYPRIAL = ROOT / ".venv" / "bin" / "hyprial"
+VENV = ROOT / ".venv"
+HYPRIAL = Path(
+    sysconfig.get_path("scripts", "venv", vars={"base": str(VENV), "platbase": str(VENV)})
+) / executable_filename("hyprial")
 FAKE_WORKER = ROOT / "tests" / "fixtures" / "lark" / "fake_lark_worker.py"
 DAEMON_STOP_TIMEOUT_SECONDS = TEARDOWN_BUDGETED_SECONDS + 5.0
 # These tests assert adapter lifecycle/persistence, not cold-start latency.
