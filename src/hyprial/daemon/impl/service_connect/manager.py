@@ -29,6 +29,7 @@ from hyprial.kernel import (
     ipc_errors,
 )
 
+from .grants import grant_service
 from .io import ServiceIo
 from .models import (
     CatalogEntry,
@@ -36,6 +37,7 @@ from .models import (
     RegistrySnapshot,
     SERVICE_CODES,
     ServiceConnectError,
+    failed_row,
 )
 from .registry import CatalogRegistry
 from .resolver import ProtectedResolver
@@ -44,6 +46,7 @@ from .resolver import ProtectedResolver
 _METHOD_FIELDS = {
     "service.connect": frozenset({"name"}),
     "service.disconnect": frozenset({"name"}),
+    "service.grant": frozenset({"name", "recipientKey", "secretB64"}),
     "service.guide": frozenset({"name"}),
     "service.list": frozenset(),
 }
@@ -168,32 +171,6 @@ def _row(mapping: Mapping[str, object], *, state: str, error_code: str | None) -
     return result
 
 
-def _failed_row(
-    name: str,
-    entry: CatalogEntry | None,
-    *,
-    local_port: int | None,
-    code: str,
-) -> dict[str, object]:
-    return {
-        "name": name,
-        "deviceId": None if entry is None else entry.device_id,
-        "remotePort": None if entry is None else entry.remote_port,
-        "recordGeneration": None,
-        "localPort": local_port,
-        "activeConnections": 0,
-        "path": "unknown",
-        "pathDetail": None,
-        "observedAtMs": None,
-        "lastDialState": "unknown",
-        "lastDialMs": None,
-        "lastError": "service mapping is unavailable",
-        "lastErrorAtMs": None,
-        "state": "failed",
-        "errorCode": code,
-    }
-
-
 class ServiceManager:
     """Own service intents and mappings without becoming a second state writer."""
 
@@ -261,12 +238,12 @@ class ServiceManager:
         access = None
         catalog = None
         registry_error = None
-        if method in {"service.list", "service.guide", "service.connect"}:
+        if method in {"service.list", "service.guide", "service.connect", "service.grant"}:
             try:
                 access = self._read_access()
                 catalog = self._read_catalog(access)
             except ServiceConnectError as error:
-                if method == "service.connect":
+                if method in {"service.connect", "service.grant"}:
                     raise
                 catalog = CatalogRegistry(
                     None, space_id=None, owner=None, cached=None,
@@ -285,6 +262,9 @@ class ServiceManager:
             if method == "service.connect":
                 assert access is not None and catalog is not None
                 return self._connect(name, access, catalog)
+            if method == "service.grant":
+                assert access is not None and catalog is not None
+                return grant_service(name, params, access, catalog, self.access_path)
             return self._disconnect(name)
 
     def reconcile(self) -> None:
@@ -637,7 +617,7 @@ class ServiceManager:
         try:
             row = self._map(entry, device, requested_port, controller)
         except ServiceConnectError as error:
-            self._rows[name] = _failed_row(
+            self._rows[name] = failed_row(
                 name,
                 entry,
                 local_port=requested_port or None,
@@ -654,7 +634,7 @@ class ServiceManager:
         except ServiceConnectError:
             self._unmap(controller, name)
             self._bindings.pop(name, None)
-            self._rows[name] = _failed_row(
+            self._rows[name] = failed_row(
                 name,
                 entry,
                 local_port=self._desired.get(name) or None,
@@ -776,7 +756,7 @@ class ServiceManager:
         for name in sorted(self._desired):
             row = self._rows.get(name)
             if row is None:
-                row = _failed_row(
+                row = failed_row(
                     name,
                     catalog.find(name),
                     local_port=self._desired[name] or None,
@@ -835,7 +815,7 @@ class ServiceManager:
             try:
                 self._unmap(controller, name)
             except ServiceConnectError:
-                self._rows[name] = _failed_row(
+                self._rows[name] = failed_row(
                     name,
                     entry,
                     local_port=self._desired.get(name) or None,
@@ -843,7 +823,7 @@ class ServiceManager:
                 )
                 return
         self._bindings.pop(name, None)
-        self._rows[name] = _failed_row(
+        self._rows[name] = failed_row(
             name,
             entry,
             local_port=self._desired.get(name) or None,

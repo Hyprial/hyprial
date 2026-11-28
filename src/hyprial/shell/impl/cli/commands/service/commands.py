@@ -7,6 +7,9 @@ chooses a human renderer for the shared result.
 
 from __future__ import annotations
 
+import base64
+import sys
+
 import typer
 from hyprial.shell.impl.cli.commands.common.groups import group
 
@@ -16,9 +19,13 @@ from hyprial.shell.impl.cli.output import CliResult
 from .presentation import (
     render_connect,
     render_disconnect,
+    render_grant,
     render_guide,
     render_list,
 )
+
+
+_MAX_SECRET_BYTES = 16384
 
 
 service_app = group(
@@ -89,4 +96,54 @@ def guide(
     services.runtime.execute(operation, json_output=json_output)
 
 
-__all__ = ["connect", "disconnect", "guide", "list_services", "service_app"]
+@service_app.command("grant")
+def grant(
+    name: str = typer.Argument(..., help="Registered service name."),
+    recipient_key: str = typer.Option(
+        ...,
+        "--recipient-key",
+        help="Remote daemon grant key, x25519:<64 lowercase hex>.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON only."),
+) -> None:
+    """Seal one stdin-sourced secret to the remote daemon serving a service.
+
+    The secret is read only from stdin.  A terminal is refused so the value
+    cannot be typed into a shell history, and no option accepts it as argv.
+    """
+    if sys.stdin is None or sys.stdin.isatty():
+        raise typer.BadParameter(
+            "secret must be piped on stdin; a terminal is refused"
+        )
+    try:
+        secret = sys.stdin.read(_MAX_SECRET_BYTES + 2)
+    except UnicodeDecodeError as error:
+        raise typer.BadParameter("secret on stdin must be valid UTF-8") from error
+    if secret.endswith("\r\n"):
+        secret = secret[:-2]
+    elif secret.endswith("\n"):
+        secret = secret[:-1]
+    if not secret:
+        raise typer.BadParameter("secret on stdin is empty")
+    try:
+        encoded = secret.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise typer.BadParameter("secret on stdin must be valid UTF-8") from error
+    if len(encoded) > _MAX_SECRET_BYTES:
+        raise typer.BadParameter(
+            f"secret on stdin exceeds {_MAX_SECRET_BYTES} bytes"
+        )
+    secret_b64 = base64.b64encode(encoded).decode("ascii")
+    services = get_services()
+
+    def operation() -> CliResult:
+        result = services.runtime.request(
+            "service.grant",
+            {"name": name, "recipientKey": recipient_key, "secretB64": secret_b64},
+        )
+        return CliResult(result, render=render_grant)
+
+    services.runtime.execute(operation, json_output=json_output)
+
+
+__all__ = ["connect", "disconnect", "grant", "guide", "list_services", "service_app"]

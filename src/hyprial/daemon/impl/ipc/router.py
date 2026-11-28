@@ -193,6 +193,7 @@ _IPC_STATS_METHODS = frozenset(
         "session.unregister",
         "service.connect",
         "service.disconnect",
+        "service.grant",
         "service.guide",
         "service.list",
         "shutdown",
@@ -365,6 +366,7 @@ class _IpcDispatchMixin:
         if method in {
             "service.connect",
             "service.disconnect",
+            "service.grant",
             "service.guide",
             "service.list",
         }:

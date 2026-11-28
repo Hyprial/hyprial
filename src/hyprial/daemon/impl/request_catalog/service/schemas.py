@@ -24,9 +24,14 @@ ROW = obj({
     "state": {"enum": ["failed", "listening"]}, "errorCode": NSTR,
 })
 REGISTRY = obj({"source": STR, "spaceId": NSTR, "owner": NSTR, "error": NSTR})
+GRANT = obj({
+    "grantId": STR, "service": STR, "deviceId": STR,
+    "recipientKeyId": STR, "createdAt": {"type": "integer", "minimum": 0},
+})
 RESULTS = {
     "service.connect": obj({"service": ROW, "env": {"type": "object", "additionalProperties": STR}, "auth": STR, "guide": STR}),
     "service.disconnect": obj({"name": STR, "removed": {"type": "boolean"}}),
+    "service.grant": obj({"grant": GRANT}),
     "service.guide": obj({"entry": ENTRY, "source": STR}),
     "service.list": obj({"services": {"type": "array", "items": ROW}, "registry": REGISTRY}),
 }

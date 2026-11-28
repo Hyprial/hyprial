@@ -1044,6 +1044,10 @@
    "covered": false,
    "reason": "Service connect surface; not touched by S2-S7."
   },
+  "service.grant": {
+   "covered": false,
+   "reason": "Service grant surface; not touched by S2-S7."
+  },
   "service.guide": {
    "covered": false,
    "reason": "Service connect surface; not touched by S2-S7."

@@ -17,11 +17,21 @@ _ERRORS = tuple(MethodError(code) for code in (
 
 
 def _spec(name):
-    named = name != "service.list"
+    if name == "service.grant":
+        properties = {
+            "name": {"type": "string"},
+            "recipientKey": {"type": "string"},
+            "secretB64": {"type": "string"},
+        }
+        required = ["name", "recipientKey", "secretB64"]
+    else:
+        named = name != "service.list"
+        properties = {"name": {"type": "string"}} if named else {}
+        required = ["name"] if named else []
     return MethodSpec(
         name=name, owner="daemon.service_connect",
-        params_schema={"type": "object", "properties": {"name": {"type": "string"}} if named else {},
-                       "required": ["name"] if named else [], "additionalProperties": False},
+        params_schema={"type": "object", "properties": properties,
+                       "required": required, "additionalProperties": False},
         result_schema=RESULTS[name], errors=_ERRORS, mode="unary", mutates=True,
         retry="never", audience=("local-operator",), http_exposed=False,
         confirmation="none", idempotency=IdempotencySpec(mode="never", scope=name),
@@ -38,5 +48,11 @@ def _handle(app, params, *, method, trusted_message_origin=None):
 
 SERVICE_BINDINGS = tuple(
     (_spec(name), partial(_handle, method=name))
-    for name in ("service.connect", "service.disconnect", "service.guide", "service.list")
+    for name in (
+        "service.connect",
+        "service.disconnect",
+        "service.grant",
+        "service.guide",
+        "service.list",
+    )
 )

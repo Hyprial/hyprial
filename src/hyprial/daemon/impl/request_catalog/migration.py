@@ -28,6 +28,7 @@ MIGRATED_METHODS = frozenset(
     {
         'service.connect',
         'service.disconnect',
+        'service.grant',
         'service.guide',
         'service.list',
         'adapter.identities.list',

@@ -146968,6 +146968,198 @@
       "idempotency": {
         "keyField": null,
         "mode": "never",
+        "scope": "service.grant"
+      },
+      "ipcParamValidation": "handler",
+      "mode": "unary",
+      "mutates": true,
+      "name": "service.grant",
+      "owner": "daemon.service_connect",
+      "paramsSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "recipientKey": {
+            "type": "string"
+          },
+          "secretB64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "recipientKey",
+          "secretB64"
+        ],
+        "type": "object"
+      },
+      "resultSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "grant": {
+            "additionalProperties": false,
+            "properties": {
+              "createdAt": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "deviceId": {
+                "type": "string"
+              },
+              "grantId": {
+                "type": "string"
+              },
+              "recipientKeyId": {
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "grantId",
+              "service",
+              "deviceId",
+              "recipientKeyId",
+              "createdAt"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "grant"
+        ],
+        "type": "object"
+      },
+      "retry": "never",
+      "x-hyprial-example-gaps": {
+        "empty": "A grant always names one registered service."
+      },
+      "x-hyprial-examples": [
+        {
+          "description": "success",
+          "kind": "success",
+          "name": "success",
+          "params": {
+            "name": "subapi",
+            "recipientKey": "x25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "secretB64": "c2VjcmV0"
+          },
+          "result": {
+            "grant": {
+              "createdAt": 1795443172228,
+              "deviceId": "host",
+              "grantId": "sg.aaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "recipientKeyId": "x25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "service": "subapi"
+            }
+          }
+        },
+        {
+          "description": "invalid params",
+          "error": {
+            "code": "INVALID_ARGUMENT",
+            "message": "service request is invalid"
+          },
+          "kind": "invalid-params",
+          "name": "invalid-params",
+          "params": {}
+        },
+        {
+          "description": "domain error",
+          "error": {
+            "code": "SERVICE_NOT_REGISTERED",
+            "message": "service is not registered"
+          },
+          "kind": "domain-error",
+          "name": "domain-error",
+          "params": {
+            "name": "missing",
+            "recipientKey": "x25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "secretB64": "c2VjcmV0"
+          }
+        }
+      ]
+    },
+    {
+      "audience": [
+        "local-operator"
+      ],
+      "confirmation": "none",
+      "errors": [
+        {
+          "code": "INVALID_ARGUMENT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_INVALID_TARGET",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_PORT_IN_USE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NAME_CONFLICT",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_REGISTERED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_SIDECAR_UNSUPPORTED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_REGISTRY_INVALID",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_DEVICE_UNAVAILABLE",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "SERVICE_NOT_AUTHORIZED",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_RESTORING",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_NOT_READY",
+          "dataSchema": null,
+          "description": ""
+        },
+        {
+          "code": "DAEMON_ERROR",
+          "dataSchema": null,
+          "description": ""
+        }
+      ],
+      "httpBinding": null,
+      "httpExposed": false,
+      "idempotency": {
+        "keyField": null,
+        "mode": "never",
         "scope": "service.disconnect"
       },
       "ipcParamValidation": "handler",

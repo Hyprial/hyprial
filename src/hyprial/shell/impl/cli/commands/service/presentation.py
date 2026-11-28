@@ -126,9 +126,29 @@ def render_guide(data: Mapping[str, Any], *, full: bool = False) -> str:
     return "\n".join(lines)
 
 
+def render_grant(data: Mapping[str, Any]) -> str:
+    """Render a grant receipt without the sealed record or the secret."""
+    value = data.get("grant")
+    grant: Mapping[str, Any] = value if isinstance(value, Mapping) else {}
+    lines = [
+        f"Granted: {_text(grant.get('grantId'))} → "
+        f"{_text(grant.get('service'))} ({_text(grant.get('deviceId'))})",
+        f"Recipient: {_text(grant.get('recipientKeyId'))}",
+        "Delivery: sealed grant held by this daemon; remote delivery is not "
+        "implemented in this WIP.",
+    ]
+    return "\n".join(lines)
+
+
 def render_disconnect(data: Mapping[str, Any]) -> str:
     name = _text(data.get("name"))
     return f"Disconnected: {name}" if data.get("removed") else f"Not connected: {name}"
 
 
-__all__ = ["render_connect", "render_disconnect", "render_guide", "render_list"]
+__all__ = [
+    "render_connect",
+    "render_disconnect",
+    "render_grant",
+    "render_guide",
+    "render_list",
+]
