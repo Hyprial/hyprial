@@ -24,7 +24,7 @@ kernel  <-  identity  <-  daemon  <-  biz  <-  shell
 |---|---|
 | `src/hyprial/<layer>/**` | `tests/<layer>/`, every layer above it, `tests/integration/` |
 | `tests/<layer>/**`, `tests/integration/**`, `tests/tooling/**`, `tests/scripts/**` | that directory only |
-| `.forgejo/**`, `scripts/ci/**` | `tests/tooling/` |
+| `.github/**`, `scripts/ci/**` | `tests/tooling/` |
 | other `scripts/**` | `tests/tooling/`, `tests/scripts/` |
 | documentation only | the docs-only gate (no pytest) |
 | anything else -- `pyproject.toml`, `uv.lock`, `tests/conftest.py`, `tests/support/**`, `tests/fixtures/**`, `src/hyprial/cli.py`, `src/hyprial/skills/**`, `scripts/ci/pytest_impact.py`, `gui/**`, `contract/**`, `sidecar/**`, ... | the full suite |

@@ -13,13 +13,17 @@ PR #332 F4②: the runner's local TransientDaemonError(AssertionError) was
 replaced by the shared registry hierarchy (contracts/ipc_errors.py); the
 fixtures below construct registry instances, mirroring what
 ``transient_cli_error`` really returns (stub shapes follow the seam).
+
+Decision (2026-11-26): ``fcntl`` is imported inside the two tests that take
+a real ``flock`` of ``daemon.lock`` themselves, not at module level, so the
+file is collectable on Windows.  Those two carry ``posix_only("fcntl")``;
+every other test here needs no lock and runs unmarked on every platform.
 """
 
 from __future__ import annotations
 
 import ast
 import builtins
-import fcntl
 import importlib.util
 import json
 import os
@@ -145,7 +149,9 @@ def test_wait_propagates_non_transient_assertions_immediately() -> None:
     assert time.monotonic() - started < 5.0
 
 
+@pytest.mark.posix_only("fcntl")
 def test_wait_stopped_waits_for_complete_daemon_lock_release(tmp_path: Path) -> None:
+    import fcntl
     daemon = runner.IsolatedDaemon(Path("/bin/echo"), tmp_path, "test-node")
     lock_path = tmp_path / "state" / "daemon.lock"
     lock_path.parent.mkdir(parents=True)
@@ -168,11 +174,13 @@ def test_wait_stopped_waits_for_complete_daemon_lock_release(tmp_path: Path) -> 
     assert not thread.is_alive()
 
 
+@pytest.mark.posix_only("fcntl")
 def test_wait_stopped_timeout_emits_bounded_daemon_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    import fcntl
     daemon = runner.IsolatedDaemon(Path("/bin/echo"), tmp_path, "test-node")
     state = tmp_path / "state"
     lock_path = state / "daemon.lock"

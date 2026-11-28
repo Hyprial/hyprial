@@ -86,7 +86,7 @@ const CLEAN = {
   'contract/daemon-request/contract_mock/contract.py': 'LOADER = 1\n',
   'contract/daemon-request/contract_mock/envelope.py': 'ENVELOPE = 1\n',
   'contract/daemon-request/contract_mock/sensitive.py': 'SENTINEL = 1\n',
-  '.forgejo/workflows/gate.yml': 'name: gate\njobs: {}\n',
+  '.github/workflows/gate.yml': 'name: gate\njobs: {}\n',
   'src/hyprial/x.py': 'X = 1\n',
   'tests/x.py': 'X = 1\n',
   'scripts/x.sh': 'echo ok\n',
@@ -293,7 +293,7 @@ test('17. an HTTP server pattern in an allowed Python file fails', () => {
 });
 
 test('18. a launch of the Python mock in a workflow, a script or a test fails', () => {
-  broken({ '.forgejo/workflows/gate.yml': `jobs:\n  a:\n    run: uv run python ${PY_FLAG}\n` }, ['new-mock-source-finding'], { finding: 'python-mock-launch' });
+  broken({ '.github/workflows/gate.yml': `jobs:\n  a:\n    run: uv run python ${PY_FLAG}\n` }, ['new-mock-source-finding'], { finding: 'python-mock-launch' });
   broken({ 'scripts/start.sh': `uv run python ${PY_FLAG} --scenario success\n` }, ['new-mock-source-finding'], { finding: 'python-mock-launch' });
   broken({ 'tests/y.py': `from x import ${PY_SERVICE}\n` }, ['new-mock-source-finding'], { finding: 'python-mock-launch' });
 });

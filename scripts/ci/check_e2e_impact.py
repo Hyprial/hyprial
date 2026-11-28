@@ -22,7 +22,7 @@ REGISTRY = "contract/e2e/scenarios.json"
 COVERAGE_SCHEMA = "hyprial-e2e-coverage/v1"
 PROTECTED_PREFIXES = (
     "src/", "gui/", "clients/", "crates/", "sidecar/", "contract/", "packaging/",
-    "scripts/build/", "scripts/ci/", "scripts/verify/", ".forgejo/",
+    "scripts/build/", "scripts/ci/", "scripts/verify/", ".github/",
 )
 PROTECTED_FILES = {
     "pyproject.toml", "uv.lock", "rust-toolchain.toml", "Cargo.toml", "Cargo.lock",

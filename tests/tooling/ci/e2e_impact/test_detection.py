@@ -101,8 +101,8 @@ def test_diff_uses_complete_branch_range_and_both_rename_paths(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("path", [
-    "src/hyprial/new_protocol.py", ".forgejo/git-flow.json", "scripts/ci/ci-plan.mjs",
-    ".forgejo/workflows/gate-gui.yml", "crates/new/src/lib.rs",
+    "src/hyprial/new_protocol.py", ".github/git-flow.json", "scripts/ci/ci-plan.mjs",
+    ".github/workflows/gate-gui.yml", "crates/new/src/lib.rs",
 ])
 def test_unknown_product_path_is_not_silently_none(tmp_path: Path, path: str) -> None:
     repo, base = seed(tmp_path)

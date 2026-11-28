@@ -16,7 +16,7 @@ request to discover the head -- the API may still report the previous SHA and
 the dispatch would carry a stale head; the guard reads compare by the SHA it is
 given. Sync then dispatches ``homepage-release-origin-guard`` with that
 head/base, and never reads the guard's status. It suppresses the dispatch only
-when the diff touches ``.forgejo/workflows/**`` (either side of a rename) or
+when the diff touches ``.github/workflows/**`` (either side of a rename) or
 the file list cannot be read/is a full page. See
 docs/guides/homepage-changelog-sync.md.
 
@@ -67,13 +67,13 @@ GUARD_REF = "ci/release-origin-guard"
 #: its dispatch.  One commit has exactly one status emitter.
 #:
 #: Cross-repo: the gate lives in HyprialOS/homepage at
-#: ``.forgejo/workflows/homepage-release-gate.yml`` (PR #166), whose workflow
-#: filter is ``startsWith(".forgejo/workflows/")``; the guard rules that gate
+#: ``.github/workflows/homepage-release-gate.yml`` (PR #166), whose workflow
+#: filter is ``startsWith(".github/workflows/")``; the guard rules that gate
 #: imports live at ``ci/release-origin-guard`` (``cd3e9a1``) in
 #: ``scripts/changelog-release-origin-guard.mjs`` and
 #: ``src/lib/changelog-origin.js``.  This definition must stay >= the gate's:
 #: a path the gate fails must never be dispatched by sync.
-WORKFLOW_PATH_PREFIX = ".forgejo/workflows/"
+WORKFLOW_PATH_PREFIX = ".github/workflows/"
 #: Identity of the single candidate commit.  The guard checks the *pull
 #: request author* (the token's login), not the commit author, so this is only
 #: about a stable, reviewable history line.
@@ -883,7 +883,7 @@ def guard_dispatch_decision(
 ) -> GuardDispatch:
     """Decide whether the trusted guard may be dispatched for this candidate.
 
-    The new PR gate emits failure for "touches .forgejo/workflows/** + looks
+    The new PR gate emits failure for "touches .github/workflows/** + looks
     like a candidate"; the guard must stay silent on that commit, so sync does
     not dispatch it.  Uncertainty (unreadable or truncated file list) is also
     treated as touching: a duplicate emitter is worse than a missing guard run,

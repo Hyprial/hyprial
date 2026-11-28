@@ -119,6 +119,7 @@ cache-keys = [
 markers = [
     "perf_bound: deterministic daemon degradation guard with a short CI runtime budget",
     "gui_acceptance: opt-in dev01 browser acceptance (needs Node 24 and DEV01_CHROMIUM_EXECUTABLE); excluded from CI pytest shards, run with `pytest -m gui_acceptance`",
+    "posix_only(reason): test exercises POSIX-only OS semantics and is skipped on Windows",
 ]
 
 [tool.ruff]

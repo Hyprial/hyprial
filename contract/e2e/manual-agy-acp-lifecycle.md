@@ -6,7 +6,7 @@ This scenario is **not registered** in `contract/e2e/scenarios.json` and is
 not part of the E2E release inventory: there is no sustainable managed macOS
 CI provisioning for a real Antigravity OAuth token, so a registered entry
 would keep the nightly credentialed gate permanently `BLOCKED` — and the
-protected `.forgejo` workflows are not modified for it either. The runner
+protected `.github` workflows are not modified for it either. The runner
 `contract/e2e/run-agy-acp-lifecycle.py` is executed **manually** on the
 **final pinned SHA** of any change that touches the agy ACP wiring, and its
 evidence identity is the literal `AGY-ACP-LIFECYCLE` on every `RESULT`

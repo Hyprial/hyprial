@@ -110,3 +110,144 @@ def test_invalid_remote_port_is_rejected_with_an_otherwise_valid_full_pin(tmp_pa
     context = Context(tmp_path / "home")
     with pytest.raises(ValueError):
         TailnetCredentials.DialTarget(context.pin("tailnet-A"), port)
+
+
+def _synthetic_stat(mode: int, *, uid: int = 0, nlink: int = 1):
+    import os
+
+    return os.stat_result((mode, 1, 1, nlink, uid, 0, 0, 0, 0, 0))
+
+
+def test_file_safe_accepts_non_posix_mode_when_private_metadata_passes(tmp_path, monkeypatch):
+    import stat
+    from hyprial.identity.impl.device.tailnet.runtime import slot as slot_module
+
+    target = tmp_path / "active.json"
+    metadata = _synthetic_stat(stat.S_IFREG | 0o666, uid=999999, nlink=1)
+    calls = []
+
+    def fake_violation(path, observed, *, mode):
+        calls.append((path, observed, mode))
+        return None
+
+    monkeypatch.setattr(slot_module, "private_metadata_violation", fake_violation)
+    slot_module.Slot._file_safe(target, metadata, 0o600)
+    assert calls == [(target, metadata, 0o600)]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unsafe-acl",
+        "wrong-owner",
+        "unsafe-mode",
+        OSError("cannot inspect security descriptor"),
+    ],
+)
+def test_file_safe_rejects_private_metadata_failure(tmp_path, monkeypatch, failure):
+    import stat
+    from hyprial.identity import TailnetCredentialError
+    from hyprial.identity.impl.device.tailnet.runtime import slot as slot_module
+
+    target = tmp_path / "active.json"
+    metadata = _synthetic_stat(stat.S_IFREG | 0o600, uid=1000, nlink=1)
+
+    def fake_violation(_path, _observed, *, mode):
+        del mode
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(slot_module, "private_metadata_violation", fake_violation)
+    with pytest.raises(TailnetCredentialError) as caught:
+        slot_module.Slot._file_safe(target, metadata, 0o600)
+    assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
+
+
+def test_file_safe_rejects_private_access_unsupported(tmp_path, monkeypatch):
+    import stat
+    from hyprial.identity import TailnetCredentialError
+    from hyprial.identity.impl.device.tailnet.runtime import slot as slot_module
+    from hyprial.kernel import PrivateAccessUnsupported
+
+    target = tmp_path / "active.json"
+    metadata = _synthetic_stat(stat.S_IFREG | 0o600, uid=1000, nlink=1)
+
+    def fake_violation(_path, _observed, *, mode):
+        del mode
+        raise PrivateAccessUnsupported("unsafe-acl")
+
+    monkeypatch.setattr(slot_module, "private_metadata_violation", fake_violation)
+    with pytest.raises(TailnetCredentialError) as caught:
+        slot_module.Slot._file_safe(target, metadata, 0o600)
+    assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
+
+
+@pytest.mark.parametrize(
+    ("mode", "nlink"),
+    [
+        (0o040700, 1),
+        (0o120777, 1),
+        (0o100600, 2),
+    ],
+)
+def test_file_safe_rejects_non_regular_or_hardlinked_even_when_metadata_passes(
+    tmp_path, monkeypatch, mode, nlink
+):
+    from hyprial.identity import TailnetCredentialError
+    from hyprial.identity.impl.device.tailnet.runtime import slot as slot_module
+
+    target = tmp_path / "active.json"
+    metadata = _synthetic_stat(mode, uid=1000, nlink=nlink)
+    monkeypatch.setattr(slot_module, "private_metadata_violation", lambda *_a, **_kw: None)
+    with pytest.raises(TailnetCredentialError) as caught:
+        slot_module.Slot._file_safe(target, metadata, 0o600)
+    assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
+
+
+def test_file_safe_enforces_posix_mode_and_owner_when_posix_metadata_active(
+    tmp_path, monkeypatch
+):
+    import stat
+    from hyprial.identity import TailnetCredentialError
+    from hyprial.identity.impl.device.tailnet.runtime import slot as slot_module
+
+    target = tmp_path / "active.json"
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.fs.private_access.posix_metadata_enforced",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "hyprial.kernel.impl.manysys.fs.private_access.current_uid",
+        lambda: 1000,
+    )
+    slot_module.Slot._file_safe(
+        target, _synthetic_stat(stat.S_IFREG | 0o600, uid=1000, nlink=1), 0o600
+    )
+    for bad in (
+        _synthetic_stat(stat.S_IFREG | 0o644, uid=1000, nlink=1),
+        _synthetic_stat(stat.S_IFREG | 0o600, uid=2000, nlink=1),
+    ):
+        with pytest.raises(TailnetCredentialError) as caught:
+            slot_module.Slot._file_safe(target, bad, 0o600)
+        assert caught.value.code == "TAILNET_STORAGE_UNSAFE"
+
+
+def test_store_preflight_passes_target_path_to_file_safe(tmp_path):
+    from hyprial.identity.impl.device.tailnet.authority.store import DATABASE, Store
+
+    database = tmp_path / DATABASE
+    database.write_bytes(b"sqlite")
+    calls = []
+
+    class RecordingSlot:
+        state = ("state",)
+
+        @staticmethod
+        def _file_safe(path, metadata, mode):
+            calls.append((path, metadata, mode))
+
+    Store(RecordingSlot(), "a" * 64)._preflight(tmp_path)
+    assert len(calls) == 1
+    assert calls[0][0] == database
+    assert calls[0][2] == 0o600

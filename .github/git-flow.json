@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "mode": "dev-first",
+  "integration": {
+    "branch": "dev",
+    "pullRequestSources": "any",
+    "suiteSelection": "changed-paths",
+    "wipPullRequests": "draft"
+  },
+  "release": {
+    "preparationBranches": "release/*",
+    "preparationTarget": "dev",
+    "preparationPurpose": "preparation-only",
+    "candidateSource": "dev-history",
+    "candidateIdentity": "full-commit-sha",
+    "immutableVersionTag": "v<VERSION>",
+    "entryWorkflow": "release-tag.yml"
+  },
+  "tracks": {
+    "internal": "validated-dev-push",
+    "nightly": "same-sha-isolated-and-credentialed-e2e",
+    "stable": "successful-formal-release"
+  },
+  "main": {
+    "role": "historical",
+    "publishesOnPush": false
+  },
+  "publicationRules": "docs/guides/release-rules.md"
+}

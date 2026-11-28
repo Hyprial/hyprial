@@ -826,6 +826,7 @@ def load_runner() -> Any:
     return module
 
 
+@pytest.mark.posix_only("pty")
 def test_runner_stub_never_triggers_the_sdk_domain_switch() -> None:
     """A ``tenant_brand`` of ``lark`` would redirect the flow to a public host.
 
@@ -845,6 +846,7 @@ def test_runner_stub_never_triggers_the_sdk_domain_switch() -> None:
     assert "tenant_brand" not in json.dumps(payloads)
 
 
+@pytest.mark.posix_only("pty")
 def test_runner_stub_begin_payload_keeps_the_poll_loop_reachable() -> None:
     """``expires_in`` must be positive and ``device_code`` present.
 
@@ -864,6 +866,7 @@ def test_runner_stub_begin_payload_keeps_the_poll_loop_reachable() -> None:
     assert begin["verification_uri_complete"]
 
 
+@pytest.mark.posix_only("pty")
 def test_runner_report_redacts_the_stub_secret() -> None:
     runner = load_runner()
     report = runner.Report()
@@ -874,6 +877,7 @@ def test_runner_report_redacts_the_stub_secret() -> None:
     assert "<redacted>" in report.results[0].detail
 
 
+@pytest.mark.posix_only("pty")
 def test_runner_expectation_matches_the_shipped_declaration() -> None:
     """The runner's hardcoded expectation must track the implementation."""
 
@@ -882,6 +886,7 @@ def test_runner_expectation_matches_the_shipped_declaration() -> None:
     assert runner.EXPECTED_ADDONS == onboarding_addons()
 
 
+@pytest.mark.posix_only("pty")
 def test_runner_protects_the_three_production_apps() -> None:
     runner = load_runner()
 

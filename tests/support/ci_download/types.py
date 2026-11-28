@@ -35,6 +35,7 @@ class Context:
     condition: str = ""
     chain: tuple[str, ...] = ()
     builder: bool = False
+    shell: str = "bash"
 
 
 @dataclass(frozen=True)

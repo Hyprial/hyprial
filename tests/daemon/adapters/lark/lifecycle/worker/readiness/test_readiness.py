@@ -1,8 +1,15 @@
+"""Readiness of the Lark worker process: the ready signal, log noise, ``_wait_readable``.
+
+Decision (2026-11-26): ``resource`` is imported inside the one test that
+reads ``RLIMIT_NOFILE``, not at module level, so the file is collectable on
+Windows.  That test carries ``posix_only("resource")``: it parks descriptors
+above ``FD_SETSIZE`` with a POSIX rlimit, which is POSIX-only semantics.
+"""
+
 from __future__ import annotations
 
 import json
 import os
-import resource
 import select
 import threading
 import time
@@ -18,6 +25,7 @@ from ..support import (
 )
 
 
+@pytest.mark.posix_only("resource")
 def test_wait_readable_works_beyond_fd_setsize() -> None:
     """The readiness channel must not die at fd 1024 (macOS FD_SETSIZE).
 
@@ -28,6 +36,8 @@ def test_wait_readable_works_beyond_fd_setsize() -> None:
     pipe (the test is exercising the >1024 condition, not nothing), and
     _wait_readable answers correctly on the same descriptors.
     """
+
+    import resource
 
     soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if 0 < soft <= 1100:

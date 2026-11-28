@@ -154,7 +154,7 @@
 | 焦点测试 | `vitest run tests/chat-channels tests/features/agent-chat tests/contract-mock tests/daemon-request-host/app-composition.test.tsx`（排除 `contract-mock/conformance`，它在全量里跑） | 24 文件 / 387 测试 PASS | jsdom |
 | Contract Mock 测试 | `tests/chat-channels/conversation-document-contract-mock.test.tsx` | 3 PASS | 经 mock 引擎、产品传输与生成 client，无手写应答 |
 | 全量 GUI 测试 | 先在 worktree 执行 `uv sync --extra test --python 3.12`，清除代理变量后 `vitest run --maxWorkers=2`，排除 `agents-second-browser`（package.json 本来就排除）与 `daemon-request-host/real-daemon-loopback`（启动真实 daemon） | 217 文件 PASS / 1 FAIL / 1 skipped；2800 测试 PASS / 12 FAIL | 仅 GUI |
-| 失败文件对照 | `tests/playwright-cache.test.mjs` 在 origin/dev 的 `gui/`、`scripts/ci/`、`.forgejo/workflows/gate-gui.yml` 导出副本（`git archive`，复用本 worktree 的 node_modules，跑完已删除）上运行 | 基线同样 12 FAIL / 4 PASS，失败信息相同（`dpkg --print-architecture failed`，macOS 无 dpkg） | 基线既有，本机环境 |
+| 失败文件对照 | `tests/playwright-cache.test.mjs` 在 origin/dev 的 `gui/`、`scripts/ci/`、`.github/workflows/gate-gui.yml` 导出副本（`git archive`，复用本 worktree 的 node_modules，跑完已删除）上运行 | 基线同样 12 FAIL / 4 PASS，失败信息相同（`dpkg --print-architecture failed`，macOS 无 dpkg） | 基线既有，本机环境 |
 | Python host 测试 | 上一轮失败的 `daemon-request-host/host`、`support/python-host`、`contract-mock/conformance`、`daemon-request-host/contract-mock-loopback` | 建好 `.venv` 后全部 PASS（它们启动的是 GUI 会话 host `hyprial.shell.impl.gui.host`，不是 daemon） | 上一轮失败只因 worktree 没有 Python 环境 |
 | 请求路径门 | `node scripts/ci/check_gui_request_paths.mjs --base-ref origin/dev --base-branch dev` | rc 0 | |
 | mock 来源门 | `node scripts/ci/check_gui_mock_source.mjs --base-ref origin/dev --base-branch dev` | rc 0（pending 1 为基线既有账本行） | |

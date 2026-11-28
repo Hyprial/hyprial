@@ -16,7 +16,7 @@ from hyprial.identity.impl.agents.runtime import (
 
 
 P20_SNAPSHOT = (
-    Path(__file__).resolve().parents[5] / 'docs/notes/evidence/agent-home-p2-p20-20260921/probe-snapshot.json'
+    Path(__file__).resolve().parents[5] / 'tests/fixtures/agent_home_evidence/agent-home-p2-p20-20260921/probe-snapshot.json'
 )
 
 
