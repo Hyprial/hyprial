@@ -1,17 +1,34 @@
 # Decisions (GitHub migration plan, docs/design/github-development-migration-2026-11-15.md,
 # section 6.0 step 5; cutover record docs/guides/github-migration-cutover.md):
 # - This is the minimal merge gate for the public repository: static gates,
-#   Ruff, the Python suite and the Submitted-by line. It is a new workflow, not
+#   Ruff and the Python suite. The Submitted-by line is checked by
+#   pr-hygiene.yml, the second required check. It is a new workflow, not
 #   a translation of the internal gate-python.yml: no host cache, no proxy, no
 #   layered test selection, no artifact mount.
 # - GitHub-hosted runners only. No self-hosted runner is registered to this
 #   repository (plan W3), so nothing here may assume one.
 # - Triggers are pull_request and push to dev and main. pull_request_target is
 #   never used: a fork's code must not run with this repository's token.
-#   pull_request names its activity types so that editing the title or the body
-#   (edited) starts a run as well as opening, pushing to and reopening one; the
-#   omitted types (assigned, unassigned, labeled, unlabeled, review_requested,
-#   review_request_removed) change nothing this gate reads.
+#   pull_request names its activity types: opening, pushing to and reopening a
+#   pull request start a run; the omitted types (edited, assigned, unassigned,
+#   labeled, unlabeled, review_requested, review_request_removed) change
+#   nothing this gate reads.
+# - edited is not a trigger here (gate-scope, owner ruling 2026-11-27, plan A).
+#   Editing the title or the body changes no code, so a full run on it was
+#   wasted, and it did harm: a required check is read per commit and check
+#   name, so an edited run that skipped the code jobs and still reported gate
+#   would overwrite an earlier red gate on the same commit (invariant 1), and
+#   sharing this concurrency group it cancelled the full run in progress
+#   (invariant 2). The body is still checked on every edit, by pr-hygiene.yml,
+#   which is a separate workflow with its own concurrency group.
+# - pr-hygiene is the second required check of dev and main, next to gate. It
+#   is not a job of this workflow any more, so gate does not wait for it and
+#   its result is not part of gate's verdict; the branch rule requires both
+#   names. Rollout and rollback order are in pr-hygiene.yml.
+# - cancel-in-progress is true only for pull_request. A push to dev or main is
+#   the full-suite backstop for what a pull request run did not catch: a
+#   newer push replaces a queued run of the same group, but the run in
+#   progress is not interrupted, so it always reports a complete result.
 # - The token is read-only. No secret is referenced.
 # - Actions are pinned to full commit SHAs, read from the tags on 2026-11-25:
 #   actions/checkout v7.0.1, astral-sh/setup-uv v10.4.0, actions/setup-node
@@ -30,18 +47,22 @@
 # - No job and no step of this workflow carries continue-on-error. The gate is
 #   the one job a branch rule requires, and a relaxed job or step here would be
 #   a green run that proved nothing. Reporting steps use `if: always()`.
-# - The suite is split into four shards by position in the sorted list of test
-#   files, so a new test file is always in exactly one shard. Each shard runs
-#   every file given to it; collection errors do not hide the remaining tests.
+# - Pull requests use the conservative selector and four shards. Pushes to dev
+#   and main remain the full-suite backstop, and nightly-full.yml is an independent
+#   scheduled full-suite backstop. Each shard runs every file given to it, and
+#   collection errors do not hide the remaining tests. No job here is conditioned
+#   on changed paths, and the triggers carry no path filter.
 # - The Pi SDK is installed at the version the internal gate pinned (0.85.1):
 #   tests that need it report BLOCKED as a failure when it is absent.
 # - `gate` is the single job a branch rule requires. It fails unless every
-#   other job succeeded, so adding a job does not need a rule change.
+#   other job succeeded, so adding a job does not need a rule change. Its one
+#   step has no condition, and only success from both static and pytest
+#   passes: skipped, cancelled, failure, timed_out and an empty result fail.
 name: gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
     branches: [dev, main]
   push:
     branches: [dev, main]
@@ -51,7 +72,7 @@ permissions:
 
 concurrency:
   group: gate-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UV_VERSION: "0.11.7"
@@ -94,6 +115,8 @@ jobs:
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
         with:
           version: ${{ env.UV_VERSION }}
@@ -120,15 +143,90 @@ jobs:
       - name: Select this shard's test files
         run: |
           set -euo pipefail
-          git ls-files 'tests/**/test_*.py' 'tests/test_*.py' | LC_ALL=C sort \
-            | awk -v n=4 -v k="${{ matrix.shard }}" 'NR % n == k - 1' > "${RUNNER_TEMP}/shard-files.txt"
-          echo "shard ${{ matrix.shard }}: $(wc -l < "${RUNNER_TEMP}/shard-files.txt") test files"
-          test -s "${RUNNER_TEMP}/shard-files.txt"
+          uv run --no-project --python "${PYTHON_VERSION}" python scripts/ci/pytest_impact.py \
+            --emit-shard "${{ matrix.shard }}/4" \
+            --out "${RUNNER_TEMP}/shard-files.txt" \
+            --meta "${RUNNER_TEMP}/pytest-plan.env"
+          validate_metadata() {
+            local metadata=$1 key value
+            local seen_mode=0 seen_kind=0 seen_total=0 seen_index=0 seen_count=0 seen_digest=0
+            if grep -Eqv '^[A-Z_]+=[A-Za-z0-9._-]+$' "${metadata}"; then return 1; fi
+            while IFS='=' read -r key value || [[ -n "${key}" ]]; do
+              case "${key}" in
+                PLAN_MODE) test "${seen_mode}" -eq 0 || return 1; [[ "${value}" =~ ^(full|selected)$ ]] || return 1; seen_mode=1 ;;
+                PLAN_KIND) test "${seen_kind}" -eq 0 || return 1; [[ "${value}" =~ ^(full|docs-only|selected)$ ]] || return 1; seen_kind=1 ;;
+                PLAN_TOTAL) test "${seen_total}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_total=1 ;;
+                SHARD_INDEX) test "${seen_index}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_index=1 ;;
+                SHARD_COUNT) test "${seen_count}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9]+$ ]] || return 1; seen_count=1 ;;
+                PLAN_DIGEST) test "${seen_digest}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9a-f]{64}$ ]] || return 1; seen_digest=1 ;;
+                *) return 1 ;;
+              esac
+            done < "${metadata}"
+            test "${seen_mode}${seen_kind}${seen_total}${seen_index}${seen_count}${seen_digest}" = 111111
+          }
+          validate_metadata "${RUNNER_TEMP}/pytest-plan.env"
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              PLAN_MODE|PLAN_KIND|PLAN_TOTAL|SHARD_INDEX|SHARD_COUNT|PLAN_DIGEST) export "${key}=${value}" ;;
+              *) exit 1 ;;
+            esac
+          done < "${RUNNER_TEMP}/pytest-plan.env"
+          actual_count="$(wc -l < "${RUNNER_TEMP}/shard-files.txt" | tr -d ' ')"
+          test "${actual_count}" -eq "${SHARD_COUNT}"
+          echo "shard ${{ matrix.shard }}: ${actual_count} test files"
       - name: Run the shard
         env:
           HYPRIAL_CI_PROFILE: "1"
         run: |
           set -euo pipefail
+          validate_metadata() {
+            local metadata=$1 key value
+            local seen_mode=0 seen_kind=0 seen_total=0 seen_index=0 seen_count=0 seen_digest=0
+            if grep -Eqv '^[A-Z_]+=[A-Za-z0-9._-]+$' "${metadata}"; then return 1; fi
+            while IFS='=' read -r key value || [[ -n "${key}" ]]; do
+              case "${key}" in
+                PLAN_MODE) test "${seen_mode}" -eq 0 || return 1; [[ "${value}" =~ ^(full|selected)$ ]] || return 1; seen_mode=1 ;;
+                PLAN_KIND) test "${seen_kind}" -eq 0 || return 1; [[ "${value}" =~ ^(full|docs-only|selected)$ ]] || return 1; seen_kind=1 ;;
+                PLAN_TOTAL) test "${seen_total}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_total=1 ;;
+                SHARD_INDEX) test "${seen_index}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_index=1 ;;
+                SHARD_COUNT) test "${seen_count}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9]+$ ]] || return 1; seen_count=1 ;;
+                PLAN_DIGEST) test "${seen_digest}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9a-f]{64}$ ]] || return 1; seen_digest=1 ;;
+                *) return 1 ;;
+              esac
+            done < "${metadata}"
+            test "${seen_mode}${seen_kind}${seen_total}${seen_index}${seen_count}${seen_digest}" = 111111
+          }
+          validate_metadata "${RUNNER_TEMP}/pytest-plan.env"
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              PLAN_MODE|PLAN_KIND|PLAN_TOTAL|SHARD_INDEX|SHARD_COUNT|PLAN_DIGEST) export "${key}=${value}" ;;
+              *) echo "invalid pytest metadata key" >&2; exit 1 ;;
+            esac
+          done < "${RUNNER_TEMP}/pytest-plan.env"
+          if test "${GITHUB_EVENT_NAME}" != pull_request; then
+            test "${PLAN_MODE}" = full
+          fi
+          expected_total="$(git ls-files -z -- 'tests/**/test_*.py' 'tests/test_*.py' 'tests/**/*_test.py' 'tests/*_test.py' | tr -dc '\0' | wc -c | tr -d '[:space:]')"
+          test "${PLAN_TOTAL}" -ge 1
+          if test "${PLAN_MODE}" = full; then
+            test "${expected_total}" -gt 0
+            test "${PLAN_TOTAL}" -eq "${expected_total}"
+            expected_shard_count=$(( (expected_total + 4 - SHARD_INDEX) / 4 ))
+            test "${SHARD_COUNT}" -eq "${expected_shard_count}"
+          elif test "${PLAN_MODE}" = selected; then
+            if test "${SHARD_COUNT}" -eq 0; then
+              if test "${PLAN_TOTAL}" -le 16 && test "${SHARD_INDEX}" -ge 2; then
+                echo "PYTEST_SHARD_EMPTY plan=selected total=${PLAN_TOTAL} shard=${SHARD_INDEX}/4"
+                exit 0
+              fi
+              echo "selected shard is empty outside the small-plan rule" >&2
+              exit 1
+            fi
+          else
+            echo "invalid pytest plan mode" >&2
+            exit 1
+          fi
+          test -s "${RUNNER_TEMP}/shard-files.txt"
           export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
           test -x "${HYPRIAL_BIN}"
           mkdir -p "${RUNNER_TEMP}/pytest-results"
@@ -151,30 +249,9 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  pr-hygiene:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
-        with:
-          version: ${{ env.UV_VERSION }}
-      - name: Require the Submitted-by identity line
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
-        run: |
-          set -euo pipefail
-          printf '%s' "${PR_BODY:-}" > "${RUNNER_TEMP}/pr-body.txt"
-          uv run --no-project --python "${PYTHON_VERSION}" python scripts/ci/check_pr_hygiene.py \
-            submitted-by --body-file "${RUNNER_TEMP}/pr-body.txt" \
-            --pr-number "${PR_NUMBER}" --created-at "${PR_CREATED_AT}"
-
   gate:
     if: always()
-    needs: [static, pytest, pr-hygiene]
+    needs: [static, pytest]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -182,15 +259,8 @@ jobs:
         env:
           STATIC: ${{ needs.static.result }}
           PYTEST: ${{ needs.pytest.result }}
-          HYGIENE: ${{ needs.pr-hygiene.result }}
-          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          echo "static=${STATIC} pytest=${PYTEST} pr-hygiene=${HYGIENE} event=${EVENT}"
+          echo "static=${STATIC} pytest=${PYTEST}"
           test "${STATIC}" = success
           test "${PYTEST}" = success
-          if [ "${EVENT}" = pull_request ]; then
-            test "${HYGIENE}" = success
-          else
-            test "${HYGIENE}" = skipped
-          fi

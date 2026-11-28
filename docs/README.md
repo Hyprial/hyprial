@@ -24,8 +24,8 @@ Rules for this tree:
   under `design/`, for example `design/pac-expand/`.
 - `notes/` and `evidence/` are append-only. Do not edit, move or re-format files there;
   their bytes are cited by hash in reviews.
-- Some files are exact test inputs (see `EXACT_TEST_INPUTS` in `scripts/ci/docs_only.py`).
-  Moving or renaming them needs a matching test change.
+- The documentation classifier scans runtime files and `GLOSSARY.md` for references.
+  Moving or renaming a referenced page needs a matching test or script change.
 
 ## Guides — operate a node
 

@@ -1,10 +1,15 @@
 """Truth-table and structural guards for the ``gate`` summary job in ``gate.yml``.
 
-The ``gate`` job is the single required status check. Its shell script is
+The ``gate`` job is the required status check of the code jobs; ``pr-hygiene``
+is a separate required check in its own workflow. The gate's shell script is
 executed verbatim under ``bash -eo pipefail`` across the full Cartesian product
 of upstream job results and trigger events, and pure structural readers guard
 the job wiring (``if: always()``, ``needs``, ``env``, ``fail-fast: false``,
-trigger types/branches, and absence of path filters) with mutation controls.
+trigger types/branches, and absence of trigger filters) with mutation controls.
+
+Invariant 6 (gate-scope): only success from both ``static`` and ``pytest``
+passes. ``skipped`` (an intended skip upstream), ``cancelled``, ``failure``,
+``timed_out``, an empty string and an unset result all fail, on every event.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from typing import Any
 
 import pytest
 
+import tests.support.ci_download.gate_scope_policy as scope
 import tests.support.ci_download.github_gate_policy as policy
 
 GATE_TEXT = policy.gate_path().read_text(encoding="utf-8")
@@ -29,22 +35,21 @@ JOB_RESULTS: tuple[str | None, ...] = (
     "cancelled",
     "timed_out",
     "skipped",
+    "",
     None,
 )
 EVENTS: tuple[str, ...] = ("pull_request", "push")
-EXPECTED_PASSING: frozenset[tuple[str | None, str | None, str | None, str]] = frozenset(
+EXPECTED_PASSING: frozenset[tuple[str | None, str | None, str]] = frozenset(
     {
-        ("success", "success", "success", "pull_request"),
-        ("success", "success", "skipped", "push"),
+        ("success", "success", "pull_request"),
+        ("success", "success", "push"),
     }
 )
-REQUIRED_PR_TYPES = frozenset({"opened", "synchronize", "reopened", "edited"})
+REQUIRED_PR_TYPES = scope.GATE_PR_TYPES
 REQUIRED_PUSH_BRANCHES = frozenset({"dev", "main"})
 REQUIRED_GATE_ENV = {
     "STATIC": "${{ needs.static.result }}",
     "PYTEST": "${{ needs.pytest.result }}",
-    "HYGIENE": "${{ needs.pr-hygiene.result }}",
-    "EVENT": "${{ github.event_name }}",
 }
 
 
@@ -60,24 +65,25 @@ def gate_summary_script(document: dict[str, Any]) -> str:
     return script
 
 
-def evaluate_truth_table(script: str) -> list[tuple[tuple[str | None, str | None, str | None, str], int]]:
-    """Run ``script`` across all result x event inputs and return mismatches."""
+def evaluate_truth_table(script: str) -> list[tuple[tuple[str | None, str | None, str], int]]:
+    """Run ``script`` across all result x event inputs and return mismatches.
+
+    ``EVENT`` is set although the gate does not read it: the verdict must not
+    change with the event, and a script that started reading it would show up
+    as a mismatch on one of the two events.
+    """
 
     bash = shutil.which("bash")
     if bash is None:
         pytest.fail("bash is required to execute the gate summary truth table")
     base_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-    mismatches: list[tuple[tuple[str | None, str | None, str | None, str], int]] = []
-    for static, pytest_res, hygiene, event in itertools.product(
-        JOB_RESULTS, JOB_RESULTS, JOB_RESULTS, EVENTS
-    ):
+    mismatches: list[tuple[tuple[str | None, str | None, str], int]] = []
+    for static, pytest_res, event in itertools.product(JOB_RESULTS, JOB_RESULTS, EVENTS):
         env = dict(base_env)
         if static is not None:
             env["STATIC"] = static
         if pytest_res is not None:
             env["PYTEST"] = pytest_res
-        if hygiene is not None:
-            env["HYGIENE"] = hygiene
         env["EVENT"] = event
         proc = subprocess.run(
             [bash, "-eo", "pipefail"],
@@ -87,7 +93,7 @@ def evaluate_truth_table(script: str) -> list[tuple[tuple[str | None, str | None
             env=env,
             check=False,
         )
-        combo = (static, pytest_res, hygiene, event)
+        combo = (static, pytest_res, event)
         expected_ok = combo in EXPECTED_PASSING
         actual_ok = proc.returncode == 0
         if actual_ok != expected_ok:
@@ -121,6 +127,9 @@ def gate_summary_offenders(document: dict[str, Any]) -> list[str]:
                 offenders.append(
                     f"gate step[0].env[{var_name!r}] must be {expected_expr!r}, got {actual!r}"
                 )
+        extra_env = sorted(set(step_env) - set(REQUIRED_GATE_ENV))
+        if extra_env:
+            offenders.append(f"gate step[0].env reads more than the job results: {extra_env!r}")
         wired_results = {str(value).strip() for value in step_env.values()}
         for needed in sorted(declared_needs):
             expected_ref = f"${{{{ needs.{needed}.result }}}}"
@@ -150,6 +159,9 @@ def gate_summary_offenders(document: dict[str, Any]) -> list[str]:
             missing_types = sorted(REQUIRED_PR_TYPES - pr_types)
             if missing_types:
                 offenders.append(f"on.pull_request.types missing {missing_types!r}")
+            extra_types = sorted(pr_types - REQUIRED_PR_TYPES)
+            if extra_types:
+                offenders.append(f"on.pull_request.types must not include {extra_types!r}")
         push_cfg = on_block.get("push")
         if not isinstance(push_cfg, dict):
             offenders.append("top-level 'on.push' must be a mapping")
@@ -161,7 +173,7 @@ def gate_summary_offenders(document: dict[str, Any]) -> list[str]:
         for trigger_name, cfg in on_block.items():
             if not isinstance(cfg, dict):
                 continue
-            for filter_key in ("paths", "paths-ignore"):
+            for filter_key in scope.TRIGGER_FILTERS:
                 if filter_key in cfg:
                     offenders.append(f"on.{trigger_name} must not define {filter_key!r}")
 
@@ -182,10 +194,8 @@ def test_gate_summary_script_rejects_empty_string_values():
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "STATIC": "success",
         "PYTEST": "success",
-        "HYGIENE": "success",
-        "EVENT": "pull_request",
     }
-    for key in ("STATIC", "PYTEST", "HYGIENE", "EVENT"):
+    for key in ("STATIC", "PYTEST"):
         env = dict(base)
         env[key] = ""
         proc = subprocess.run(
@@ -206,7 +216,7 @@ def test_mutated_gate_summary_script_fails_truth_table_g02_and_g03():
     ) + "\n"
     assert without_pytest_check != original
     mismatches = evaluate_truth_table(without_pytest_check)
-    assert any(combo == ("success", "failure", "success", "pull_request") for combo, _ in mismatches)
+    assert any(combo == ("success", "failure", "pull_request") for combo, _ in mismatches)
 
     relaxed_pytest_check = original.replace(
         'test "${PYTEST}" = success',
@@ -215,9 +225,28 @@ def test_mutated_gate_summary_script_fails_truth_table_g02_and_g03():
     assert relaxed_pytest_check != original
     relaxed_mismatches = evaluate_truth_table(relaxed_pytest_check)
     assert any(
-        combo == ("success", "failure", "success", "pull_request")
+        combo == ("success", "failure", "pull_request")
         for combo, _ in relaxed_mismatches
     )
+
+
+@pytest.mark.parametrize(
+    "case_id,replacement,caught",
+    [
+        ("I6-skipped-passes", 'test "${PYTEST}" = success || test "${PYTEST}" = skipped', ("success", "skipped", "push")),
+        ("I6-not-failure", 'test "${PYTEST}" != failure', ("success", "cancelled", "pull_request")),
+        ("I6-empty-passes", 'test "${PYTEST:-success}" = success', ("success", "", "pull_request")),
+        ("I6-push-relaxed", 'test "${EVENT}" = push || test "${PYTEST}" = success', ("success", "failure", "push")),
+    ],
+)
+def test_invariant_6_an_intended_skip_or_a_cancel_never_passes_the_gate(case_id, replacement, caught):
+    """Invariant 6: a gate that tolerated skipped, cancelled, empty or event-relaxed results goes red."""
+
+    original = gate_summary_script(GATE)
+    mutated = original.replace('test "${PYTEST}" = success', replacement)
+    assert mutated != original, case_id
+    mismatches = [combo for combo, _code in evaluate_truth_table(mutated)]
+    assert caught in mismatches, (case_id, mismatches)
 
 
 def test_real_gate_workflow_has_no_structural_summary_offenders():
@@ -240,8 +269,20 @@ def _mutate_g07_remove_pr_types(doc: dict[str, Any]) -> None:
     _on_block(doc)["pull_request"].pop("types")
 
 
-def _mutate_g07_drop_edited_type(doc: dict[str, Any]) -> None:
-    _on_block(doc)["pull_request"]["types"] = ["opened", "synchronize", "reopened"]
+def _mutate_g07_add_edited_type(doc: dict[str, Any]) -> None:
+    _on_block(doc)["pull_request"]["types"] = ["opened", "synchronize", "reopened", "edited"]
+
+
+def _mutate_g07_drop_reopened_type(doc: dict[str, Any]) -> None:
+    _on_block(doc)["pull_request"]["types"] = ["opened", "synchronize"]
+
+
+def _mutate_g11_add_branches_ignore(doc: dict[str, Any]) -> None:
+    _on_block(doc)["pull_request"]["branches-ignore"] = ["release/**"]
+
+
+def _mutate_gate_reads_the_event(doc: dict[str, Any]) -> None:
+    doc["jobs"]["gate"]["steps"][0]["env"]["EVENT"] = "${{ github.event_name }}"
 
 
 def _mutate_g07_remove_push(doc: dict[str, Any]) -> None:
@@ -287,7 +328,10 @@ def _mutate_pytest_fail_fast_missing(doc: dict[str, Any]) -> None:
         ("G01-remove-if", _mutate_g01_remove_if),
         ("G01-wrong-if", _mutate_g01_wrong_if),
         ("G07-remove-pr-types", _mutate_g07_remove_pr_types),
-        ("G07-drop-edited-type", _mutate_g07_drop_edited_type),
+        ("G07-add-edited-type", _mutate_g07_add_edited_type),
+        ("G07-drop-reopened-type", _mutate_g07_drop_reopened_type),
+        ("G11-branches-ignore", _mutate_g11_add_branches_ignore),
+        ("gate-reads-event", _mutate_gate_reads_the_event),
         ("G07-remove-push", _mutate_g07_remove_push),
         ("G07-drop-main-branch", _mutate_g07_drop_main_branch),
         ("G11-paths-ignore", _mutate_g11_add_paths_ignore),

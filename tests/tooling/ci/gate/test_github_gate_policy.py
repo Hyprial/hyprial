@@ -63,8 +63,8 @@ def test_a_second_workflow_is_checked_alongside_the_gate(tree):
 def test_the_gate_is_present_and_is_the_merge_gate():
     assert policy.gate_path().is_file()
     assert GATE["name"] == "gate"
-    assert set(policy.jobs_of(GATE)) == {"static", "pytest", "pr-hygiene", "gate"}
-    assert policy.jobs_of(GATE)["gate"]["needs"] == ["static", "pytest", "pr-hygiene"]
+    assert set(policy.jobs_of(GATE)) == {"static", "pytest", "gate"}
+    assert policy.jobs_of(GATE)["gate"]["needs"] == ["static", "pytest"]
 
 
 def test_the_gate_sets_no_env_name_twice_in_another_case():
@@ -531,11 +531,13 @@ def test_no_other_workflow_relaxes_a_step_that_decides_the_result():
 
 
 def test_the_gate_file_name_decides_the_strictness_and_nothing_else():
-    """The same relaxed job is refused under the gate's name and allowed under another."""
+    """The same relaxed job is refused under each owning file's name and allowed under another."""
 
     text = relaxed()
-    gate_named = policy.relaxed_gate_surfaces(text, policy.GATE_FILE)
-    assert len(gate_named) == 1 and "job windows-smoke" in gate_named[0].message
+    assert policy.STRICT_FILES == {policy.GATE_FILE, policy.PR_HYGIENE_FILE}
+    for owner in sorted(policy.STRICT_FILES):
+        owner_named = policy.relaxed_gate_surfaces(text, owner)
+        assert len(owner_named) == 1 and "job windows-smoke" in owner_named[0].message, owner
     assert policy.relaxed_gate_surfaces(text, "windows-smoke.yml") == []
 
 
@@ -863,62 +865,3 @@ def test_unhosted_or_unresolvable_matrix_runner_is_reported(matrix, expected_fra
     offenders = policy.unhosted_runner_offenders(document, "wf.yml")
     assert len(offenders) == 1, offenders
     assert expected_fragment in offenders[0].message
-
-
-def test_only_the_gate_workflow_defines_a_gate_job():
-    for path in policy.workflow_files():
-        document = policy.load(path.read_text(encoding="utf-8"))
-        assert policy.foreign_gate_job_offenders(document, path.name) == []
-
-
-def test_a_second_workflow_defining_a_gate_job_is_reported(tree):
-    bad = (
-        "name: windows-followup\n"
-        "on: pull_request\n"
-        "permissions:\n"
-        "  contents: read\n"
-        "jobs:\n"
-        "  gate:\n"
-        "    runs-on: windows-latest\n"
-        "    continue-on-error: true\n"
-        "    steps:\n"
-        "      - run: echo ok\n"
-    )
-    write(tree.parent, "windows-followup.yml", bad)
-    found = [
-        item
-        for path in policy.workflow_files()
-        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
-    ]
-    assert len(found) == 1
-    assert found[0].file == "windows-followup.yml"
-    write(tree.parent, "windows-followup.yml", CLEAN_SECOND_WORKFLOW)
-    clean_found = [
-        item
-        for path in policy.workflow_files()
-        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
-    ]
-    assert clean_found == []
-
-
-def test_a_second_workflow_naming_a_job_gate_is_also_reported(tree):
-    bad = (
-        "name: windows-followup\n"
-        "on: pull_request\n"
-        "permissions:\n"
-        "  contents: read\n"
-        "jobs:\n"
-        "  shadow:\n"
-        "    name: gate\n"
-        "    runs-on: windows-latest\n"
-        "    steps:\n"
-        "      - run: echo ok\n"
-    )
-    write(tree.parent, "windows-followup.yml", bad)
-    found = [
-        item
-        for path in policy.workflow_files()
-        for item in policy.foreign_gate_job_offenders(policy.load(path.read_text()), path.name)
-    ]
-    assert len(found) == 1
-    assert found[0].file == "windows-followup.yml"

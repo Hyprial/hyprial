@@ -1,0 +1,195 @@
+# Decisions (gate-scope step 2, owner ruling 2026-11-27):
+# - This workflow is an independent scheduled and manually dispatched full-suite
+#   backstop, so it has no required-check job and never cancels an active run.
+# - Every nightly shard verifies full mode, independently counts tracked tests,
+#   checks the four-shard formula, and runs the same N3 pytest command contract as gate.
+# - A nightly failure is triaged from the workflow run and its JUnit artifacts. The
+#   workflow may be disabled temporarily during maintenance, then enabled again
+#   with its schedule and workflow-dispatch trigger intact. The 60-day inactive
+#   workflow check and restoration procedure belong in the branch-rules addendum.
+name: nightly-full
+
+on:
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-full-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+  RUST_VERSION: "1.93.1"
+  NO_COLOR: "1"
+
+jobs:
+  nightly-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Structural and boundary gates
+        run: |
+          set -euo pipefail
+          for gate in check_structural_limits check_module_boundaries \
+              check_network_reachability check_unbounded_waits \
+              check_windows_portability check_node_net_apis \
+              check_node_platform_idioms check_import_ratchet; do
+            uv run --no-project --python "${PYTHON_VERSION}" python "scripts/ci/${gate}.py"
+          done
+      - name: Install the locked environment
+        run: uv sync --locked --python "${PYTHON_VERSION}" --extra test
+      - name: Ruff
+        run: uv run --locked --no-sync ruff check .
+      - name: Compile every Python file
+        run: uv run --locked --no-sync python -m compileall -q src tests contract
+
+  nightly-pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - name: Install the pinned Pi SDK
+        run: |
+          set -euo pipefail
+          npm install -g --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
+          test "$(pi --version)" = "0.85.1"
+          echo "HYPRIAL_REQUIRE_PI_SDK=1" >> "${GITHUB_ENV}"
+      - name: Install the locked environment
+        run: |
+          set -euo pipefail
+          uv sync --locked --python "${PYTHON_VERSION}" --extra test
+          uv run --locked --no-sync --with libcst==1.9.0 python -c 'import libcst'
+      - name: Build and stage the native engine
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          bash scripts/build/build_native_engine.sh
+          uv run --locked --no-sync python -c 'import hyprial._core.actors as a; print(a.ENGINE_ABI_VERSION)'
+      - name: Select this shard's test files
+        run: |
+          set -euo pipefail
+          uv run --no-project --python "${PYTHON_VERSION}" python scripts/ci/pytest_impact.py \
+            --emit-shard "${{ matrix.shard }}/4" \
+            --out "${RUNNER_TEMP}/shard-files.txt" \
+            --meta "${RUNNER_TEMP}/pytest-plan.env"
+          validate_metadata() {
+            local metadata=$1 key value
+            local seen_mode=0 seen_kind=0 seen_total=0 seen_index=0 seen_count=0 seen_digest=0
+            if grep -Eqv '^[A-Z_]+=[A-Za-z0-9._-]+$' "${metadata}"; then return 1; fi
+            while IFS='=' read -r key value || [[ -n "${key}" ]]; do
+              case "${key}" in
+                PLAN_MODE) test "${seen_mode}" -eq 0 || return 1; [[ "${value}" =~ ^(full|selected)$ ]] || return 1; seen_mode=1 ;;
+                PLAN_KIND) test "${seen_kind}" -eq 0 || return 1; [[ "${value}" =~ ^(full|docs-only|selected)$ ]] || return 1; seen_kind=1 ;;
+                PLAN_TOTAL) test "${seen_total}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_total=1 ;;
+                SHARD_INDEX) test "${seen_index}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_index=1 ;;
+                SHARD_COUNT) test "${seen_count}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9]+$ ]] || return 1; seen_count=1 ;;
+                PLAN_DIGEST) test "${seen_digest}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9a-f]{64}$ ]] || return 1; seen_digest=1 ;;
+                *) return 1 ;;
+              esac
+            done < "${metadata}"
+            test "${seen_mode}${seen_kind}${seen_total}${seen_index}${seen_count}${seen_digest}" = 111111
+          }
+          validate_metadata "${RUNNER_TEMP}/pytest-plan.env"
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              PLAN_MODE|PLAN_KIND|PLAN_TOTAL|SHARD_INDEX|SHARD_COUNT|PLAN_DIGEST) export "${key}=${value}" ;;
+              *) exit 1 ;;
+            esac
+          done < "${RUNNER_TEMP}/pytest-plan.env"
+          actual_count="$(wc -l < "${RUNNER_TEMP}/shard-files.txt" | tr -d ' ')"
+          test "${actual_count}" -eq "${SHARD_COUNT}"
+      - name: Run the shard
+        env:
+          HYPRIAL_CI_PROFILE: "1"
+        run: |
+          set -euo pipefail
+          validate_metadata() {
+            local metadata=$1 key value
+            local seen_mode=0 seen_kind=0 seen_total=0 seen_index=0 seen_count=0 seen_digest=0
+            if grep -Eqv '^[A-Z_]+=[A-Za-z0-9._-]+$' "${metadata}"; then return 1; fi
+            while IFS='=' read -r key value || [[ -n "${key}" ]]; do
+              case "${key}" in
+                PLAN_MODE) test "${seen_mode}" -eq 0 || return 1; [[ "${value}" =~ ^(full|selected)$ ]] || return 1; seen_mode=1 ;;
+                PLAN_KIND) test "${seen_kind}" -eq 0 || return 1; [[ "${value}" =~ ^(full|docs-only|selected)$ ]] || return 1; seen_kind=1 ;;
+                PLAN_TOTAL) test "${seen_total}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_total=1 ;;
+                SHARD_INDEX) test "${seen_index}" -eq 0 || return 1; [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1; seen_index=1 ;;
+                SHARD_COUNT) test "${seen_count}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9]+$ ]] || return 1; seen_count=1 ;;
+                PLAN_DIGEST) test "${seen_digest}" -eq 0 || return 1; [[ "${value}" =~ ^[0-9a-f]{64}$ ]] || return 1; seen_digest=1 ;;
+                *) return 1 ;;
+              esac
+            done < "${metadata}"
+            test "${seen_mode}${seen_kind}${seen_total}${seen_index}${seen_count}${seen_digest}" = 111111
+          }
+          validate_metadata "${RUNNER_TEMP}/pytest-plan.env"
+          while IFS='=' read -r key value; do
+            case "${key}" in
+              PLAN_MODE|PLAN_KIND|PLAN_TOTAL|SHARD_INDEX|SHARD_COUNT|PLAN_DIGEST) export "${key}=${value}" ;;
+              *) echo "invalid pytest metadata key" >&2; exit 1 ;;
+            esac
+          done < "${RUNNER_TEMP}/pytest-plan.env"
+          test "${PLAN_MODE}" = full
+          expected_total="$(git ls-files -z -- 'tests/**/test_*.py' 'tests/test_*.py' 'tests/**/*_test.py' 'tests/*_test.py' | tr -dc '\0' | wc -c | tr -d '[:space:]')"
+          test "${expected_total}" -gt 0
+          test "${PLAN_TOTAL}" -eq "${expected_total}"
+          expected_shard_count=$(( (expected_total + 4 - SHARD_INDEX) / 4 ))
+          test "${SHARD_COUNT}" -eq "${expected_shard_count}"
+          if test "${SHARD_COUNT}" -eq 0; then
+            echo "full shard is empty" >&2
+            exit 1
+          fi
+          test -s "${RUNNER_TEMP}/shard-files.txt"
+          export HYPRIAL_BIN="${PWD}/.venv/bin/hyprial"
+          test -x "${HYPRIAL_BIN}"
+          mkdir -p "${RUNNER_TEMP}/pytest-results"
+          uv run --locked --no-sync --with libcst==1.9.0 pytest -q \
+            -m "not gui_acceptance" \
+            -n 4 --dist=loadfile --max-worker-restart=0 \
+            --continue-on-collection-errors \
+            -p no:cacheprovider \
+            --junitxml="${RUNNER_TEMP}/pytest-results/shard-${{ matrix.shard }}.xml" \
+            --basetemp="${RUNNER_TEMP}/pytest-tmp" \
+            "@${RUNNER_TEMP}/shard-files.txt"
+      - name: Upload the JUnit result
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: nightly-pytest-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-results/
+          retention-days: 7
+          if-no-files-found: warn
+
+  nightly-summary:
+    if: always()
+    needs: [nightly-static, nightly-pytest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require static and pytest success
+        env:
+          STATIC: ${{ needs.nightly-static.result }}
+          PYTEST: ${{ needs.nightly-pytest.result }}
+        run: |
+          set -euo pipefail
+          echo "static=${STATIC} pytest=${PYTEST}"
+          test "STATIC=${STATIC}" = STATIC=success
+          test "PYTEST=${PYTEST}" = PYTEST=success

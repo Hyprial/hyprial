@@ -38,10 +38,20 @@ and explicit full checks retain complete coverage. The old audited classifier
 and Python consumer map are reused; a stale audit still means full validation.
 
 GUI Node checks precede browser/Codex/package work and use file concurrency 2.
-Sidecar build/live E2E follow its Go test gate. Python `--staged` runs audited
-early files before the remaining complete selection, with two workers in each
-stage, separate temporary roots, no duplicate files and no failure retries.
-This separates first-failure latency from total successful-run duration.
+Sidecar build/live E2E follow its Go test gate. Pull-request Python selection
+uses `scripts/ci/pytest_impact.py` and its reverse-reference closure. Pushes to
+`dev` and `main`, nightly runs, source changes, CI inputs and uncertain
+comparisons use the complete tracked test set. Each shard owns whole files and
+collection errors remain visible. S7 replay uses the fixed snapshot and cohort
+in `scripts/ci/pytest-selector-cohort.json` and the final selector entrypoint
+`scripts/ci/replay_pytest_selector.py`. The read-only command is
+`uv run --no-project --python 3.12 python scripts/ci/replay_pytest_selector.py`.
+On 2026-11-28 it replayed snapshot `22eb4003760a4af0cac43db5030c7dc8cb748921`
+with cohorts of 239 historical non-merge commits, 39 public-window non-merge
+commits and 7 public-window first-parent merge commits. The extracted snapshot
+contained 2320 tracked test files. Results were 232 full and 7 selected in the
+historical cohort, 32 full and 7 selected in the public-window non-merge cohort,
+and 7 full in the merge cohort. No duration file was read.
 
 ## Sidecar module downloads
 

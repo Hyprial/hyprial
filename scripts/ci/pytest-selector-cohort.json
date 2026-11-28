@@ -1,0 +1,21 @@
+{
+  "schema": "hyprial.ci.pytest-selector-replay/v1",
+  "snapshot": "22eb4003760a4af0cac43db5030c7dc8cb748921",
+  "cohort": [
+    {
+      "name": "history-non-merge",
+      "gitArgs": ["rev-list", "--no-merges", "--parents", "22eb4003760a4af0cac43db5030c7dc8cb748921"],
+      "expectedCount": 239
+    },
+    {
+      "name": "github-window-non-merge",
+      "gitArgs": ["rev-list", "--no-merges", "--parents", "8ddf9bb93ed0787a7f429c91bce6c5b6da72f48f..22eb4003760a4af0cac43db5030c7dc8cb748921"],
+      "expectedCount": 39
+    },
+    {
+      "name": "github-window-first-parent-merges",
+      "gitArgs": ["rev-list", "--first-parent", "--merges", "--parents", "8ddf9bb93ed0787a7f429c91bce6c5b6da72f48f..22eb4003760a4af0cac43db5030c7dc8cb748921"],
+      "expectedCount": 7
+    }
+  ]
+}
