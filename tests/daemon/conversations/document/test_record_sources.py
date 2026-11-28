@@ -56,6 +56,7 @@ from hyprial.daemon.impl.delivery.ports import SOURCE_INBOX, SOURCE_SENDER_COPY
 from hyprial.daemon.impl.orgfs import LocalOrgFs
 from hyprial.daemon.impl.orgfs.api import OrgFsError
 from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.kernel import ORGFS_CONTENT_PENDING
 from tests.daemon.conversations.conversation_support import OWNER_PRINCIPAL, record_lines
 from tests.daemon.conversations.document.document_support import (
     RecordDaemon,
@@ -162,7 +163,7 @@ def test_a_redacted_entry_shows_once_the_queue_no_longer_holds_the_body(
 
 
 class _Pending:
-    """A facade whose segment reads in *spaces* answer ``content_pending``.
+    """A facade whose segment reads in *spaces* answer ``content-pending``.
 
     ``spaces`` None holds every space; ``release`` lets reads through.
     """
@@ -182,7 +183,7 @@ class _Pending:
     def read_text(self, space: str, path: str) -> Any:
         if self.held and (self.held_in is None or space in self.held_in):
             self.refused.append((space, path))
-            raise OrgFsError("content_pending", {"message": "not arrived"})
+            raise OrgFsError(ORGFS_CONTENT_PENDING, {"message": "not arrived"})
         return self.inner.read_text(space, path)
 
 

@@ -282,20 +282,6 @@
       "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
     },
     {
-      "path": "src/hyprial/daemon/impl/orgfs/storage/replica_authority.py",
-      "line": 481,
-      "method": "wait",
-      "call": "waiter.done.wait()",
-      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
-    },
-    {
-      "path": "src/hyprial/daemon/impl/orgfs/storage/space_authority.py",
-      "line": 669,
-      "method": "wait",
-      "call": "waiter.done.wait()",
-      "reason": "Existing call predates the 2026-10-20 bounded-wait gate; migrate it to a bounded or nonblocking protocol."
-    },
-    {
       "path": "src/hyprial/daemon/impl/pac/actors/daemon.py",
       "line": 855,
       "method": "get",

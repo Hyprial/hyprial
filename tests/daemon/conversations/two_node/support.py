@@ -13,6 +13,19 @@ Decision notes (slice GC0, 2026-11-18):
 - Record segments are written with the real ``SegmentStore`` under the
   writer id of the node that writes them, into the space chosen by the real
   ``CellSpaces`` rule.
+
+Decision notes (OrgFS package S, 2026-11-25):
+
+- The helpers read the runtime only through its public surface: holders
+  through ``known_holders``, held spaces through ``facade.spaces()``.  The
+  journal store's ``unbroadcast`` and the mesh's ingress counter are gone;
+  "a's update was published and lost" is the bus's ``dropped`` count, and
+  "b has taken in what reached it" is ``status(space).synced`` or a read.
+- After a join the catalog is local and content arrives on demand (design
+  Q7); ``content_arrived`` waits through the runtime's ``await_content`` the
+  way a consumer has to before reading.
+- An announce is published when a space is created or joined; the helper
+  only waits for the target to list the source as a holder.
 """
 
 from __future__ import annotations
@@ -60,11 +73,10 @@ class Node:
         return None if home is None else home.space_id
 
     def holders_of(self, space_id: str) -> frozenset[str]:
-        with self.runtime._pending_announces_lock:
-            return frozenset(self.runtime._holders.get(space_id, ()))
+        return frozenset(self.runtime.known_holders(space_id))
 
     def held_spaces(self) -> frozenset[str]:
-        return frozenset(self.runtime.stores.snapshot_ids())
+        return frozenset(info.space_id for info in self.fs.spaces())
 
 
 def start_node(bus: _Bus, root: Path, node_id: str, peer: str) -> Node:
@@ -92,19 +104,25 @@ def announce_until_held(source: Node, space_id: str, target: Node) -> None:
     """Announce *space_id* from *source* until *target* records it as a holder."""
 
     def seen() -> None:
-        source.runtime._mesh(space_id).announce()
         assert source.node_id in target.holders_of(space_id)
 
     eventually(seen)
 
 
-def broadcast_drained(node: Node, *space_ids: str) -> None:
-    for space_id in space_ids:
-        assert not tuple(node.runtime.stores[space_id].unbroadcast())
+def content_arrived(node: Node, space_id: str, *, timeout: float = 3.0) -> None:
+    """Wait, as a consumer does after a join, until every document's content is local."""
+
+    deadline = time.monotonic() + timeout
+    for info in node.fs.listdir(space_id, "", recursive=True):
+        if info.kind == "dir":
+            continue
+        assert node.runtime.await_content(space_id, info.node_id, deadline_monotonic=deadline)
 
 
-def ingress_drained(node: Node, space_id: str) -> None:
-    assert node.runtime._mesh(space_id).ingress_pending == 0
+def updates_dropped(bus: Any, at_least: int) -> None:
+    """The bus has swallowed at least *at_least* update puts since it was built."""
+
+    assert bus.dropped >= at_least
 
 
 def drained(node: Node) -> None:
@@ -172,15 +190,15 @@ __all__ = [
     "OWNER",
     "Node",
     "announce_until_held",
-    "broadcast_drained",
     "close",
+    "content_arrived",
     "drained",
     "entry",
     "eventually",
     "expect_message_ids",
-    "ingress_drained",
     "read_message_ids",
     "record",
     "start_node",
     "start_pair",
+    "updates_dropped",
 ]

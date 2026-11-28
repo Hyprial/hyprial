@@ -92,7 +92,10 @@ pub(crate) struct StartingKey;
 
 /// Outcome of establishing one cell's linked pump.
 enum Established {
-    Started(ractor::ActorRef<PumpMsg>),
+    Started {
+        pump_ref: ractor::ActorRef<PumpMsg>,
+        wake: Arc<crate::pump::WakeSignal>,
+    },
     Failed(String),
 }
 
@@ -279,6 +282,7 @@ impl EngineInner {
                 in_flight: false,
                 budget: RestartBudget::new(policy.max_restarts, policy.restart_window),
                 pump: None,
+                wake: None,
                 restart_timer: None,
                 respawning: false,
                 stop: StopControl::default(),
@@ -293,9 +297,9 @@ impl EngineInner {
                 .expect("cells lock")
                 .insert(id.clone(), cell.clone());
             return match self.establish_pump(&cell, handler) {
-                Established::Started(pump_ref) => {
-                    self.wire_pump(&cell, &pump_ref);
-                    let _ = pump_ref.send_message(PumpMsg::Wake);
+                Established::Started { pump_ref, wake } => {
+                    self.wire_pump(&cell, &pump_ref, wake);
+                    cell.wake();
                     Ok(SpawnResult::Id(id))
                 }
                 Established::Failed(message) => {
@@ -323,14 +327,14 @@ impl EngineInner {
             self.remove_failed_cell(&cell, Some((pair, start)));
             return Err(ActorSpawnError::new_err(message));
         }
-        let pump_ref = match self.establish_pump(&cell, handler) {
-            Established::Started(pump_ref) => pump_ref,
+        let (pump_ref, wake) = match self.establish_pump(&cell, handler) {
+            Established::Started { pump_ref, wake } => (pump_ref, wake),
             Established::Failed(message) => {
                 self.remove_failed_cell(&cell, Some((pair, start)));
                 return Err(ActorSpawnError::new_err(message));
             }
         };
-        self.wire_pump(&cell, &pump_ref);
+        self.wire_pump(&cell, &pump_ref, wake);
         #[cfg(feature = "conformance-handlers")]
         self.test_pump_hold
             .hold_until_released(py, TestHoldPoint::PostEstablish);
@@ -366,7 +370,7 @@ impl EngineInner {
                 "engine-wide drain in progress or completed: spawn is refused",
             ));
         }
-        let _ = pump_ref.send_message(PumpMsg::Wake);
+        cell.wake();
         Ok(SpawnResult::Id(id))
     }
 
@@ -374,13 +378,22 @@ impl EngineInner {
     fn establish_pump(self: &Arc<Self>, cell: &Arc<Cell>, handler: Handler) -> Established {
         let supervisor = self.supervisor_cell();
         let engine = self.clone();
+        let wake = Arc::new(crate::pump::WakeSignal::new());
         let actor = PumpActor {
             cell: cell.clone(),
             engine,
         };
-        let future = PumpActor::spawn_linked(None, actor, PumpArgs { handler }, supervisor);
+        let future = PumpActor::spawn_linked(
+            None,
+            actor,
+            PumpArgs {
+                handler,
+                wake: wake.clone(),
+            },
+            supervisor,
+        );
         match self.rt_block_on(future) {
-            Some(Ok((pump_ref, _handle))) => Established::Started(pump_ref),
+            Some(Ok((pump_ref, _handle))) => Established::Started { pump_ref, wake },
             Some(Err(err)) => {
                 Established::Failed(format!("engine failed to start actor {}: {err}", cell.id))
             }
@@ -393,9 +406,16 @@ impl EngineInner {
 
     /// Publish an established pump on its cell and in the supervision
     /// registry, so the actor is fully serviceable once it becomes visible.
-    fn wire_pump(&self, cell: &Arc<Cell>, pump_ref: &ractor::ActorRef<PumpMsg>) {
-        lock(&cell.inner).pump = Some(pump_ref.clone());
+    fn wire_pump(
+        &self,
+        cell: &Arc<Cell>,
+        pump_ref: &ractor::ActorRef<PumpMsg>,
+        wake: Arc<crate::pump::WakeSignal>,
+    ) {
         self.remember_pump(pump_ref.get_id(), cell.clone());
+        let mut inner = lock(&cell.inner);
+        inner.pump = Some(pump_ref.clone());
+        inner.wake = Some(wake);
     }
 
     /// The live serial actor under a key pair, if any. A starting first

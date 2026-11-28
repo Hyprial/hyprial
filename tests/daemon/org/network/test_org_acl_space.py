@@ -1,3 +1,9 @@
+# Decisions:
+# - Phase D T1: ``test_member_written_directory_document_binding_is_ignored``
+#   runs on ``OrgFsRuntime`` (``state_apps``) whatever the rehearsal
+#   switch says.  A member's write of the org meta record is refused locally
+#   with ``protected-path`` (design §3.4), not ``not-a-member``; the reader
+#   must still ignore the binding.
 """Org IPC acceptance for ACL-space membership and policy custody."""
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from hyprial.daemon.impl.org.network.ipc import (
 )
 from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC
 from hyprial.daemon.impl.orgfs.api import OrgFsError
-from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
+from hyprial.daemon.impl.orgfs.composition.state import OrgFsRuntime
 from hyprial.identity import ORG_META_DOC, default_role_grants_document
 from hyprial.identity.impl.device import DeviceRecord, address_path, write_device_record
 from hyprial.kernel import DaemonRequestError
@@ -69,7 +75,16 @@ class _App:
 
 @pytest.fixture
 def apps(tmp_path: Path):
-    runtime = OrgFsRuntime(
+    yield from _apps(tmp_path, OrgFsRuntime)
+
+
+@pytest.fixture
+def state_apps(tmp_path: Path):
+    yield from _apps(tmp_path, OrgFsRuntime)
+
+
+def _apps(tmp_path: Path, runtime_class: Any):
+    runtime = runtime_class(
         tmp_path / "state", node_id="node-a", author=f"user:{OWNER}"
     )
     write_device_record(
@@ -664,8 +679,8 @@ def test_create_binds_acl_by_id_and_ignores_foreign_name_squats(apps) -> None:
         after_restart.close()
 
 
-def test_member_written_directory_document_binding_is_ignored(apps) -> None:
-    owner, _bob = apps
+def test_member_written_directory_document_binding_is_ignored(state_apps) -> None:
+    owner, _bob = state_apps
     created = ipc_org_create(owner, {"org": "group-acme"})
     ipc_org_invite(owner, {"org": "group-acme", "user": f"user:{BOB}"})
     ipc_org_invite(owner, {"org": "group-acme", "user": f"user:{CAROL}"})
@@ -689,8 +704,6 @@ def test_member_written_directory_document_binding_is_ignored(apps) -> None:
     member_runtime = OrgFsRuntime(
         state, node_id="node-b", author=f"user:{BOB}"
     )
-    # Org meta is owner-only on every replica, so the member's rebinding is
-    # refused at write time; the reader below must still ignore it.
     try:
         with pytest.raises(OrgFsError) as refused:
             member_runtime.facade.write_text(
@@ -702,7 +715,7 @@ def test_member_written_directory_document_binding_is_ignored(apps) -> None:
                     separators=(",", ":"),
                 ),
             )
-        assert refused.value.code == "not-a-member"
+        assert refused.value.code == "protected-path"
     finally:
         member_runtime.close()
 

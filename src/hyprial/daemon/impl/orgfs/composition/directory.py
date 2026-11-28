@@ -1,3 +1,15 @@
+# Decision record (phase D, package S, 2026-11-25):
+# - The D0 hooks lost their legacy half: announces must carry
+#   ``protocol: 3`` (design §4.1, §9 R15), and the per-space maintenance of a
+#   due anti-entropy tick is the state runtime's ``_maintain_spaces``.  The
+#   journal supplier resolver bound to one space id (``_supplier_owner_for_space``,
+#   which matched a space id against the org directory name rule) is deleted;
+#   the node gate is ``composition/state/sync.py``.
+# - Package F8b (review of F8, item 2): an announce is soft state that the
+#   next liveliness edge or space change sends again, so ``_announce_all``
+#   logs a failed put (``orgfs.announce.failed``) instead of raising; a join,
+#   a resident sync creation or a purge that already happened never reports
+#   failure because of it.
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -5,8 +17,6 @@ from collections.abc import Callable
 
 import json
 import random
-
-
 
 
 import time
@@ -34,7 +44,7 @@ from hyprial.daemon.impl.orgfs.api  import OrgFsError
 from hyprial.daemon.impl.orgfs.projection.checkout_authority  import CheckoutAuthority
 
 
-from hyprial.daemon.impl.orgfs.network.protocol  import (
+from hyprial.daemon.impl.orgfs.composition.vocabulary import (
     ORGFS_ANNOUNCE_BUFFER_LIMIT,
     ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT,
     ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS,
@@ -48,11 +58,7 @@ from hyprial.identity import (
 )
 
 
-
-
-
-
-from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryCommand, _DirectoryEffect, _DirectoryEffectBatch
+from hyprial.daemon.impl.orgfs.composition.vocabulary import _DirectoryCommand, _DirectoryEffect, _DirectoryEffectBatch, _SpaceMetaWatcher
 
 
 def _directory_sync_jitter() -> float:
@@ -68,16 +74,6 @@ def _directory_sync_jitter() -> float:
 _SUPPLIER_TRASH_SCAN_LIMIT = 4096
 
 
-def _supplier_directory_space(space_id: str) -> str | None:
-    """The org directory space backing an org space's supplier gate."""
-
-    if is_org_directory_space(space_id):
-        return space_id
-    if is_org_acl_space(space_id):
-        return space_id[: -len("-acl")]
-    return None
-
-
 def _next_directory_sync_due(now: float) -> float:
     return now + ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS * (1.0 + _directory_sync_jitter())
 
@@ -86,6 +82,8 @@ class RuntimeDirectory:
 
     This class never constructs, copies, or persists an independent host.
     """
+
+    _ANNOUNCE_PROTOCOL = 3
 
     @staticmethod
     def _directory_mailbox_capacity() -> int:
@@ -101,7 +99,6 @@ class RuntimeDirectory:
     @property
     def directory_ingress_dropped(self) -> int:
         return self._directory_dropped
-
 
     def _start_directory_ingress(self) -> None:
         if self._directory_effects is not None:
@@ -139,12 +136,10 @@ class RuntimeDirectory:
             workers=1,
         )
 
-
     @property
     def directory_ingress_pending(self) -> int:
         with self._directory_custody_lock:
             return len(self._directory_pending)
-
 
     def _release_directory_credit(self, operation_id: str, generation: int) -> None:
         pending: tuple[ActorCell, _DirectoryCommand] | None = None
@@ -181,7 +176,6 @@ class RuntimeDirectory:
             else:
                 self._directory_dropped += 1
 
-
     def _admit_directory_sample(self, action: str, sample: TransportSample) -> None:
         cell = self._directory_cell
         with self._directory_custody_lock:
@@ -207,7 +201,6 @@ class RuntimeDirectory:
                     self._directory_rebuild_pending = True
                 else:
                     self._directory_dropped += 1
-
 
     def _on_directory_command(self, command: object) -> None:
         if isinstance(command, EffectCompleted):
@@ -260,7 +253,6 @@ class RuntimeDirectory:
             self._directory_deferred.append(request)
         self._pump_directory_effects()
 
-
     def _pump_directory_effects(self) -> None:
         lane = self._directory_effects
         if lane is None:
@@ -275,6 +267,19 @@ class RuntimeDirectory:
                 self._directory_dropped += 1
                 self._release_directory_credit(request.operation_id, request.generation)
 
+    def _announce_shape_ok(self, value: Any, node: str) -> bool:
+        """Whether an announce payload is a protocol 3 announce for the key's ``node``."""
+
+        return not (
+            not isinstance(value, dict)
+            or value.get("schemaVersion") != 1
+            or value.get("type") != "orgfs-announce"
+            or value.get("node") != node
+            or not node
+            or "/" in node
+            or not isinstance(value.get("spaces"), list)
+            or value.get("protocol") != self._ANNOUNCE_PROTOCOL
+        )
 
     def _apply_announcement_command(
         self, sample: TransportSample
@@ -285,15 +290,7 @@ class RuntimeDirectory:
             if not sample.key.startswith(prefix):
                 return []
             node = sample.key[len(prefix) :]
-            if (
-                not isinstance(value, dict)
-                or value.get("schemaVersion") != 1
-                or value.get("type") != "orgfs-announce"
-                or value.get("node") != node
-                or not node
-                or "/" in node
-                or not isinstance(value.get("spaces"), list)
-            ):
+            if not self._announce_shape_ok(value, node):
                 return []
             with self._pending_announces_lock:
                 observed_live = node in self._lively_peers
@@ -329,7 +326,6 @@ class RuntimeDirectory:
             self._directory_dropped += 1
             return []
 
-
     def _apply_liveliness_command(
         self, sample: TransportSample
     ) -> list[_DirectoryEffect]:
@@ -348,7 +344,6 @@ class RuntimeDirectory:
             effects.extend(self._supplier_sync_effects(peer))
         return effects
 
-
     def _supplier_sync_effects(self, peer: str) -> list[_DirectoryEffect]:
         sync_spaces: list[str] = []
         for space_id in self.stores.snapshot_ids():
@@ -366,7 +361,6 @@ class RuntimeDirectory:
             ]
         return []
 
-
     def _defer_supplier_online(self, peer: str) -> None:
         with self._pending_announces_lock:
             if peer in self._deferred_supplier_online:
@@ -376,7 +370,6 @@ class RuntimeDirectory:
                 return
             self._deferred_supplier_online.add(peer)
 
-
     def _post_rebuild_effects(self) -> list[_DirectoryEffect]:
         with self._pending_announces_lock:
             deferred = tuple(sorted(self._deferred_supplier_online))
@@ -385,8 +378,6 @@ class RuntimeDirectory:
         )
         with self._pending_announces_lock:
             self._deferred_supplier_online.difference_update(online_deferred)
-        with self._resource_lock:
-            resident_spaces = tuple(sorted(self._replicas))
         targets = {
             (space_id, effect.peer)
             for peer in online_deferred
@@ -394,14 +385,6 @@ class RuntimeDirectory:
             for space_id in effect.space_ids
             if effect.peer is not None
         }
-        holder_pairs = set()
-        for space_id in resident_spaces:
-            with self._pending_announces_lock:
-                holders = tuple(self._holders.get(space_id, ()))
-            for peer in holders:
-                if peer != self.node_id and self._supplier_online(peer):
-                    holder_pairs.add((space_id, peer))
-        targets.update(holder_pairs)
         by_peer: dict[str, list[str]] = {}
         for space_id, peer in sorted(targets):
             by_peer.setdefault(peer, []).append(space_id)
@@ -413,13 +396,10 @@ class RuntimeDirectory:
             "post-rebuild-log",
             details=tuple(sorted({
                 "deferredPeers": len(deferred),
-                "onlineHolderPairs": len(holder_pairs),
-                "residentSpaces": len(resident_spaces),
                 "syncTargets": len(targets),
             }.items())),
         ))
         return effects
-
 
     def anti_entropy_tick(self, now: float) -> int:
         """Schedule one bounded pull per online org space when due.
@@ -435,6 +415,7 @@ class RuntimeDirectory:
                 self.logger("warn", "orgfs.anti_entropy.failed", error=repr(exc))
             return 0
 
+
     def _anti_entropy_tick(self, now: float) -> int:
         with self._pending_announces_lock:
             due = self._directory_sync_due
@@ -445,10 +426,7 @@ class RuntimeDirectory:
                 return 0
             self._directory_sync_due = _next_directory_sync_due(now)
 
-        for store in self.stores.snapshot():
-            store.expire_pending()
-            for envelope in store.take_drained():
-                self.facade.apply_envelope(store.space_id, envelope)
+        self._maintain_spaces(now)
 
         excluded_orgs = self._excluded_orgs()
         targets: dict[str, str] = {}
@@ -498,7 +476,6 @@ class RuntimeDirectory:
                 scheduled += 1
         return scheduled
 
-
     def _execute_directory_effect(self, batch: _DirectoryEffectBatch) -> None:
         scheduled_count = 0
         for effect in batch.effects:
@@ -533,7 +510,6 @@ class RuntimeDirectory:
             elif effect.action == "instrument":
                 self._emit_announce_effect(effect)
 
-
     @staticmethod
     def _request_checkout_reconcile(checkout: Any) -> None:
         if isinstance(checkout, CheckoutAuthority):
@@ -542,7 +518,6 @@ class RuntimeDirectory:
             # Test/offline protocol adapters may expose only the frozen legacy
             # reconcile seam; production entries are always CheckoutAuthority.
             checkout.reconcile()
-
 
     def _close_directory_ingress(self, timeout: float = 5.0) -> bool:
         with self._directory_custody_lock:
@@ -573,7 +548,6 @@ class RuntimeDirectory:
             self._directory_cell = None
             self._directory_effects = None
         return stopped
-
 
     def bind_transport(
         self,
@@ -622,28 +596,6 @@ class RuntimeDirectory:
                 self._transport_rebuild_completed
             )
 
-
-    def _supplier_owner_for_space(
-        self, space_id: str
-    ) -> Callable[[str], str | None]:
-        """R1 supplier-gate resolver bound to one replica space.
-
-        A mesh imports only from devices whose directory device row belongs to
-        a current member.  The resolver answers ``supplier node -> owning
-        member principal`` from the org's directory space. With transitional
-        tailnet trust disabled, ``None`` refuses the unresolved supplier.
-        The explicit private-tailnet policy bypasses this membership lookup,
-        but retains the removal-wins author judgment and document validation.
-        """
-
-        directory_space = _supplier_directory_space(space_id)
-
-        def resolve(supplier: str) -> str | None:
-            if directory_space is None or not supplier:
-                return None
-            return self._device_owner_index(directory_space).get(supplier)
-
-        return resolve
 
     def _device_owner_index(self, directory_space: str) -> dict[str, str]:
         """Map every known device id to its owning member principal.
@@ -705,7 +657,8 @@ class RuntimeDirectory:
         with self._supplier_device_lock:
             if directory_space not in self._supplier_device_owners:
                 self._supplier_device_owners[directory_space] = index
-                watch = self.facade.watch_meta(
+                meta_source: _SpaceMetaWatcher = self.facade
+                watch = meta_source.watch_meta(
                     directory_space,
                     lambda: self._invalidate_device_owner_index(directory_space),
                 )
@@ -726,16 +679,13 @@ class RuntimeDirectory:
             TransportSample(KeySpace().actor_liveliness(transition.actor), b""),
         )
 
-
     def _transport_rebuild_completed(self) -> None:
         self._admit_directory_sample(
             "rebuild-complete", TransportSample("transport/rebuild", b"")
         )
 
-
     def _on_peer_liveliness(self, sample: TransportSample) -> None:
         self._process_peer_liveliness(sample)
-
 
     def _settle_peer_liveliness(
         self, sample: TransportSample
@@ -753,7 +703,6 @@ class RuntimeDirectory:
             self._lively_peers.add(peer)
             return peer, self._pending_announces.pop(peer, None)
 
-
     @staticmethod
     def _host_peer_from_liveliness(sample: TransportSample) -> str | None:
         prefix = f"{KeySpace().prefix}/liveliness/actor/"
@@ -761,7 +710,6 @@ class RuntimeDirectory:
             return None
         peer = KeySpace().decode_identity(sample.key[len(prefix) :])
         return peer if RuntimeDirectory._is_host_peer(peer) else None
-
 
     @staticmethod
     def _is_host_peer(peer: str) -> bool:
@@ -805,7 +753,6 @@ class RuntimeDirectory:
                 if mesh is not None:
                     mesh.schedule_sync_from(peer)
 
-
     def _announcement_spaces(self) -> tuple[dict[str, object], ...]:
         spaces: list[dict[str, object]] = []
         for info in sorted(self.facade.spaces(), key=lambda item: item.space_id):
@@ -819,14 +766,8 @@ class RuntimeDirectory:
             )
             if mode is None:
                 continue
-            roles = ["member"]
-            with self._resource_lock:
-                resident = info.space_id in self._replicas
-            if resident:
-                roles.append("resident")
-            spaces.append({"spaceId": info.space_id, "roles": roles, "mode": mode})
+            spaces.append({"spaceId": info.space_id, "roles": ["member"], "mode": mode})
         return tuple(spaces)
-
 
     def _announce_all(self) -> None:
         with self._resource_lock:
@@ -836,12 +777,15 @@ class RuntimeDirectory:
         if mesh is None:
             return
         self._announce_event("announce.broadcast", node=self.node_id)
-        mesh.announce()
-
+        try:
+            mesh.announce()
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger("warn", "orgfs.announce.failed", node=self.node_id,
+                            detail=type(exc).__name__)
 
     def _on_announce(self, sample: TransportSample) -> None:
         self._process_announce(sample)
-
 
     def _process_announce(self, sample: TransportSample) -> None:
         try:
@@ -850,15 +794,7 @@ class RuntimeDirectory:
             if not sample.key.startswith(prefix):
                 return
             key_node = sample.key[len(prefix) :]
-            if (
-                not isinstance(value, dict)
-                or value.get("schemaVersion") != 1
-                or value.get("type") != "orgfs-announce"
-                or value.get("node") != key_node
-                or not key_node
-                or "/" in key_node
-                or not isinstance(value.get("spaces"), list)
-            ):
+            if not self._announce_shape_ok(value, key_node):
                 return
             with self._pending_announces_lock:
                 observed_live = key_node in self._lively_peers
@@ -873,7 +809,6 @@ class RuntimeDirectory:
             self._apply_announce(key_node, value)
         except Exception:
             return
-
 
     def _buffer_announce(
         self,
@@ -967,7 +902,6 @@ class RuntimeDirectory:
         elif self.logger is not None:
             self.logger("warn", "orgfs.announce.buffer-dropped", **fields)
         return fields
-
 
     def _apply_announce(self, node: str, value: dict[str, Any]) -> frozenset[str]:
         """Record ``node``'s holdings; return the spaces it newly holds."""

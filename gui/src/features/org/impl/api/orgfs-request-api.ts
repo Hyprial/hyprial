@@ -7,16 +7,22 @@
  *   NodeInfo 中提供的字段返回空/未知，不按文件名或本地时钟猜。
  * - 写动作收到响应后校验失败抛 `OrgResultShapeError`（dispatch unknown），
  *   调用方不得把它当成普通失败或自动重试。
- * - 彻底清除是两步：先按 trash 节点的当前版本生成 purge plan，再执行 plan；
- *   未本地执行时返回 pending，界面显示“已提交”，不显示“已清除”。
+ * - 2026-11-25（orgfs-minimal D4a）：内容清除（orgfs.purge_plan/purge）退场，适配层不再提供
+ *   purgePlan/purge。
+ * - 2026-11-25（orgfs-minimal G）：daemon 的 `orgfs.remove` 已有可选 `permanent`（永久删除）。
+ *   GUI 没有永久删除的设计，适配层的 `remove` 只做移入回收站，不发送 `permanent`。
+ * - 2026-11-25（orgfs-minimal G）：`orgfs.restore` 不再有 `version`，只传节点；`recursive` 用
+ *   daemon 默认值（true），文件夹恢复由 daemon 只带回与它同批删除的后代，GUI 不自己挑子项。
+ * - 2026-11-25（orgfs-minimal G）：`listTrash` 去掉无人使用的 `limit`（只为已删除的旧目录恢复
+ *   放大读取上限而存在），回收站列表用 daemon 默认上限。
+ * - `orgfs.status` 结果（`space_id, synced, holders_online, content_pending,
+ *   rejected_updates`）原样透传，只校验 `space_id`；界面目前不显示这些字段。
  * - 文件树始终请求 `orgfs.ls recursive:true`（#2495 起 daemon 支持），一次拿到
  *   全部可见后代；仍按 path 缩进渲染。
  */
 import type { OrgfsRequestClient } from './backend';
 import type {
   OrgfsLsResult,
-  OrgfsPurgePlanParams,
-  OrgfsPurgeResult,
   OrgfsRestoreResult,
   OrgfsSpacesResult,
   OrgfsStatResult,
@@ -28,14 +34,6 @@ import { OrgResultShapeError } from './org-request-api';
 
 type OrgfsNode = NonNullable<OrgfsLsResult['nodes']>[number];
 type OrgfsSpace = NonNullable<OrgfsSpacesResult['spaces']>[number];
-export type OrgfsPurgeTarget = OrgfsPurgePlanParams['targets'][number];
-export interface OrgfsHistoryEntry {
-  readonly version: string;
-  readonly author: string;
-  readonly at: string;
-  readonly node: OrgfsNode;
-}
-
 export type OrgfsNodeView = OrgfsNode;
 export type OrgfsSpaceView = OrgfsSpace;
 
@@ -46,24 +44,13 @@ export interface OrgfsMemberView {
   readonly addedAt: string;
 }
 
-export interface OrgfsPurgeOutcome {
-  readonly executed: boolean;
-  readonly pending: readonly string[];
-}
-
 export interface OrgfsRequestApi {
   listSpaces(): Promise<readonly OrgfsSpace[]>;
   listNodes(spaceId: string, path?: string): Promise<readonly OrgfsNode[]>;
-  listTrash(spaceId: string, limit?: number): Promise<readonly OrgfsNode[]>;
+  listTrash(spaceId: string): Promise<readonly OrgfsNode[]>;
   members(spaceId: string): Promise<readonly OrgfsMemberView[]>;
   status(spaceId: string): Promise<OrgfsStatusResult>;
   read(spaceId: string, path: string): Promise<{ readonly text: string | null; readonly version: string }>;
-  history(spaceId: string, path: string): Promise<readonly OrgfsHistoryEntry[]>;
-  readAt(
-    spaceId: string,
-    node: string,
-    version: string,
-  ): Promise<{ readonly contentB64: string | null }>;
   stat(spaceId: string, node: string): Promise<OrgfsNode>;
   write(
     spaceId: string,
@@ -75,14 +62,7 @@ export interface OrgfsRequestApi {
   mkdir(spaceId: string, path: string): Promise<OrgfsNode>;
   move(spaceId: string, from: string, to: string): Promise<OrgfsNode>;
   remove(spaceId: string, path: string): Promise<void>;
-  restore(
-    spaceId: string,
-    node: string,
-    version: string,
-    recursive: boolean,
-  ): Promise<OrgfsNode>;
-  purgePlan(spaceId: string, targets: readonly OrgfsPurgeTarget[]): Promise<string>;
-  purge(spaceId: string, planId: string): Promise<OrgfsPurgeOutcome>;
+  restore(spaceId: string, node: string): Promise<OrgfsNode>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -156,13 +136,8 @@ export function createOrgfsRequestApi(client: OrgfsRequestClient): OrgfsRequestA
         }),
       );
     },
-    async listTrash(spaceId, limit) {
-      return checkNodes(
-        await client.orgfs.trash({
-          spaceId,
-          ...(limit === undefined ? {} : { limit }),
-        }),
-      );
+    async listTrash(spaceId) {
+      return checkNodes(await client.orgfs.trash({ spaceId }));
     },
     async members(spaceId) {
       const result = await client.orgfs.members({ spaceId });
@@ -200,34 +175,6 @@ export function createOrgfsRequestApi(client: OrgfsRequestClient): OrgfsRequestA
         version: result.node.version,
       };
     },
-    async history(spaceId, path) {
-      const result = await client.orgfs.history({ spaceId, path });
-      if (!isRecord(result) || !Array.isArray(result.history)) throw bad('history');
-      return result.history.map((entry) => {
-        if (
-          !isRecord(entry) ||
-          typeof entry.author !== 'string' ||
-          typeof entry.at !== 'string' ||
-          !isRecord(entry.node) ||
-          typeof entry.node.version !== 'string'
-        ) {
-          throw bad('historyEntry');
-        }
-        return {
-          version: entry.node.version,
-          author: entry.author,
-          at: entry.at,
-          node: checkNode(entry.node),
-        };
-      });
-    },
-    async readAt(spaceId, node, version) {
-      const result = await client.orgfs.readAt({ spaceId, node, version });
-      if (!isRecord(result)) throw bad('readAt');
-      return {
-        contentB64: typeof result.contentB64 === 'string' ? result.contentB64 : null,
-      };
-    },
     async stat(spaceId, node) {
       return checkStat(await client.orgfs.stat({ spaceId, node }));
     },
@@ -254,31 +201,8 @@ export function createOrgfsRequestApi(client: OrgfsRequestClient): OrgfsRequestA
       const result = await client.orgfs.remove({ spaceId, path });
       if (!isRecord(result) || result.ok !== true) throw bad('remove');
     },
-    async restore(spaceId, node, version, recursive) {
-      return checkRestore(
-        await client.orgfs.restore({ spaceId, node, version, recursive }),
-      );
-    },
-    async purgePlan(spaceId, targets) {
-      const result = await client.orgfs.purgePlan({ spaceId, targets: [...targets] });
-      if (!isRecord(result) || typeof result.plan_id !== 'string') {
-        throw bad('purgePlan');
-      }
-      return result.plan_id;
-    },
-    async purge(spaceId, planId): Promise<OrgfsPurgeOutcome> {
-      const result: OrgfsPurgeResult = await client.orgfs.purge({ spaceId, planId });
-      if (
-        !isRecord(result) ||
-        typeof result.executed_locally !== 'boolean' ||
-        !Array.isArray(result.pending)
-      ) {
-        throw bad('purge');
-      }
-      return {
-        executed: result.executed_locally,
-        pending: [...result.pending],
-      };
+    async restore(spaceId, node) {
+      return checkRestore(await client.orgfs.restore({ spaceId, node }));
     },
   };
 }

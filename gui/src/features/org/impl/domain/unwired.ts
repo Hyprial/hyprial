@@ -62,7 +62,6 @@ export const ORG_ACTION_SUBJECTS: Readonly<Record<OrgGatewayMethod, string>> = {
   createEntry: '新建',
   moveEntry: '移动',
   deleteEntry: '删除',
-  loadHistory: '历史',
   restoreEntry: '恢复',
   retryMachine: '立即重试',
   decideMigration: '确认同意',
@@ -102,7 +101,6 @@ export function createUnwiredGateway(): OrgGateway {
     createEntry: unavailable,
     moveEntry: unavailable,
     deleteEntry: unavailable,
-    loadHistory: unavailable,
     restoreEntry: unavailable,
     retryMachine: unavailable,
   };

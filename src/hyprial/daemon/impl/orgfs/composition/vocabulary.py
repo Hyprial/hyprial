@@ -1,21 +1,38 @@
-"""Daemon-owned composition for the P1 orgfs store, mesh, and local facade."""
+# Decision record (phase D, package S, 2026-11-25):
+# - The journal store registry is deleted with ``storage/store``; the state
+#   runtime's registry is ``composition/state/stores.py``.
+# - The announce and directory anti-entropy constants moved here from the
+#   deleted journal ``network/protocol.py``; ``composition/directory.py``
+#   cannot grow (1000-line gate).  The daemon's maintenance scheduler drives
+#   directory anti-entropy at the registered interval (OrgFS owns no polling
+#   loop); each node spreads its deadline by up to ±20% so members that
+#   started together do not pull in lockstep.
+# - Package F8b: the lifecycle authority's ``running`` maps an operation kind
+#   and space (open-mesh or join) to the command executing it, and
+#   ``aliases`` the commands that wait for that command's outcome.
+"""Shared vocabulary of the OrgFS runtime composition."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from threading import Lock
 import threading
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Callable, Final, Protocol
 
 if TYPE_CHECKING:
+    from hyprial.daemon.impl.orgfs.api import Registration
     from hyprial.daemon.impl.composition.actors import ActorHostRegistry
-    from hyprial.daemon.impl.orgfs.runtime import OrgFsRuntime
     from hyprial.kernel import ActorHost, EffectLane
 
 from hyprial.kernel import ActorCell
 from hyprial.daemon.impl.transport import TransportSample
 
-from hyprial.daemon.impl.orgfs.storage.store  import LocalSpaceStore
+
+class _SpaceMetaWatcher(Protocol):
+    """Package-internal: observe committed changes to a space's meta doc."""
+
+    def watch_meta(
+        self, space_id: str, callback: Callable[[], None]
+    ) -> Registration: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +62,6 @@ class _JoinSpace:
 
 
 @dataclass(frozen=True, slots=True)
-class _ServeSpace:
-    space_id: str
-    backend: str
-
-
-@dataclass(frozen=True, slots=True)
 class _CheckoutSpace:
     space_id: str
     enabled: bool
@@ -74,7 +85,7 @@ class _MeshCreation:
     error: BaseException | None = None
 
 
-_DirectoryCallOperation = _JoinSpace | _ServeSpace | _CheckoutSpace | _OpenSpaceMesh
+_DirectoryCallOperation = _JoinSpace | _CheckoutSpace | _OpenSpaceMesh
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,62 +143,16 @@ class _LifecycleAuthority:
     commands: dict[str, _LifecycleCommand] = field(default_factory=dict)
     submitted: set[str] = field(default_factory=set)
     waiters: dict[str, _LifecycleWaiter] = field(default_factory=dict)
-    mesh_opening: dict[str, str] = field(default_factory=dict)
-    mesh_aliases: dict[str, list[str]] = field(default_factory=dict)
+    running: dict[tuple[str, str], str] = field(default_factory=dict)
+    aliases: dict[str, list[str]] = field(default_factory=dict)
     deferred: list[_LifecycleCommand] = field(default_factory=list)
 
 ORGFS_CONTENT_WAIT_S: Final[float] = 10.0
 
-
-class _StoreRegistry(dict[str, LocalSpaceStore]):
-    def __init__(self, runtime: "OrgFsRuntime") -> None:
-        super().__init__()
-        self.runtime = runtime
-        self._entries_lock = Lock()
-        self._space_locks: dict[str, Lock] = {}
-
-    def _space_lock(self, key: str) -> Lock:
-        with self._entries_lock:
-            return self._space_locks.setdefault(key, Lock())
-
-    def get(self, key: str, default: Any = None) -> LocalSpaceStore:
-        lock = self._space_lock(key)
-        with lock:
-            with self._entries_lock:
-                existing = dict.get(self, key)
-            if existing is not None:
-                return existing
-            created = LocalSpaceStore(
-                self.runtime.state_dir,
-                key,
-                node_id=self.runtime.node_id,
-                blob_store=self.runtime.blobs,
-            )
-            with self._entries_lock:
-                existing = dict.get(self, key)
-                if existing is None:
-                    dict.__setitem__(self, key, created)
-                    return created
-            created.close()
-            return existing
-
-    def snapshot_ids(self) -> tuple[str, ...]:
-        with self._entries_lock:
-            return tuple(self.keys())
-
-    def snapshot(self) -> tuple[LocalSpaceStore, ...]:
-        with self._entries_lock:
-            return tuple(self.values())
-
-    def detach(self, key: str) -> LocalSpaceStore | None:
-        """Remove one store registration without opening a missing store."""
-
-        with self._entries_lock:
-            return dict.pop(self, key, None)
-
-    def clear(self) -> None:
-        with self._entries_lock:
-            super().clear()
+ORGFS_ANNOUNCE_BUFFER_LIMIT: Final[int] = 256
+ORGFS_ANNOUNCE_SPACES_PER_ENTRY_LIMIT: Final[int] = 256
+ORGFS_DIRECTORY_SYNC_INTERVAL_SECONDS: Final[float] = 60.0
+ORGFS_DIRECTORY_SYNC_JITTER_RATIO: Final[float] = 0.2
 
 
 #: Backoff between await_content provisioning attempts for one blob.

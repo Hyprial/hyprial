@@ -61,11 +61,12 @@ from hyprial.daemon.impl.conversations.record.contracts import (
     parse_segment,
 )
 from hyprial.daemon.impl.orgfs.api import OrgFsError
+from hyprial.kernel import ORGFS_CONTENT_PENDING
 
 SWEEP_S = 30.0
 FULL_CACHE_SEGMENTS = 32
 INDEX_TIMEOUT_S = 1.0
-_ABSENT_CODES = frozenset({"unknown-doc", "content_pending", "ORGFS_CONTENT_PENDING"})
+_ABSENT_CODES = frozenset({"unknown-doc", ORGFS_CONTENT_PENDING})
 _SEGMENT_SUFFIX = ".jsonl"
 _WRITER_PREFIX = "rec-"
 

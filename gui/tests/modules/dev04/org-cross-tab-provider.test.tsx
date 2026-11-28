@@ -22,7 +22,6 @@ const DETAIL: OrgDetail = {
   spaces: [],
   files: {},
   trash: {},
-  history: {},
   config: null,
   routes: null,
   stats: null,

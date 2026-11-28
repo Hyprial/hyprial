@@ -546,21 +546,6 @@ export function createFixtureGateway(
       if (!entry || entry.kind !== 'file') return { kind: 'failed', message: '文件已不存在，请刷新' };
       const record = (next: OrgFileEntry) => {
         updateFiles(orgId, spaceId, (files) => files.map((item) => (item.path === path ? next : item)));
-        updateDetail(orgId, (detail) => ({
-          ...detail,
-          history: {
-            ...detail.history,
-            [key]: [
-              {
-                version: next.version,
-                modifiedBy: next.modifiedBy,
-                modifiedAt: next.modifiedAt,
-                content: next.content ?? '',
-              },
-              ...(detail.history[key] ?? []),
-            ],
-          },
-        }));
       };
       if (conflictOnce.has(key)) {
         // 保存前对方刚好改过同一文件：后端返回对方版本，由用户选择。
@@ -665,12 +650,6 @@ export function createFixtureGateway(
       return { kind: 'ok', value: undefined };
     },
 
-    async loadHistory(orgId, spaceId, path) {
-      await wait();
-      const versions = snapshot().details[orgId]?.history[`${spaceId}:${path}`] ?? [];
-      return { kind: 'ok', value: versions };
-    },
-
     async restoreEntry(orgId, spaceId, trashId) {
       await wait();
       const detail = snapshot().details[orgId];
@@ -679,16 +658,15 @@ export function createFixtureGateway(
       if (detail?.files[spaceId]?.some((entry) => entry.path === item.path)) {
         return { kind: 'failed', message: '原位置已有同名文件，先移动或改名后再恢复。' };
       }
+      const base = {
+        path: item.path,
+        name: item.path.split('/').at(-1) ?? item.path,
+        modifiedBy: item.deletedBy,
+        modifiedAt: item.deletedAt,
+        version: 1,
+      };
       const restored = trashed.get(trashId) ?? [
-        {
-          path: item.path,
-          name: item.path.split('/').at(-1) ?? item.path,
-          kind: 'file' as const,
-          modifiedBy: item.deletedBy,
-          modifiedAt: item.deletedAt,
-          version: 1,
-          content: '',
-        },
+        item.kind === 'folder' ? { ...base, kind: 'folder' as const } : { ...base, kind: 'file' as const, content: '' },
       ];
       updateFiles(orgId, spaceId, (current) => [...current, ...restored]);
       updateDetail(orgId, (current) => ({

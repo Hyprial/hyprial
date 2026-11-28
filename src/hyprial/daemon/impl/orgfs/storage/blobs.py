@@ -1,3 +1,18 @@
+# Decision record
+# - 2026-11-25 (OrgFS minimal phase D P0, C3 report §4-8): ``unpin`` releases
+#   one ``(space, digest, reason)`` reference and leaves the space's other
+#   reasons alone; ``release`` keeps dropping every reason the space holds.
+#   Expiring a temporary sync blob needs the former, because the same digest
+#   can also be held by the space as written or fetched content.
+# - 2026-11-25 (phase D package S, plan §1.5/§1.6, Q4): content purge is gone,
+#   so the per-space purge projections, the purge checker and ``BlobPurged``
+#   are deleted; a read never answers ``purged`` any more.
+# - 2026-11-25 (package F6, real-node finding R3-1): an ``orgfs-blob``
+#   request names its requester as ``{"node", "author"}``, the same
+#   self-reported source as the protocol 3 sync request, so a supplier can
+#   apply the pull rule (``requester_allowed`` / ``requester_removed``) before
+#   serving a chunk.  Protocol 3 is unreleased: the field is required and the
+#   request without it is gone.
 """Content-addressed storage and wire helpers for the orgfs blob plane.
 
 The blob plane deliberately has no transport dependency.  ``BlobStore`` owns
@@ -9,7 +24,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 import hashlib
 import json
 import os
@@ -49,16 +64,6 @@ class BlobMissing(FileNotFoundError, BlobError):
 
     def __init__(self, digest: str) -> None:
         BlobError.__init__(self, f"unknown blob: {digest}", details={"digest": digest})
-        self.digest = digest
-
-
-class BlobPurged(BlobError):
-    """The requested digest is on the purge-list source."""
-
-    code = "purged"
-
-    def __init__(self, digest: str) -> None:
-        super().__init__(f"blob is purged: {digest}", details={"digest": digest})
         self.digest = digest
 
 
@@ -124,6 +129,13 @@ def _request_values(
         raise ValueError("invalid orgfs-blob request")
     if not isinstance(value.get("spaceId"), str) or not value["spaceId"]:
         raise ValueError("orgfs-blob request requires spaceId")
+    requester = value.get("requester")
+    if (
+        not isinstance(requester, dict)
+        or set(requester) != {"node", "author"}
+        or not all(isinstance(item, str) and item for item in requester.values())
+    ):
+        raise ValueError("orgfs-blob request requires requester.node and requester.author")
     _require_digest(value.get("digest"))
     offset = value.get("offset", 0)
     length = value.get("length", ORGFS_BLOB_CHUNK_BYTES)
@@ -141,6 +153,9 @@ def encode_request(
     digest: str,
     offset: int = 0,
     length: int | None = None,
+    *,
+    requester_node: str,
+    requester_author: str,
 ) -> bytes:
     """Encode an ``orgfs-blob`` request as canonical UTF-8 JSON bytes."""
 
@@ -152,6 +167,7 @@ def encode_request(
         "type": "orgfs-blob",
         "spaceId": space_id,
         "digest": digest,
+        "requester": {"node": requester_node, "author": requester_author},
     }
     if offset != 0:
         request["offset"] = offset
@@ -317,12 +333,7 @@ def encode_error(
 class BlobStore:
     """File-backed content-addressed blob store with a space ref ledger."""
 
-    def __init__(
-        self,
-        state_root: Path | str | None = None,
-        *,
-        purge_checker: Callable[[str, str], bool] | None = None,
-    ) -> None:
+    def __init__(self, state_root: Path | str | None = None) -> None:
         root = (
             Path(state_root).expanduser().resolve()
             if state_root is not None
@@ -331,9 +342,6 @@ class BlobStore:
         self.state_root = root
         self.blob_root = root / "orgfs" / "blobs"
         self.refs_path = root / "orgfs" / "blob-refs.sqlite3"
-        self._purge_checker = purge_checker
-        self._space_purge_projections: dict[str, frozenset[str]] = {}
-        self._purge_checker_lock = threading.Lock()
         self.blob_root.mkdir(parents=True, exist_ok=True)
         # pysqlite connections are not safe for concurrent execute/close;
         # zenoh callback threads share this store with caller threads.
@@ -369,41 +377,6 @@ class BlobStore:
         digest = _require_digest(digest)
         return self.blob_root / digest[:2] / digest
 
-    def _check_purged(self, space_id: str, digest: str) -> None:
-        with self._purge_checker_lock:
-            projection = self._space_purge_projections.get(space_id, frozenset())
-            global_checker = self._purge_checker
-        if digest in projection or (
-            global_checker is not None and global_checker(space_id, digest)
-        ):
-            raise BlobPurged(digest)
-
-    def register_purge_checker(
-        self, space_id: str, checker: Callable[[str], bool]
-    ) -> None:
-        """Compatibility seam for legacy injected purge projections."""
-
-        with self._purge_checker_lock:
-            self._space_purge_projections[str(space_id)] = frozenset(
-                digest
-                for digest in (path.name for path in self.blob_root.glob("*/*"))
-                if checker(digest)
-            )
-
-    def register_purge_projection(
-        self, space_id: str, digests: Iterable[str]
-    ) -> None:
-        """Publish an immutable per-space purge set without a callback edge."""
-
-        projection = frozenset(_require_digest(digest) for digest in digests)
-        with self._purge_checker_lock:
-            self._space_purge_projections[str(space_id)] = projection
-
-    def unregister_purge_projection(self, space_id: str) -> None:
-        """Forget an in-memory projection after its local space is detached."""
-
-        with self._purge_checker_lock:
-            self._space_purge_projections.pop(str(space_id), None)
 
     def put(self, space_id: str, data: BlobPayload, *, reason: str) -> str:
         """Store bytes once and add one idempotent per-space reference."""
@@ -414,7 +387,6 @@ class BlobStore:
             raise ValueError("reason must be a non-empty string")
         raw = bytes(data)
         digest = hashlib.sha256(raw).hexdigest()
-        self._check_purged(space_id, digest)
         path = self._path(digest)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
@@ -440,7 +412,6 @@ class BlobStore:
 
     def get(self, space_id: str, digest: str) -> bytes:
         digest = _require_digest(digest)
-        self._check_purged(space_id, digest)
         path = self._path(digest)
         try:
             raw = path.read_bytes()
@@ -476,7 +447,6 @@ class BlobStore:
         if not isinstance(space_id, str) or not space_id:
             raise ValueError("space_id must be a non-empty string")
         digest = _require_digest(digest)
-        self._check_purged(space_id, digest)
         if not isinstance(reason, str) or not reason:
             raise ValueError("reason must be a non-empty string")
         if not self._path(digest).is_file():
@@ -532,6 +502,18 @@ class BlobStore:
             self._db.execute(
                 "DELETE FROM blob_refs WHERE spaceId = ? AND sha = ?",
                 (space_id, digest),
+            )
+
+    def unpin(self, space_id: str, digest: str, reason: str) -> None:
+        """Release one reason held by one space; other reasons and spaces stay."""
+
+        digest = _require_digest(digest)
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("reason must be a non-empty string")
+        with self._db_lock, self._db:
+            self._db.execute(
+                "DELETE FROM blob_refs WHERE spaceId = ? AND sha = ? AND pinnedReason = ?",
+                (space_id, digest, reason),
             )
 
     def delete_if_unreferenced(self, digest: str) -> bool:
@@ -595,7 +577,6 @@ __all__ = [
     "BlobError",
     "BlobIntegrityError",
     "BlobMissing",
-    "BlobPurged",
     "BlobRangeError",
     "BlobStore",
     "FileBlobStore",

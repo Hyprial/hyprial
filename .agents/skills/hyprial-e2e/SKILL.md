@@ -293,8 +293,11 @@ should remain registered.
 
 Exercise a normal `org fs write --expect-version` edit and stale-version refusal,
 then re-read and reconcile. Same-name copies must be selectable by node ID and
-handled with ordinary resolve/move/trash operations. Check ordinary OrgFS history
-and retained-version recovery without a special last-valid-task rule. Parser and
+handled with ordinary resolve/move/trash operations. Check trash recovery
+without a special last-valid-task rule: `org fs trash restore SPACE NODE` takes
+no version, restores the node's last state before deletion, and brings back the
+descendants removed in the same batch; overwritten text cannot be recovered.
+OrgFS has no node history (`org fs history` was removed). Parser and
 overview diagnostics are read-only projections; task status, owner fields and
 legacy verification markers must not become approval evidence. Keep PAC's own
 execution/approval/history tests separate. Verify that this simplification does

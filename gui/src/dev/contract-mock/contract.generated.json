@@ -11446,8 +11446,7 @@
             },
             "directoryPending": {
               "group-hyprial-dev": {
-                "contentPending": [],
-                "parkedCommits": null
+                "contentPending": []
               }
             },
             "mappedPeers": [
@@ -11588,7 +11587,7 @@
               "org": "group-hyprial-dev",
               "space": "group-hyprial-dev"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -11947,7 +11946,7 @@
           "error": {
             "code": "checkout-io",
             "data": {},
-            "message": "checkout-io: OrgFsError: unknown-space: unknown-space"
+            "message": "checkout-io: OrgFsError: unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12034,7 +12033,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: space name is required"
+            "message": "invalid-argument: space name is required"
           },
           "kind": "semantic-param-error",
           "name": "blank-name",
@@ -12141,7 +12140,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12151,7 +12150,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12204,7 +12203,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12216,159 +12215,6 @@
           "kind": "invalid-params",
           "name": "schema-invalid",
           "params": {}
-        }
-      ]
-    },
-    "orgfs.history": {
-      "path": "/daemon/request/orgfs.history",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "before": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space"
-          },
-          {
-            "path": "/readme.txt",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        ],
-        "properties": {
-          "before": {
-            "type": "string"
-          },
-          "limit": {
-            "minimum": 1,
-            "type": "integer"
-          },
-          "node": {
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId"
-        ],
-        "type": "object"
-      },
-      "selectors": [
-        "node",
-        "path"
-      ],
-      "echo": {},
-      "mutates": false,
-      "gaps": {},
-      "examples": [
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.history; serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "history": [
-              {
-                "actor": null,
-                "at": "2026-11-03T09:00:00Z",
-                "author": "user:example",
-                "changed": "created",
-                "node": {
-                  "blob_hash": null,
-                  "content_state": "arrived",
-                  "deleted": false,
-                  "doc_id": "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949",
-                  "kind": "doc",
-                  "modified_by": "user:example",
-                  "modified_via": null,
-                  "name": "readme.txt",
-                  "name_conflict": false,
-                  "node_id": "89fd8adf4f8f43f48f475bef6914c61f",
-                  "path": "readme.txt",
-                  "size": 12,
-                  "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
-                  "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                  "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-                }
-              }
-            ]
-          }
-        },
-        {
-          "description": "request_http/app.py:_read_params rejects a non-object before dispatch",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "body must be a JSON object"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": []
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.history; before excludes the only retained creation version",
-          "kind": "empty",
-          "name": "producer-empty",
-          "params": {
-            "before": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "reason": "before excludes the only retained creation version",
-          "result": {
-            "history": []
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/projection.py:FacadeProjection._space; no loaded space matches the supplied ID",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "unknown-space",
-          "params": {
-            "limit": 50,
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space"
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/projection.py:_validate_path; schema-valid input reaches the producer",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "data": {},
-            "message": "invalid-argument: absolute paths are not accepted"
-          },
-          "kind": "semantic-param-error",
-          "name": "absolute-path",
-          "params": {
-            "path": "/readme.txt",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
         }
       ]
     },
@@ -12453,7 +12299,7 @@
             "size": 24,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12463,7 +12309,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12594,7 +12440,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12643,7 +12489,7 @@
       "echo": {},
       "mutates": true,
       "gaps": {
-        "empty": "A local/remote join returns SpaceInfo; no holder is a typed error, not an empty success."
+        "empty": "A local/remote join returns SpaceInfo; an unknown space is a typed error, not an empty success."
       },
       "examples": [
         {
@@ -12663,11 +12509,12 @@
         {
           "description": "The producer handles a nonexistent local space according to its actual lookup path.",
           "error": {
-            "code": "no-holder-online",
+            "code": "unknown-space",
             "data": {
+              "reason": "not-a-uuid",
               "spaceId": "missing-space"
             },
-            "message": "no-holder-online: no-holder-online"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12761,7 +12608,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                "version": "orgfs-version-1"
               }
             ]
           }
@@ -12796,7 +12643,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -12887,7 +12734,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -12963,7 +12810,7 @@
             "size": null,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -12973,7 +12820,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -12987,7 +12834,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: absolute paths are not accepted"
+            "message": "invalid-argument: absolute paths are not accepted"
           },
           "kind": "semantic-param-error",
           "name": "absolute-path",
@@ -13126,7 +12973,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6Mn0"
+            "version": "orgfs-version-2"
           }
         },
         {
@@ -13136,7 +12983,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -13151,7 +12998,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: absolute paths are not accepted"
+            "message": "invalid-argument: absolute paths are not accepted"
           },
           "kind": "semantic-param-error",
           "name": "absolute-path",
@@ -13186,7 +13033,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6Mn0"
+            "version": "orgfs-version-2"
           }
         },
         {
@@ -13198,419 +13045,6 @@
           "kind": "invalid-params",
           "name": "schema-invalid",
           "params": {}
-        }
-      ]
-    },
-    "orgfs.purge": {
-      "path": "/daemon/request/orgfs.purge",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "planId": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "planId": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "spaceId": "missing-space"
-          },
-          {
-            "planId": "missing-plan",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        ],
-        "properties": {
-          "planId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId",
-          "planId"
-        ],
-        "type": "object"
-      },
-      "selectors": [],
-      "echo": {},
-      "mutates": true,
-      "gaps": {
-        "empty": "Executing a valid plan returns a PurgeResult receipt; absent or stale plans are errors."
-      },
-      "examples": [
-        {
-          "description": "The isolated local producer completes the operation with valid preconditions.",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "planId": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "acknowledged": [
-              "node-example"
-            ],
-            "executed_locally": true,
-            "pending": [],
-            "plan_id": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "replacements": []
-          }
-        },
-        {
-          "description": "The producer handles a nonexistent local space according to its actual lookup path.",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "missing-space",
-          "params": {
-            "planId": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "spaceId": "missing-space"
-          }
-        },
-        {
-          "description": "Execution refuses a plan not present in the space's plan inventory.",
-          "error": {
-            "code": "stale-plan",
-            "data": {
-              "planId": "missing-plan"
-            },
-            "message": "stale-plan: stale-plan: stale-plan"
-          },
-          "kind": "domain-error",
-          "name": "missing-plan",
-          "params": {
-            "planId": "missing-plan",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        },
-        {
-          "description": "Required business parameters are absent; validation rejects before dispatch.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "params do not match the method schema"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": {}
-        }
-      ]
-    },
-    "orgfs.purge_plan": {
-      "path": "/daemon/request/orgfs.purge_plan",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "targets": [
-              {
-                "kind": "blob",
-                "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-              }
-            ]
-          },
-          {
-            "spaceId": "missing-space",
-            "targets": [
-              {
-                "kind": "blob",
-                "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-              }
-            ]
-          },
-          {
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "targets": [
-              {
-                "from": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
-                "kind": "doc-range",
-                "node": "payload.bin",
-                "to": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-              }
-            ]
-          }
-        ],
-        "properties": {
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "targets": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "kind": {
-                      "const": "blob"
-                    },
-                    "sha": {
-                      "maxLength": 64,
-                      "minLength": 64,
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "sha"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "from": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "tree-range"
-                    },
-                    "to": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "from",
-                    "to"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "from": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "doc-range"
-                    },
-                    "node": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "to": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "node",
-                    "from",
-                    "to"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "minItems": 1,
-            "type": "array"
-          }
-        },
-        "required": [
-          "spaceId",
-          "targets"
-        ],
-        "type": "object"
-      },
-      "selectors": [],
-      "echo": {},
-      "mutates": true,
-      "gaps": {
-        "empty": "A plan requires a nonempty target list and returns its complete digest-bearing plan."
-      },
-      "examples": [
-        {
-          "description": "The isolated local producer completes the operation with valid preconditions.",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "targets": [
-              {
-                "kind": "blob",
-                "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-              }
-            ]
-          },
-          "result": {
-            "authors_before": {},
-            "blobs": [
-              {
-                "referenced_elsewhere_locally": [],
-                "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-              }
-            ],
-            "docs": [],
-            "expires_at": "2026-11-04T09:00:00Z",
-            "meta_frontier": "AvqhrMmIj78FGOCGnpfjt5UJDQ==",
-            "plan_id": "e3437967395b7d0201428e58736e4616a7b51457a28f4746feb9ff39199eaebe",
-            "snapshots": [],
-            "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "writers_affected": []
-          }
-        },
-        {
-          "description": "The producer handles a nonexistent local space according to its actual lookup path.",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "missing-space",
-          "params": {
-            "spaceId": "missing-space",
-            "targets": [
-              {
-                "kind": "blob",
-                "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-              }
-            ]
-          }
-        },
-        {
-          "description": "A doc-range purge cannot target a binary blob node.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "data": {},
-            "message": "invalid-argument: invalid-argument: target is not a document"
-          },
-          "kind": "semantic-param-error",
-          "name": "not-document",
-          "params": {
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "targets": [
-              {
-                "from": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
-                "kind": "doc-range",
-                "node": "payload.bin",
-                "to": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-              }
-            ]
-          }
-        },
-        {
-          "description": "Required business parameters are absent; validation rejects before dispatch.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "params do not match the method schema"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": {}
-        }
-      ]
-    },
-    "orgfs.purge_status": {
-      "path": "/daemon/request/orgfs.purge_status",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "planId": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "planId": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
-            "spaceId": "missing-space"
-          },
-          {
-            "planId": "missing-plan",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        ],
-        "properties": {
-          "planId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId",
-          "planId"
-        ],
-        "type": "object"
-      },
-      "selectors": [],
-      "echo": {},
-      "mutates": false,
-      "gaps": {
-        "empty": "purge_status returns a plan receipt or stale-plan; absent plans are errors"
-      },
-      "examples": [
-        {
-          "description": "producer: daemon/impl/orgfs/composition/checkout.py:RuntimeCheckout.purge_status -> FacadePurge.purge_status (created plan, not yet executed); serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "planId": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "acknowledged": [],
-            "pending": [
-              "node-example"
-            ],
-            "plan_id": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878"
-          }
-        },
-        {
-          "description": "request_http/app.py:_read_params rejects a non-object before dispatch",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "body must be a JSON object"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": []
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/projection.py:FacadeProjection._space; no loaded space matches the supplied ID",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "unknown-space",
-          "params": {
-            "planId": "b9d31a5e951e7342d974a2491e41fe4e04624c0a685364d94412e43c4b31f878",
-            "spaceId": "missing-space"
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/purge.py:FacadePurge.purge_status; schema-valid input reaches the producer",
-          "error": {
-            "code": "stale-plan",
-            "data": {
-              "planId": "missing-plan"
-            },
-            "message": "stale-plan: stale-plan"
-          },
-          "kind": "semantic-param-error",
-          "name": "stale-plan",
-          "params": {
-            "planId": "missing-plan",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
         }
       ]
     },
@@ -13694,10 +13128,10 @@
               "size": 12,
               "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
               "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-              "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+              "version": "orgfs-version-1"
             },
             "text": "hello world!",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13736,10 +13170,10 @@
               "size": 0,
               "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
               "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-              "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+              "version": "orgfs-version-1"
             },
             "text": "",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -13749,7 +13183,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -13775,131 +13209,6 @@
         }
       ]
     },
-    "orgfs.read_at": {
-      "path": "/daemon/request/orgfs.read_at",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "unknown-version"
-          }
-        ],
-        "properties": {
-          "node": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "version": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId",
-          "node",
-          "version"
-        ],
-        "type": "object"
-      },
-      "selectors": [],
-      "echo": {},
-      "mutates": false,
-      "gaps": {},
-      "examples": [
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.read_at; serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          "result": {
-            "contentB64": "aGVsbG8gd29ybGQh"
-          }
-        },
-        {
-          "description": "request_http/app.py:_read_params rejects a non-object before dispatch",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "body must be a JSON object"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": []
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.read_at; a saved zero-byte document snapshot has empty base64 content",
-          "kind": "empty",
-          "name": "producer-empty",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          "reason": "a saved zero-byte document snapshot has empty base64 content",
-          "result": {
-            "contentB64": ""
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/projection.py:FacadeProjection._space; no loaded space matches the supplied ID",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "unknown-space",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.read_at/stat_at; schema-valid input reaches the producer",
-          "error": {
-            "code": "unknown-doc",
-            "data": {
-              "version": "unknown-version"
-            },
-            "message": "unknown-doc: unknown-doc"
-          },
-          "kind": "semantic-param-error",
-          "name": "unknown-version",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "unknown-version"
-          }
-        }
-      ]
-    },
     "orgfs.remove": {
       "path": "/daemon/request/orgfs.remove",
       "paramsSchema": {
@@ -13907,6 +13216,11 @@
         "examples": [
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
+          },
+          {
+            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "permanent": true,
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           {
@@ -13924,6 +13238,9 @@
           },
           "path": {
             "type": "string"
+          },
+          "permanent": {
+            "type": "boolean"
           },
           "spaceId": {
             "minLength": 1,
@@ -13955,13 +13272,26 @@
           }
         },
         {
+          "description": "A permanent removal deletes the node instead of moving it to the trash.",
+          "kind": "success",
+          "name": "permanent",
+          "params": {
+            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
+            "permanent": true,
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
+          },
+          "result": {
+            "ok": true
+          }
+        },
+        {
           "description": "The producer handles a nonexistent local space according to its actual lookup path.",
           "error": {
             "code": "unknown-space",
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -13975,7 +13305,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: root cannot be removed"
+            "message": "invalid-argument: root cannot be removed"
           },
           "kind": "semantic-param-error",
           "name": "root-refused",
@@ -14056,7 +13386,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -14070,7 +13400,7 @@
           "error": {
             "code": "INVALID_ARGUMENT",
             "data": {},
-            "message": "invalid-argument: invalid-argument: invalid-argument"
+            "message": "invalid-argument"
           },
           "kind": "semantic-param-error",
           "name": "owner-refused",
@@ -14159,7 +13489,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                "version": "orgfs-version-1"
               }
             ]
           }
@@ -14181,7 +13511,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14213,23 +13543,15 @@
         "examples": [
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "missing-space"
           },
           {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "missing-version"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           }
         ],
         "properties": {
@@ -14243,22 +13565,15 @@
           "spaceId": {
             "minLength": 1,
             "type": "string"
-          },
-          "version": {
-            "minLength": 1,
-            "type": "string"
           }
         },
         "required": [
           "spaceId",
-          "node",
-          "version"
+          "node"
         ],
         "type": "object"
       },
-      "selectors": [
-        "version"
-      ],
+      "selectors": [],
       "echo": {},
       "mutates": true,
       "gaps": {},
@@ -14269,8 +13584,7 @@
           "name": "producer-success",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "result": {
             "blob_hash": null,
@@ -14287,7 +13601,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6M30"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -14297,31 +13611,13 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          }
-        },
-        {
-          "description": "The selected node has no snapshot at this version.",
-          "error": {
-            "code": "unknown-doc",
-            "data": {
-              "version": "missing-version"
-            },
-            "message": "unknown-doc: unknown-doc: unknown-doc"
-          },
-          "kind": "domain-error",
-          "name": "missing-version",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "missing-version"
+            "spaceId": "missing-space"
           }
         },
         {
@@ -14330,8 +13626,7 @@
           "name": "empty-document",
           "params": {
             "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "reason": "A zero-byte text document remains legal when moved or restored; NodeInfo reports size=0.",
           "result": {
@@ -14349,132 +13644,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjMsInRyZWVGcm9udGllciI6M30"
-          }
-        },
-        {
-          "description": "Required business parameters are absent; validation rejects before dispatch.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "params do not match the method schema"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": {}
-        }
-      ]
-    },
-    "orgfs.serve": {
-      "path": "/daemon/request/orgfs.serve",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "backend": "memory",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "backend": "memory",
-            "spaceId": "missing-space"
-          },
-          {
-            "backend": "fs",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "backend": "fs",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        ],
-        "properties": {
-          "backend": {
-            "enum": [
-              "fs",
-              "memory"
-            ],
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId"
-        ],
-        "type": "object"
-      },
-      "selectors": [
-        "backend",
-        "spaceId"
-      ],
-      "echo": {},
-      "mutates": true,
-      "gaps": {
-        "empty": "Serving returns a backend receipt, including an empty pinnedBlobs list when appropriate."
-      },
-      "examples": [
-        {
-          "description": "The isolated local producer completes the operation with valid preconditions.",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "backend": "memory",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "backend": "memory",
-            "durable": false,
-            "pinnedBlobs": [],
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        },
-        {
-          "description": "The producer handles a nonexistent local space according to its actual lookup path.",
-          "error": {
-            "code": "no-holder-online",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "no-holder-online: no-holder-online"
-          },
-          "kind": "domain-error",
-          "name": "missing-space",
-          "params": {
-            "backend": "memory",
-            "spaceId": "missing-space"
-          }
-        },
-        {
-          "description": "A replica already served in memory cannot be silently switched to fs.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "data": {
-              "backend": "memory",
-              "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-            },
-            "message": "invalid-argument: space is already served by another backend"
-          },
-          "kind": "semantic-param-error",
-          "name": "backend-conflict",
-          "params": {
-            "backend": "fs",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        },
-        {
-          "description": "A filesystem replica reports durable=true.",
-          "kind": "success",
-          "name": "filesystem-backend",
-          "params": {
-            "backend": "fs",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "backend": "fs",
-            "durable": true,
-            "pinnedBlobs": [],
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -14560,7 +13730,7 @@
               "reason": "invalid-space-id",
               "spaceId": "../escape"
             },
-            "message": "unsafe-space-path: unsafe-space-path"
+            "message": "unsafe-space-path"
           },
           "kind": "domain-error",
           "name": "unsafe-space",
@@ -14579,7 +13749,7 @@
               "reason": "other-members",
               "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
             },
-            "message": "space-purge-refused: space-purge-refused"
+            "message": "space-purge-refused"
           },
           "kind": "domain-error",
           "name": "other-members",
@@ -14723,7 +13893,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -14743,7 +13913,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -14764,130 +13934,6 @@
           "params": {
             "path": "/readme.txt",
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        }
-      ]
-    },
-    "orgfs.stat_at": {
-      "path": "/daemon/request/orgfs.stat_at",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "unknown-version"
-          }
-        ],
-        "properties": {
-          "node": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "version": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId",
-          "node",
-          "version"
-        ],
-        "type": "object"
-      },
-      "selectors": [
-        "version"
-      ],
-      "echo": {},
-      "mutates": false,
-      "gaps": {
-        "empty": "stat_at returns one historical NodeInfo or unknown-doc, never an absent object"
-      },
-      "examples": [
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.stat_at/_snapshot_info; serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          },
-          "result": {
-            "blob_hash": null,
-            "contentState": "arrived",
-            "deleted": false,
-            "doc_id": "doc-b6fa1d65-6c38-4232-a3ab-15cdc45f8949",
-            "kind": "doc",
-            "modified_by": "user:example",
-            "modified_via": null,
-            "name": "readme.txt",
-            "name_conflict": false,
-            "node_id": "89fd8adf4f8f43f48f475bef6914c61f",
-            "path": "readme.txt",
-            "size": 12,
-            "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          }
-        },
-        {
-          "description": "request_http/app.py:_read_params rejects a non-object before dispatch",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "body must be a JSON object"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": []
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/projection.py:FacadeProjection._space; no loaded space matches the supplied ID",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "unknown-space",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "missing-space",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
-          }
-        },
-        {
-          "description": "producer: daemon/impl/orgfs/document/operations/tree.py:FacadeTreeHistory.read_at/stat_at; schema-valid input reaches the producer",
-          "error": {
-            "code": "unknown-doc",
-            "data": {
-              "version": "unknown-version"
-            },
-            "message": "unknown-doc: unknown-doc"
-          },
-          "kind": "semantic-param-error",
-          "name": "unknown-version",
-          "params": {
-            "node": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "version": "unknown-version"
           }
         }
       ]
@@ -14923,18 +13969,18 @@
       },
       "examples": [
         {
-          "description": "producer: daemon/impl/orgfs/composition/content.py:RuntimeContent.status -> FacadeContent.status (fresh durable space plus one write, no remote holders); serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
+          "description": "producer: daemon/impl/orgfs/composition/state/content.py:StateContent.status -> StateSpaces.status (fresh durable space plus one write, no remote holders); serialized by daemon/impl/application/messaging/orgfs_bridge.py:_handle_orgfs/_orgfs_json",
           "kind": "success",
           "name": "producer-success",
           "params": {
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "result": {
-            "durable_holders_seen": [],
+            "content_pending": 0,
             "holders_online": [],
-            "parked_commits": [],
+            "rejected_updates": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
-            "unconfirmed_commits": 5
+            "synced": null
           }
         },
         {
@@ -14954,7 +14000,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -15027,7 +14073,7 @@
                 "size": 12,
                 "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                 "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                "version": "eyJjb250ZW50RnJvbnRpZXIiOjIsInRyZWVGcm9udGllciI6Mn0"
+                "version": "orgfs-version-2"
               }
             ]
           }
@@ -15062,7 +14108,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -15070,104 +14116,6 @@
             "limit": 100,
             "spaceId": "missing-space"
           }
-        }
-      ]
-    },
-    "orgfs.unban": {
-      "path": "/daemon/request/orgfs.unban",
-      "paramsSchema": {
-        "additionalProperties": false,
-        "examples": [
-          {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "missing-space"
-          },
-          {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        ],
-        "properties": {
-          "sha": {
-            "maxLength": 64,
-            "minLength": 64,
-            "type": "string"
-          },
-          "spaceId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "spaceId",
-          "sha"
-        ],
-        "type": "object"
-      },
-      "selectors": [],
-      "echo": {},
-      "mutates": true,
-      "gaps": {
-        "empty": "A successful unban returns ok=true; a digest without a purge-list entry is refused."
-      },
-      "examples": [
-        {
-          "description": "The isolated local producer completes the operation with valid preconditions.",
-          "kind": "success",
-          "name": "producer-success",
-          "params": {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          },
-          "result": {
-            "ok": true
-          }
-        },
-        {
-          "description": "The producer handles a nonexistent local space according to its actual lookup path.",
-          "error": {
-            "code": "unknown-space",
-            "data": {
-              "spaceId": "missing-space"
-            },
-            "message": "unknown-space: unknown-space: unknown-space"
-          },
-          "kind": "domain-error",
-          "name": "missing-space",
-          "params": {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "missing-space"
-          }
-        },
-        {
-          "description": "Unban refuses a digest without a corresponding purge-list entry.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "data": {
-              "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1"
-            },
-            "message": "invalid-argument: invalid-argument: invalid-argument"
-          },
-          "kind": "semantic-param-error",
-          "name": "not-banned",
-          "params": {
-            "sha": "05b927ed78eb58e00f0d7f7e0200723d1bae15a6250e0ad4276332a0a89e1fa1",
-            "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
-          }
-        },
-        {
-          "description": "Required business parameters are absent; validation rejects before dispatch.",
-          "error": {
-            "code": "INVALID_ARGUMENT",
-            "message": "params do not match the method schema"
-          },
-          "kind": "invalid-params",
-          "name": "schema-invalid",
-          "params": {}
         }
       ]
     },
@@ -15182,7 +14130,7 @@
           },
           {
             "glob": "*",
-            "sinceVersion": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+            "sinceVersion": "orgfs-version-1",
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           {
@@ -15241,7 +14189,7 @@
                   "size": 12,
                   "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
                   "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-                  "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+                  "version": "orgfs-version-1"
                 },
                 "oldPath": null,
                 "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
@@ -15265,7 +14213,7 @@
           "name": "producer-empty",
           "params": {
             "glob": "*",
-            "sinceVersion": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0",
+            "sinceVersion": "orgfs-version-1",
             "spaceId": "b363d762-a06e-496d-94d0-e4695b66e206"
           },
           "reason": "the cursor already includes the sole creation event",
@@ -15280,7 +14228,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "unknown-space",
@@ -15412,7 +14360,7 @@
             "size": 12,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -15422,7 +14370,7 @@
             "data": {
               "spaceId": "missing-space"
             },
-            "message": "unknown-space: unknown-space: unknown-space"
+            "message": "unknown-space"
           },
           "kind": "domain-error",
           "name": "missing-space",
@@ -15472,7 +14420,7 @@
             "size": 0,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {
@@ -15499,7 +14447,7 @@
             "size": 24,
             "space_id": "b363d762-a06e-496d-94d0-e4695b66e206",
             "uri": "orgfs:example:b363d762-a06e-496d-94d0-e4695b66e206:89fd8adf4f8f43f48f475bef6914c61f",
-            "version": "eyJjb250ZW50RnJvbnRpZXIiOjEsInRyZWVGcm9udGllciI6MX0"
+            "version": "orgfs-version-1"
           }
         },
         {

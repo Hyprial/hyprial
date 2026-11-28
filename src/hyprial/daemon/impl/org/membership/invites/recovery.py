@@ -5,6 +5,24 @@
 #   budget over the same legs (``member-announce``, each step kind and the
 #   ``join-orgfs`` waits) and clears it on exit; a resumed attempt starts a
 #   fresh budget because completed checkpoints are not re-executed.
+# - 2026-11-26 (orgfs package F8c, review of F8b item 3): an OrgFS join that
+#   fails with ``unavailable`` / ``join-incomplete`` may leave the space listed
+#   (and a member) without its sync running; only a repeated join finishes it.
+#   The listing would pass ``space_committed`` on resume, so that space is
+#   recorded in the journal (``unfinishedJoins``) and joined again on resume
+#   whatever the listing says; the entry goes once a join of it returns.
+#   A crash inside a join records nothing and keeps resuming without a rejoin.
+# - 2026-11-26 (orgfs package F10, R6-1 and F9 review findings): after both org
+#   spaces are joined in ``join-org`` (or before post-join steps when ``join-org``
+#   is already marked completed on recovery), wait once via
+#   ``await_org_join_bodies`` within the shared ``JoinBudget`` ``join-orgfs``
+#   leg for ``directory/org.json`` and ``policy/role-grants.json``.  Read-only
+#   ``missing_membership_step`` stays non-waiting so ``org.invites.list`` and
+#   accept's short-circuit check never block on pending bodies.
+# - 2026-11-26 (package F10b): the wait is best effort and no longer raises
+#   ``no-holder-online``; a body still pending is left to the read-back
+#   below, which reports it as before.  The journal is written exactly
+#   where the baseline wrote it, so the wait records no ``missingStep``.
 """Resume the existing org bootstrap with read-back checks at durable boundaries.
 
 A space listing is discovery only. Directory and ACL membership, the ACL
@@ -16,7 +34,11 @@ from __future__ import annotations
 
 import json
 
-from hyprial.daemon.impl.org.network.binding import INVITE_SPACE_MODES, resolve_org_acl_space
+from hyprial.daemon.impl.org.network.binding import (
+    INVITE_SPACE_MODES,
+    await_org_join_bodies,
+    resolve_org_acl_space,
+)
 from hyprial.daemon.impl.org.network.policy import ACL_POLICY_DOC
 from hyprial.daemon.impl.org.network.tailnet.budget import JoinBudget
 from hyprial.daemon.impl.orgfs.api import OrgFsError
@@ -66,6 +88,31 @@ def device_committed(service, link) -> bool:
     )
 
 
+def _join_space(service, journal, space: str) -> None:
+    """Join ``space``; one OrgFS left unfinished is joined again on resume."""
+
+    unfinished = list(journal.record.get("unfinishedJoins", ()))
+    try:
+        service._join_with_retry(space)
+    except OrgFsError as error:
+        if (error.code == "unavailable" and error.details.get("reason") == "join-incomplete"
+                and space not in unfinished):
+            journal.record["unfinishedJoins"] = [*unfinished, space]
+            journal.save()
+        raise
+    if space in unfinished:
+        unfinished.remove(space)
+        if unfinished:
+            journal.record["unfinishedJoins"] = unfinished
+        else:
+            journal.record.pop("unfinishedJoins", None)
+        journal.save()
+
+
+def _await_join_bodies(service, parsed) -> None:
+    await_org_join_bodies(service, parsed.space_id, parsed.acl_space_id, org=parsed.org)
+
+
 def run_bootstrap(service, parsed, journal):
     """Use the normal step executor under one shared join budget."""
 
@@ -91,6 +138,8 @@ def _run_bootstrap(service, parsed, journal, budget):
                 budget.remaining("member-announce")
             action()
             journal.complete_step(kind)
+    if "join-org" in completed:
+        _await_join_bodies(service, parsed)
     executed = journal.record["steps"]
     for step in parse_bootstrap_yaml(parsed.workflow_yaml):
         if step.kind in completed:
@@ -103,10 +152,12 @@ def _run_bootstrap(service, parsed, journal, budget):
                 ("acl-applied", parsed.acl_space_id, INVITE_SPACE_MODES["acl"]),
             ):
                 journal.begin(kind)
-                if not space_committed(service, space, required_mode=mode):
-                    service._join_with_retry(space)
+                if (not space_committed(service, space, required_mode=mode)
+                        or space in journal.record.get("unfinishedJoins", ())):
+                    _join_space(service, journal, space)
                 if space_committed(service, space, required_mode=mode):
                     journal.complete_step(kind)
+            _await_join_bodies(service, parsed)
             journal.begin("space-bound")
             missing = missing_membership_step(service, parsed)
             if missing:

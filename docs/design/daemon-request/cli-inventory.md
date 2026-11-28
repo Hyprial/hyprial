@@ -162,17 +162,13 @@ I 不表示迁移已经完成，仍须去掉间接业务调用和旧导入。全
 | `fs space join` | — | I | `orgfs.join` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_join](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L338) |
 | `fs space web` | — | N | — | 拟 orgfs.web；授权 URL/启动所需事实归后端，浏览器打开留 CLI | [fs_web](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L347) |
 | `fs space status` | — | I | `orgfs.status` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_status](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L452) |
-| `fs space serve` | — | I | `orgfs.serve` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_serve](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L461) |
 | `fs space checkout` | — | I | `orgfs.checkout` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_checkout](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L475) |
 | `fs member invite` | — | I | `message.send`, `orgfs.invite`, `orgfs.spaces` | 邀请加消息通知的业务编排归后端；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_invite](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L257) |
 | `fs member remove` | — | I | `orgfs.remove_member` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_remove_member](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L319) |
 | `fs member list` | — | I | `orgfs.members` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_members](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L329) |
 | `fs trash list` | — | I | `orgfs.trash` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_trash](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L426) |
 | `fs trash restore` | — | I | `orgfs.restore` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_restore](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L436) |
-| `fs purge plan` | — | I | `orgfs.purge_plan`, `targets` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_purge_plan](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L493) |
-| `fs purge run` | — | I | `orgfs.purge`, `orgfs.space_purge` | 现有 purge/space_purge 计划与确认按 operationId 约束复核；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_purge](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L522) |
-| `fs purge status` | — | I | `orgfs.purge_status` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_purge_status](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L581) |
-| `fs purge unban` | — | I | `orgfs.unban` | 复用现有方法；领域 helper/身份或业务校验下沉，CLI 仅传参和渲染；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_unban](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L595) |
+| `fs purge run` | — | I | `orgfs.space_purge` | 现有 space_purge 确认按 operationId 约束复核；人类 URL 所需配置由 request 返回，CLI 不读取 home 业务配置 | [fs_purge](../../../src/hyprial/shell/impl/cli/commands/fs/commands.py#L522) |
 
 ## gui
 

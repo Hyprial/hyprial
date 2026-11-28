@@ -10,7 +10,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 from pathlib import Path
-from typing import Any
 import uuid
 
 import pytest
@@ -44,48 +43,10 @@ from tests.daemon.org.cell_actor.test_sub_org import (
     _network_orgs,
     _seed_root_membership,
 )
+from tests.daemon.org.cell_actor.replica_support import link_replicas
 from tests.support.tailnet_membership import FakeMembershipSidecar
 
 ALICE_DEVICE_UID_2 = "d" * 12 + "4" + "d" * 3 + "8" + "d" * 15
-
-
-def _bridge_orgfs_preserving_local(owner_app: _OrgApp, peer_app: _OrgApp) -> None:
-    """Delegate reads for owner-hosted spaces while keeping peer local spaces isolated."""
-    owner_fs = owner_app._require_orgfs_runtime().facade
-    peer_fs = peer_app._require_orgfs_runtime().facade
-    orig_members = peer_fs.members
-    orig_space_meta = peer_fs.space_meta
-    orig_read_text = peer_fs.read_text
-    orig_listdir = peer_fs.listdir
-    orig_document_authors = peer_fs.document_authors
-
-    def bridged_join(sid: str, timeout: float = 0.0) -> Any:
-        src = owner_fs._spaces[sid]
-        peer_fs._spaces[sid] = src
-        return src
-
-    peer_fs.join = bridged_join
-    peer_fs.members = lambda sid: (
-        owner_fs.members(sid) if sid in owner_fs._spaces else orig_members(sid)
-    )
-    peer_fs.space_meta = lambda sid: (
-        owner_fs.space_meta(sid) if sid in owner_fs._spaces else orig_space_meta(sid)
-    )
-    peer_fs.read_text = lambda sid, path: (
-        owner_fs.read_text(sid, path)
-        if sid in owner_fs._spaces
-        else orig_read_text(sid, path)
-    )
-    peer_fs.listdir = lambda sid, path: (
-        owner_fs.listdir(sid, path)
-        if sid in owner_fs._spaces
-        else orig_listdir(sid, path)
-    )
-    peer_fs.document_authors = lambda sid, path: (
-        owner_fs.document_authors(sid, path)
-        if sid in owner_fs._spaces
-        else orig_document_authors(sid, path)
-    )
 
 
 def test_non_owner_member_cannot_create_or_repair_sub_org_or_forge_parent_binding(
@@ -109,7 +70,7 @@ def test_non_owner_member_cannot_create_or_repair_sub_org_or_forge_parent_bindin
         device_uid=BOB_DEVICE_UID,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_orgfs_preserving_local(app_a, app_b)
+    link_replicas(app_a, app_b)
     try:
         root = ipc_org_create(app_a, {"org": "group-root"})
         root_space = root["spaceId"]
@@ -201,7 +162,7 @@ def test_non_authority_second_device_cannot_create_or_repair_sub_org(
         device_uid=ALICE_DEVICE_UID_2,
         sidecar=sidecar.for_device(ALICE_OWNER, "node-a2"),
     )
-    _bridge_orgfs_preserving_local(app_a, app_a2)
+    link_replicas(app_a, app_a2)
     try:
         root = ipc_org_create(app_a, {"org": "group-root"})
         root_space = root["spaceId"]
@@ -396,7 +357,7 @@ def test_depth_two_sub_org_join_validates_oidc_issuer_and_sub_across_all_ancesto
         device_uid=BOB_DEVICE_UID,
         sidecar=sidecar.for_device(BOB_OWNER, "node-b"),
     )
-    _bridge_orgfs_preserving_local(app_a, app_b)
+    link_replicas(app_a, app_b)
     try:
         ipc_org_create(app_a, {"org": "group-root"})
         _seed_root_membership(app_a, "group-root")

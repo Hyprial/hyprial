@@ -73,16 +73,16 @@ def test_orgfs_family_exactly_matches_registered_migrated_and_bridge_methods() -
     from hyprial.daemon.impl.request_catalog.org.orgfs import BATCH3_ORGFS_BINDINGS, BATCH4_ORGFS_BINDINGS
 
     reads = {
-        "orgfs.spaces", "orgfs.resolve", "orgfs.ls", "orgfs.stat", "orgfs.read", "orgfs.read_at",
-        "orgfs.stat_at", "orgfs.history", "orgfs.status", "orgfs.trash", "orgfs.watch",
-        "orgfs.members", "orgfs.purge_status",
+        "orgfs.spaces", "orgfs.resolve", "orgfs.ls", "orgfs.stat", "orgfs.read",
+        "orgfs.status", "orgfs.trash", "orgfs.watch",
+        "orgfs.members",
     }
     writes = {
         "orgfs.create", "orgfs.write", "orgfs.export", "orgfs.import", "orgfs.mkdir", "orgfs.move",
-        "orgfs.remove", "orgfs.restore", "orgfs.purge_plan", "orgfs.purge", "orgfs.space_purge",
-        "orgfs.unban", "orgfs.serve", "orgfs.checkout", "orgfs.invite", "orgfs.remove_member", "orgfs.join",
+        "orgfs.remove", "orgfs.restore", "orgfs.space_purge",
+        "orgfs.checkout", "orgfs.invite", "orgfs.remove_member", "orgfs.join",
     }
-    assert len(reads) == 13 and len(writes) == 17 and not reads & writes
+    assert len(reads) == 9 and len(writes) == 13 and not reads & writes
     assert {spec.name for spec, _handler in BATCH3_ORGFS_BINDINGS} == reads
     assert {spec.name for spec, _handler in BATCH4_ORGFS_BINDINGS} == writes
     expected = reads | writes

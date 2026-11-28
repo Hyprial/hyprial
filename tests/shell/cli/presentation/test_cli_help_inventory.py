@@ -352,13 +352,12 @@ def test_help_inventory_matches_registered_top_level_tree() -> None:
         "create",
         "join",
         "status",
-        "serve",
         "web",
         "checkout",
     }
     assert set(fs.commands["member"].commands) == {"list", "invite", "remove"}
     assert set(fs.commands["trash"].commands) == {"list", "restore"}
-    assert set(fs.commands["purge"].commands) == {"plan", "run", "status", "unban"}
+    assert set(fs.commands["purge"].commands) == {"run"}
     socialware = root.commands["socialware"]
     assert hasattr(socialware, "commands")
     assert set(socialware.commands) == {"install"}

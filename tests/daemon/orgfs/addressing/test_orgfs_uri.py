@@ -1,3 +1,16 @@
+# Decisions (phase D, package D4b, 2026-11-25):
+# - The error-code gate covers the state host's packages (state, membership,
+#   sync, document/coordinator, composition/state): besides ``OrgFsError`` it
+#   reads ``SyncError`` and ``StoreError``, whose codes reach the surface
+#   through the join, blob, commit and startup-refusal relays, and resolves
+#   bare kernel constants and both arms of a conditional.  Non-literal codes
+#   are relays and are pinned site by site in ``_RELAYS``, so a new dynamic
+#   producer is red; each relays a code already produced (and scanned)
+#   elsewhere, or a peer's code over the sync wire.
+# - Upper-case codes are pinned in their own set (``_UPPER_CODES``): the
+#   kernel registry declares them by shape and ``ORGFS_ERROR_CODES`` must stay
+#   a subset of the frozen kebab list (test_legacy_error_codes).
+# - ``orgfs.restore`` takes no ``version`` (design §1.1).
 "orgfs node URIs through the production entries (design §9).\n\n``DaemonApplication._handle_orgfs`` is the seam both the CLI and the MCP\nserver call into, so these tests cover every surface at once (the CLI's own\nforms live in tests/shell/cli/orgfs/test_orgfs_uri_cli.py).  Each test names the\nkill-mutation that must turn it red.\n"
 
 from __future__ import annotations
@@ -197,7 +210,7 @@ def test_uri_is_stable_across_move_trash_and_restore(tmp_path) -> None:
 
         restored = application._handle_orgfs(
             "orgfs.restore",
-            {"spaceId": space_id, "node": uri, "version": moved["version"]},
+            {"spaceId": space_id, "node": uri},
         )
         assert restored["uri"] == uri
         assert (
@@ -216,34 +229,6 @@ def test_uri_is_stable_across_move_trash_and_restore(tmp_path) -> None:
         _close(application)
 
 
-def test_history_and_stat_at_carry_the_uri(tmp_path) -> None:
-    """Kill-mutation 5: a _snapshot_info that stops populating ``uri`` raises
-    TypeError (the field is keyword-only and required) → this test goes red."""
-
-    application = _application(tmp_path)
-    try:
-        space_id, written = _create_doc(application)
-        uri = written["uri"]
-        rewritten = application._handle_orgfs(
-            "orgfs.write", {"spaceId": space_id, "path": uri, "text": "v2"}
-        )
-        assert rewritten["uri"] == uri
-
-        history = application._handle_orgfs(
-            "orgfs.history", {"spaceId": space_id, "node": uri}
-        )
-        assert history["history"]
-        assert {entry["node"]["uri"] for entry in history["history"]} == {uri}
-
-        at = application._handle_orgfs(
-            "orgfs.stat_at",
-            {"spaceId": space_id, "node": uri, "version": written["version"]},
-        )
-        assert at["uri"] == uri
-    finally:
-        _close(application)
-
-
 def test_non_user_space_owner_fails_with_a_typed_error(tmp_path) -> None:
     """Q6=A: a legacy/invalid (non ``user:``) owner never silently mints a
     URI — _node_uri raises the typed invalid-argument error."""
@@ -258,41 +243,116 @@ def test_non_user_space_owner_fails_with_a_typed_error(tmp_path) -> None:
         runtime.close()
 
 
-def test_orgfs_error_code_registry_covers_every_raised_code() -> None:
-    """The §5 registry gate: every OrgFsError(<code>, ...) raised in orgfs,
-    whether a string literal or an ipc_errors constant, and however it is
-    wrapped across lines, must be registered in ORGFS_ERROR_CODES."""
+_SCANNED_ERRORS = ("OrgFsError", "SyncError", "StoreError")
+
+_RELAYS = {
+    ("composition/lifecycle.py", "OrgFsError", "error.code"),
+    ("composition/state/sync.py", "OrgFsError", "code"),
+    ("document/coordinator/commit.py", "OrgFsError", "str(code)"),
+    ("document/coordinator/spaces.py", "OrgFsError", "refused[0]"),
+    ("document/space_state.py", "OrgFsError", "error.code"),
+    ("document/space_state.py", "StoreError", "error.code"),
+    ("sync/blobs.py", "SyncError", "code"),
+    ("sync/pull.py", "SyncError", "reply.code"),
+}
+
+_UPPER_CODES = {"ORGFS_LAYOUT_UNSUPPORTED", "ORGFS_INVALID_SPACE_DIRECTORY"}
+
+_NEW_PACKAGES = ("state", "membership", "sync", "document/coordinator", "composition/state")
+
+
+def _scan_error_codes(src):
+    """Codes, relay sites and producing files of every scanned error call."""
 
     import ast
-    from pathlib import Path
 
     from hyprial.kernel.impl.contracts.daemon import ipc_errors
 
-    src = Path(__file__).resolve().parents[4] / 'src/hyprial/daemon/impl/orgfs'
-    raised: set[str] = set()
+    codes: set[str] = set()
+    relays: set[tuple[str, str, str]] = set()
+    files: set[str] = set()
+
+    def resolve(node) -> list[str] | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "ipc_errors"
+        ):
+            return [getattr(ipc_errors, node.attr)]
+        if isinstance(node, ast.Name) and node.id.isupper() and hasattr(ipc_errors, node.id):
+            return [getattr(ipc_errors, node.id)]
+        if isinstance(node, ast.IfExp):
+            body, orelse = resolve(node.body), resolve(node.orelse)
+            return None if body is None or orelse is None else body + orelse
+        return None
+
     for path in sorted(src.rglob("*.py")):
+        relative = path.relative_to(src).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
-                and node.func.id == "OrgFsError"
+                and node.func.id in _SCANNED_ERRORS
                 and node.args
             ):
                 continue
-            code = node.args[0]
-            if isinstance(code, ast.Constant) and isinstance(code.value, str):
-                raised.add(code.value)
-            elif (
-                isinstance(code, ast.Attribute)
-                and isinstance(code.value, ast.Name)
-                and code.value.id == "ipc_errors"
-            ):
-                raised.add(getattr(ipc_errors, code.attr))
-    assert "cross-space-uri" in raised, "the multi-line cross-space-uri raise must be seen"
-    unregistered = raised - ORGFS_ERROR_CODES
+            found = resolve(node.args[0])
+            if found is None:
+                relays.add((relative, node.func.id, ast.unparse(node.args[0])))
+            else:
+                codes.update(found)
+                files.add(relative)
+    return codes, relays, files
+
+
+def test_orgfs_error_code_registry_covers_every_raised_code() -> None:
+    """The §5 registry gate over the whole package, the D4b packages included.
+
+    Every code given to ``OrgFsError``, ``SyncError`` (relayed by the join and
+    blob paths) or ``StoreError`` (relayed by the commit path and the startup
+    refusal) as a literal, an ``ipc_errors`` attribute, a bare kernel constant
+    or either arm of a conditional must be registered: kebab codes in
+    ``ORGFS_ERROR_CODES``, upper-case codes in ``_UPPER_CODES``.  Any other
+    expression is a relay and must be listed in ``_RELAYS``."""
+
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[4] / "src/hyprial/daemon/impl/orgfs"
+    codes, relays, files = _scan_error_codes(src)
+
+    assert "cross-space-uri" in codes, "the multi-line cross-space-uri raise must be seen"
+    for package in _NEW_PACKAGES:
+        assert any(name.startswith(package + "/") for name in files), package
+    assert relays == _RELAYS
+    upper = {code for code in codes if code.isupper()}
+    assert upper <= _UPPER_CODES, sorted(upper - _UPPER_CODES)
+    unregistered = codes - upper - ORGFS_ERROR_CODES
     assert not unregistered, (
         f"orgfs error codes raised but not registered in ORGFS_ERROR_CODES: "
         f"{sorted(unregistered)}"
     )
     assert {"invalid-uri", "cross-space-uri"} <= ORGFS_ERROR_CODES
+
+
+def test_the_error_code_scan_sees_each_producer_shape(tmp_path) -> None:
+    """The scan itself: a new code in any shape, or a new relay, is visible."""
+
+    source = tmp_path / "sync"
+    source.mkdir()
+    (source / "probe.py").write_text(
+        "from hyprial.kernel import ORGFS_LAYOUT_UNSUPPORTED, ipc_errors\n"
+        "SyncError('brand-new-code', 'x')\n"
+        "StoreError(ORGFS_LAYOUT_UNSUPPORTED, 'x')\n"
+        "OrgFsError('a' if flag else ipc_errors.ORGFS_INVALID_URI)\n"
+        "OrgFsError(other.code)\n",
+        encoding="utf-8",
+    )
+
+    codes, relays, files = _scan_error_codes(tmp_path)
+
+    assert codes == {"brand-new-code", "ORGFS_LAYOUT_UNSUPPORTED", "a", "invalid-uri"}
+    assert relays == {("sync/probe.py", "OrgFsError", "other.code")}
+    assert files == {"sync/probe.py"}
