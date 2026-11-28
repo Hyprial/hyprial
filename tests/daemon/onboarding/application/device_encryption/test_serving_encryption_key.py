@@ -417,4 +417,3 @@ def test_a_lock_held_by_another_process_skips_the_encryption_key_after_a_bounded
     assert 0.2 <= time.monotonic() - started < 5.0
     assert home.initialize_states() == [(OWNER, "completed")]
     assert not (home.state / "identity").exists()
-

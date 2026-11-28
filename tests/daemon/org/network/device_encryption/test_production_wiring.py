@@ -377,4 +377,3 @@ def test_cache_invalidates_when_the_account_or_device_changes(
 
     assert len({first, second, third}) == 3
     assert len(_key_records(key_state)) == 3
-

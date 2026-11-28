@@ -367,4 +367,3 @@ def test_a_definitely_absent_key_publishes_a_row_without_the_pair(
     assert result == {"published": [ORG], "skipped": [], "errors": []}
     assert "encryptionKeyId" not in _row(fs)
     assert "encryptionPublicKey" not in _row(fs)
-

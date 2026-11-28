@@ -285,4 +285,3 @@ v7 要求每条 `expose` 命令**显式提供** `admission`（`"allow"` 或 `"ke
 - `exposed` 事件回显 `admission`（`"allow"` 或 `"keys"`），仅在 `keys` 模式下附带整型 `keyCount`（`0..4096`），永不回显完整 `keys` 数组（含 `keys`、或 `keys` 模式缺 `keyCount`、或 `allow` 模式带 `keyCount` 的事件均在 `invalid-events.jsonl` 中被拒绝）。
 - daemon 对用户暴露端口只下发 `admission: "keys"`：集合由服务授权推导（含 `@members` 授权，展开为该 org 成员设备的公钥），没有授权时为空集合；`"allow"` 仍是协议的合法值，但 daemon 不再对用户暴露使用它。推导规则与日志事件见 [service-grants 契约](../service-grants/README.md)。
 - 协议为封闭格式，v6 及更早版本一律返回 `SIDECAR_PROTOCOL_MISMATCH`；升级步骤见 [migration-sidecar-protocol-v7.md](../../docs/guides/migration-sidecar-protocol-v7.md)。
-

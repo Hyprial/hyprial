@@ -232,4 +232,3 @@ def test_a_concurrent_device_reprovision_cannot_mint_a_chimeric_key(
     assert record["casdoorSub"] == USER_ID
     assert record["deviceUid"] == DEVICE_UID
     assert record["deviceUid"] != other_uid
-

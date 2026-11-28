@@ -604,4 +604,3 @@ def test_controller_expose_without_a_mode_is_refused_before_the_wire() -> None:
             }
         )
     assert sent == []
-
