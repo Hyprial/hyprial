@@ -25,11 +25,12 @@ class Store:
 
     def _preflight(self, directory):
         for name in (DATABASE, DATABASE + "-journal", DATABASE + "-wal", DATABASE + "-shm"):
+            target = directory / name
             try:
-                metadata = (directory / name).lstat()
+                metadata = target.lstat()
             except FileNotFoundError:
                 continue
-            self.slot._file_safe(metadata, 0o600)
+            self.slot._file_safe(target, metadata, 0o600)
             # This implementation never creates disk-side SQLite journals.
             if name != DATABASE:
                 fail("UNSAFE_AUTHORITY_STATE", "authority")
